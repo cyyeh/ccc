@@ -245,7 +245,18 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             if (instr.rd != 0) cpu.writeReg(instr.rd, old);
             cpu.pc +%= 4;
         },
-        .ecall, .ebreak, .mret, .wfi => return ExecuteError.FatalTrap,
+        .ecall => {
+            const cause: trap.Cause = switch (cpu.privilege) {
+                .M => .ecall_from_m,
+                .U => .ecall_from_u,
+                else => .ecall_from_u, // reserved modes treated as U (shouldn't happen)
+            };
+            trap.enter(cause, 0, cpu);
+        },
+        .ebreak => {
+            trap.enter(.breakpoint, 0, cpu);
+        },
+        .mret, .wfi => return ExecuteError.FatalTrap, // placeholder — Task 9
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
             const b = cpu.readReg(instr.rs2);
@@ -674,18 +685,37 @@ test "FENCE is a no-op that advances PC" {
     try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
 }
 
-test "ECALL returns FatalTrap (pre-Task-8 interim)" {
+test "ECALL from U-mode traps with mcause=8, mepc=PC" {
     var rig: Rig = undefined;
-    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE + 0x100);
     defer rig.deinit();
-    try std.testing.expectError(ExecuteError.FatalTrap, dispatch(.{ .op = .ecall }, &rig.cpu));
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .ecall, .raw = 0x73 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 8), rig.cpu.csr.mcause);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x100, rig.cpu.csr.mepc);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
+    try std.testing.expectEqual(@import("cpu.zig").PrivilegeMode.M, rig.cpu.privilege);
 }
 
-test "EBREAK returns FatalTrap (pre-Task-8 interim)" {
+test "ECALL from M-mode traps with mcause=11" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try std.testing.expectError(ExecuteError.FatalTrap, dispatch(.{ .op = .ebreak }, &rig.cpu));
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .ecall, .raw = 0x73 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 11), rig.cpu.csr.mcause);
+}
+
+test "EBREAK traps with mcause=3 (breakpoint)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .ebreak, .raw = 0x100073 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 3), rig.cpu.csr.mcause);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
 }
 
 test "MUL: 6 * 7 = 42" {
