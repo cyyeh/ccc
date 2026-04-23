@@ -146,7 +146,6 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.pc +%= 4;
         },
         .ecall, .ebreak => return ExecuteError.UnsupportedInstruction,
-        // M extension — implemented in Plan 1.B Tasks 3 and 4.
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
             const b = cpu.readReg(instr.rs2);
@@ -812,6 +811,15 @@ test "LR.W on misaligned address returns MisalignedAccess" {
     defer rig.deinit();
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x81); // misaligned
     try std.testing.expectError(ExecuteError.MisalignedAccess, dispatch(.{ .op = .lr_w, .rd = 2, .rs1 = 1 }, &rig.cpu));
+}
+
+test "SC.W on misaligned address returns MisalignedAccess" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x81); // misaligned
+    rig.cpu.writeReg(2, 0xDEADBEEF);
+    try std.testing.expectError(ExecuteError.MisalignedAccess, dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu));
 }
 
 test "AMOSWAP.W returns old value, stores rs2" {

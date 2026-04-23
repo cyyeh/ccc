@@ -76,8 +76,8 @@ is next.
 ```
 src/
   main.zig          # CLI entry point
-  cpu.zig           # hart state: registers, PC, CSRs
-  decoder.zig       # RV32I + M + A + Zicsr + Zifencei decoder
+  cpu.zig           # hart state: registers, PC, LR/SC reservation
+  decoder.zig       # RV32I + M + A + Zifencei decoder
   execute.zig       # instruction execution
   memory.zig        # RAM + MMIO dispatch
   devices/
@@ -86,12 +86,13 @@ src/
 tests/
   programs/
     hello/          # RV32I hello-world encoder + expected output
+    mul_demo/       # RV32IMA demo encoder (prints "42\n")
 docs/
   superpowers/
     specs/          # design docs per phase (brainstormed + approved)
     plans/          # implementation plans per phase
   references/       # notes on RISC-V specifics (traps, etc.)
-build.zig           # build graph: ccc binary, tests, hello, e2e
+build.zig           # build graph: ccc binary, tests, hello, e2e, mul-demo, e2e-mul
 build.zig.zon       # pinned Zig version + dependencies
 ```
 
