@@ -102,4 +102,73 @@ pub fn build(b: *std.Build) void {
     const install_min_elf = b.addInstallFile(min_elf_bin, "../tests/fixtures/minimal.elf");
     const fixture_step = b.step("fixtures", "Build test-only fixture ELF");
     fixture_step.dependOn(&install_min_elf.step);
+
+    // === riscv-tests helpers (Plan 1.C Task 14-16) ===
+    const rv_target = b.resolveTargetQuery(.{
+        .cpu_arch = .riscv32,
+        .os_tag = .freestanding,
+        .abi = .none,
+        .cpu_features_add = blk: {
+            const features = std.Target.riscv.Feature;
+            var set = std.Target.Cpu.Feature.Set.empty;
+            set.addFeature(@intFromEnum(features.m));
+            set.addFeature(@intFromEnum(features.a));
+            break :blk set;
+        },
+    });
+
+    const RiscvTest = struct {
+        family: []const u8,
+        name: []const u8,
+    };
+
+    const rv_link_script = b.path("tests/riscv-tests-p.ld");
+
+    const riscvTestStep = struct {
+        fn call(
+            bb: *std.Build,
+            rtarget: std.Build.ResolvedTarget,
+            link_script: std.Build.LazyPath,
+            test_def: RiscvTest,
+        ) struct { bin: std.Build.LazyPath, install: *std.Build.Step.InstallArtifact } {
+            const src_path = bb.fmt("tests/riscv-tests/isa/{s}/{s}.S", .{ test_def.family, test_def.name });
+            const obj = bb.addObject(.{
+                .name = bb.fmt("{s}-{s}", .{ test_def.family, test_def.name }),
+                .root_module = bb.createModule(.{
+                    .root_source_file = null,
+                    .target = rtarget,
+                    .optimize = .ReleaseSmall,
+                }),
+            });
+            obj.root_module.addAssemblyFile(bb.path(src_path));
+            obj.root_module.addIncludePath(bb.path("tests/riscv-tests/env/p"));
+            obj.root_module.addIncludePath(bb.path("tests/riscv-tests/env"));
+            obj.root_module.addIncludePath(bb.path("tests/riscv-tests/isa/macros/scalar"));
+
+            const exe_tst = bb.addExecutable(.{
+                .name = bb.fmt("{s}-{s}-elf", .{ test_def.family, test_def.name }),
+                .root_module = bb.createModule(.{
+                    .root_source_file = null,
+                    .target = rtarget,
+                    .optimize = .ReleaseSmall,
+                }),
+            });
+            exe_tst.root_module.addObject(obj);
+            exe_tst.setLinkerScript(link_script);
+            exe_tst.root_module.single_threaded = true;
+
+            const installed = bb.addInstallArtifact(exe_tst, .{
+                .dest_dir = .{ .override = .{ .custom = bb.fmt("riscv-tests/{s}", .{test_def.family}) } },
+            });
+            return .{ .bin = exe_tst.getEmittedBin(), .install = installed };
+        }
+    }.call;
+
+    const smoke = riscvTestStep(b, rv_target, rv_link_script, .{
+        .family = "rv32ui",
+        .name = "add",
+    });
+    const smoke_step = b.step("riscv-tests-smoke", "Build a single riscv-test as a smoke check");
+    smoke_step.dependOn(&smoke.install.step);
+    _ = smoke.bin;
 }
