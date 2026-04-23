@@ -4,6 +4,7 @@ const Io = std.Io;
 comptime {
     _ = @import("cpu.zig");
     _ = @import("memory.zig");
+    _ = @import("devices/halt.zig");
 }
 
 pub fn main(init: std.process.Init) !void {
