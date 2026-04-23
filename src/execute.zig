@@ -1291,3 +1291,17 @@ test "WFI in U-mode traps as illegal-instruction" {
         rig.cpu.csr.mcause,
     );
 }
+
+test "halt-on-trap propagates FatalTrap from cpu.run" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.halt_on_trap = true;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try rig.mem.storeWord(mem_mod.RAM_BASE, 0xFFFFFFFF);
+    try std.testing.expectError(@import("cpu.zig").StepError.FatalTrap, rig.cpu.run());
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
+}

@@ -56,6 +56,9 @@ pub const Cpu = struct {
     // If true, an unhandled trap prints a dump and halts instead of
     // entering the trap handler. Wired by --halt-on-trap in main.zig.
     halt_on_trap: bool = false,
+    // Set to true when a trap is taken; checked by run() to halt if
+    // halt_on_trap is set.
+    trap_taken: bool = false,
     // Optional writer for instruction trace. Wired by --trace in main.zig.
     trace_writer: ?*std.Io.Writer = null,
 
@@ -68,6 +71,7 @@ pub const Cpu = struct {
             .privilege = .M,
             .csr = .{},
             .halt_on_trap = false,
+            .trap_taken = false,
             .trace_writer = null,
         };
     }
@@ -109,10 +113,14 @@ pub const Cpu = struct {
 
     pub fn run(self: *Cpu) StepError!void {
         while (true) {
+            self.trap_taken = false;
             self.step() catch |err| switch (err) {
                 error.Halt => return,
-                else => return err,
+                error.FatalTrap => return err,
             };
+            if (self.trap_taken and self.halt_on_trap) {
+                return StepError.FatalTrap;
+            }
         }
     }
 };

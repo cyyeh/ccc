@@ -93,6 +93,25 @@ fn printUsage(stderr: *Io.Writer) !void {
     try stderr.flush();
 }
 
+fn dumpTrapDiagnostic(w: *Io.Writer, cpu: *const cpu_mod.Cpu) !void {
+    try w.print("\n=== UNHANDLED TRAP (--halt-on-trap) ===\n", .{});
+    try w.print("mcause=0x{X:0>8}  mepc=0x{X:0>8}  mtval=0x{X:0>8}\n", .{
+        cpu.csr.mcause, cpu.csr.mepc, cpu.csr.mtval,
+    });
+    try w.print("mstatus=0x{X:0>8}  mtvec=0x{X:0>8}  privilege={s}\n", .{
+        cpu.csr.mstatus, cpu.csr.mtvec, @tagName(cpu.privilege),
+    });
+    try w.print("PC=0x{X:0>8}\n", .{cpu.pc});
+    var i: u5 = 0;
+    while (true) : (i += 1) {
+        if (i % 4 == 0) try w.print("\n", .{});
+        try w.print("x{d:0>2}=0x{X:0>8}  ", .{ i, cpu.regs[i] });
+        if (i == 31) break;
+    }
+    try w.print("\n========================================\n", .{});
+    try w.flush();
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
@@ -167,11 +186,18 @@ pub fn main(init: std.process.Init) !void {
         cpu.trace_writer = stderr;
     }
 
-    cpu.run() catch |err| {
-        stdout.flush() catch {};
-        stderr.print("\nemulator stopped: {s} (PC=0x{X:0>8})\n", .{ @errorName(err), cpu.pc }) catch {};
-        stderr.flush() catch {};
-        std.process.exit(1);
+    cpu.run() catch |err| switch (err) {
+        error.FatalTrap => {
+            stdout.flush() catch {};
+            dumpTrapDiagnostic(stderr, &cpu) catch {};
+            std.process.exit(3);
+        },
+        else => {
+            stdout.flush() catch {};
+            stderr.print("\nemulator stopped: {s} (PC=0x{X:0>8})\n", .{ @errorName(err), cpu.pc }) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        },
     };
     stdout.flush() catch {};
     std.process.exit(halt.exit_code orelse 0);

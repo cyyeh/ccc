@@ -52,6 +52,7 @@ pub fn enter(cause: Cause, tval: u32, cpu: *Cpu) void {
     cpu.privilege = .M;
     cpu.pc = cpu.csr.mtvec & csr.MTVEC_BASE_MASK;
     cpu.reservation = null;
+    cpu.trap_taken = true;
 }
 
 /// Return from trap via mret. Implements spec §Trap exit:
