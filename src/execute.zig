@@ -204,8 +204,25 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             // No I-cache to invalidate; single hart, fetch-from-memory every step.
             cpu.pc +%= 4;
         },
-        // A extension — implemented in Plan 1.B Tasks 7 and 8.
-        .lr_w, .sc_w,
+        .lr_w => {
+            const addr = cpu.readReg(instr.rs1);
+            if (addr & 3 != 0) return ExecuteError.MisalignedAccess;
+            const val = cpu.memory.loadWord(addr) catch |e| return mapMemErr(e);
+            cpu.reservation = addr;
+            cpu.writeReg(instr.rd, val);
+            cpu.pc +%= 4;
+        },
+        .sc_w => {
+            const addr = cpu.readReg(instr.rs1);
+            if (addr & 3 != 0) return ExecuteError.MisalignedAccess;
+            const holds = (cpu.reservation != null and cpu.reservation.? == addr);
+            if (holds) {
+                cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| return mapMemErr(e);
+            }
+            cpu.reservation = null; // always cleared after SC.W (success or failure)
+            cpu.writeReg(instr.rd, if (holds) @as(u32, 0) else @as(u32, 1));
+            cpu.pc +%= 4;
+        },
         .amoswap_w, .amoadd_w, .amoxor_w, .amoand_w, .amoor_w,
         .amomin_w, .amomax_w, .amominu_w, .amomaxu_w => return ExecuteError.UnsupportedInstruction,
         .illegal => return ExecuteError.IllegalInstruction,
@@ -718,4 +735,61 @@ test "FENCE.I is a no-op, advances PC by 4" {
     defer rig.deinit();
     try dispatch(.{ .op = .fence_i }, &rig.cpu);
     try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "LR.W loads a word and records a reservation" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x80, 0xCAFEBABE);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x80);
+    try dispatch(.{ .op = .lr_w, .rd = 2, .rs1 = 1 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xCAFEBABE), rig.cpu.readReg(2));
+    try std.testing.expectEqual(@as(?u32, mem_mod.RAM_BASE + 0x80), rig.cpu.reservation);
+}
+
+test "SC.W succeeds when reservation matches, writes 0 to rd" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.reservation = mem_mod.RAM_BASE + 0x80;
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x80);
+    rig.cpu.writeReg(2, 0xDEADBEEF);
+    try dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(3)); // 0 = success
+    try std.testing.expectEqual(@as(u32, 0xDEADBEEF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x80));
+    try std.testing.expect(rig.cpu.reservation == null); // cleared after SC.W
+}
+
+test "SC.W fails when no reservation is held, writes nonzero to rd" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.reservation = null;
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x80);
+    rig.cpu.writeReg(2, 0xDEADBEEF);
+    try dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expect(rig.cpu.readReg(3) != 0); // nonzero = failure
+    // Memory must NOT be updated on SC.W failure.
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x80));
+}
+
+test "SC.W fails when reservation address doesn't match" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.reservation = mem_mod.RAM_BASE + 0x40; // reserved at 0x40
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x80); // writing to 0x80
+    rig.cpu.writeReg(2, 0xDEADBEEF);
+    try dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expect(rig.cpu.readReg(3) != 0);
+    try std.testing.expect(rig.cpu.reservation == null); // cleared regardless
+}
+
+test "LR.W on misaligned address returns MisalignedAccess" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x81); // misaligned
+    try std.testing.expectError(ExecuteError.MisalignedAccess, dispatch(.{ .op = .lr_w, .rd = 2, .rs1 = 1 }, &rig.cpu));
 }
