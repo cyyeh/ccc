@@ -23,6 +23,18 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.writeReg(instr.rd, result);
             cpu.pc +%= 4;
         },
+        .jal => {
+            const link = cpu.pc +% 4;
+            const target = cpu.pc +% @as(u32, @bitCast(instr.imm));
+            cpu.writeReg(instr.rd, link);
+            cpu.pc = target;
+        },
+        .jalr => {
+            const link = cpu.pc +% 4;
+            const target = (cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm))) & ~@as(u32, 1);
+            cpu.writeReg(instr.rd, link);
+            cpu.pc = target;
+        },
         .illegal => return ExecuteError.IllegalInstruction,
     }
 }
@@ -71,4 +83,33 @@ test "AUIPC = pc + imm" {
     try dispatch(.{ .op = .auipc, .rd = 1, .imm = @as(i32, @bitCast(@as(u32, 0x8000_0000))) }, &rig.cpu);
     try std.testing.expectEqual(mem_mod.RAM_BASE + 0x100 +% 0x8000_0000, rig.cpu.readReg(1));
     try std.testing.expectEqual(mem_mod.RAM_BASE + 0x100 + 4, rig.cpu.pc);
+}
+
+test "JAL stores pc+4 in rd, jumps to pc+offset" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try dispatch(.{ .op = .jal, .rd = 1, .imm = 16 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.readReg(1));
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 16, rig.cpu.pc);
+}
+
+test "JAL with rd=x0 still jumps but discards link" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try dispatch(.{ .op = .jal, .rd = 0, .imm = -8 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(0));
+    try std.testing.expectEqual(mem_mod.RAM_BASE -% 8, rig.cpu.pc);
+}
+
+test "JALR uses rs1+imm for target, clears low bit" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(2, mem_mod.RAM_BASE + 0x101); // odd target
+    try dispatch(.{ .op = .jalr, .rd = 1, .rs1 = 2, .imm = 0 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.readReg(1));
+    // RISC-V spec: PC = (rs1 + imm) & ~1
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x100, rig.cpu.pc);
 }

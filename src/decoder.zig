@@ -3,6 +3,8 @@ const std = @import("std");
 pub const Op = enum {
     lui,
     auipc,
+    jal,
+    jalr,
     // (more added in later tasks)
     illegal,
 };
@@ -46,10 +48,37 @@ pub fn immU(word: u32) i32 {
     return @bitCast(word & 0xFFFF_F000);
 }
 
+// I-type immediate: bits 31:20 sign-extended.
+pub fn immI(word: u32) i32 {
+    const raw: u32 = (word >> 20) & 0xFFF;
+    // Sign-extend bit 11 of raw to 32 bits.
+    return @as(i32, @intCast(@as(i12, @bitCast(@as(u12, @truncate(raw))))));
+}
+
+// J-type immediate: bits scrambled, multiplied by 2 implicitly.
+pub fn immJ(word: u32) i32 {
+    const imm20: u32 = (word >> 31) & 0x1;
+    const imm10_1: u32 = (word >> 21) & 0x3FF;
+    const imm11: u32 = (word >> 20) & 0x1;
+    const imm19_12: u32 = (word >> 12) & 0xFF;
+    const unsigned: u32 =
+        (imm20 << 20) |
+        (imm19_12 << 12) |
+        (imm11 << 11) |
+        (imm10_1 << 1);
+    // Sign-extend from bit 20.
+    if (imm20 == 1) {
+        return @bitCast(unsigned | 0xFFE0_0000);
+    }
+    return @bitCast(unsigned);
+}
+
 pub fn decode(word: u32) Instruction {
     return switch (opcode(word)) {
         0b0110111 => .{ .op = .lui, .rd = rd(word), .imm = immU(word), .raw = word },
         0b0010111 => .{ .op = .auipc, .rd = rd(word), .imm = immU(word), .raw = word },
+        0b1101111 => .{ .op = .jal, .rd = rd(word), .imm = immJ(word), .raw = word },
+        0b1100111 => .{ .op = .jalr, .rd = rd(word), .rs1 = rs1(word), .imm = immI(word), .raw = word },
         else => .{ .op = .illegal, .raw = word },
     };
 }
@@ -73,4 +102,34 @@ test "unknown opcode decodes to illegal" {
     const i = decode(0x0000_0000); // all-zero is not a valid encoding
     try std.testing.expectEqual(Op.illegal, i.op);
     try std.testing.expectEqual(@as(u32, 0), i.raw);
+}
+
+test "decode JAL ra, +0x10 → opcode 0x6F, rd=1, imm=16" {
+    // jal x1, 0x10  →  imm[20|10:1|11|19:12] = 0,0000001000,0,00000000
+    // Encoded: bit 31=0, 30:21=0000001000, 20=0, 19:12=00000000, 11:7=00001, 6:0=1101111
+    // = 0x010000EF
+    const i = decode(0x010000EF);
+    try std.testing.expectEqual(Op.jal, i.op);
+    try std.testing.expectEqual(@as(u5, 1), i.rd);
+    try std.testing.expectEqual(@as(i32, 0x10), i.imm);
+}
+
+test "decode JAL with negative offset" {
+    // jal x0, -16  encoded as 0xFF1FF06F
+    // (Plan text had 0xFE1FF06F which actually encodes -32; corrected to match -16 per RISC-V J-type layout.)
+    const i = decode(0xFF1FF06F);
+    try std.testing.expectEqual(Op.jal, i.op);
+    try std.testing.expectEqual(@as(u5, 0), i.rd);
+    try std.testing.expectEqual(@as(i32, -16), i.imm);
+}
+
+test "decode JALR x1, x2, 4 → opcode 0x67" {
+    // funct3 = 000, opcode = 1100111
+    // imm[11:0]=0x004, rs1=x2=00010, funct3=000, rd=x1=00001, opcode=1100111
+    // = 0x004100E7
+    const i = decode(0x004100E7);
+    try std.testing.expectEqual(Op.jalr, i.op);
+    try std.testing.expectEqual(@as(u5, 1), i.rd);
+    try std.testing.expectEqual(@as(u5, 2), i.rs1);
+    try std.testing.expectEqual(@as(i32, 4), i.imm);
 }
