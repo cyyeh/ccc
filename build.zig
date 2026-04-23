@@ -12,6 +12,11 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    // Expose tests/fixtures/minimal.elf as an importable module so that
+    // src/elf.zig's test can embed it without escaping src/'s package root.
+    exe.root_module.addAnonymousImport("minimal_elf_fixture", .{
+        .root_source_file = b.path("tests/fixtures/minimal_elf.zig"),
+    });
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -82,4 +87,19 @@ pub fn build(b: *std.Build) void {
 
     const e2e_mul_step = b.step("e2e-mul", "Run the end-to-end RV32IMA demo test");
     e2e_mul_step.dependOn(&e2e_mul_run.step);
+
+    // === Minimal ELF fixture (Plan 1.C Task 11) ===
+    const min_elf_encoder = b.addExecutable(.{
+        .name = "encode_minimal_elf",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fixtures/encode_minimal_elf.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const min_elf_run = b.addRunArtifact(min_elf_encoder);
+    const min_elf_bin = min_elf_run.addOutputFileArg("minimal.elf");
+    const install_min_elf = b.addInstallFile(min_elf_bin, "../tests/fixtures/minimal.elf");
+    const fixture_step = b.step("fixtures", "Build test-only fixture ELF");
+    fixture_step.dependOn(&install_min_elf.step);
 }

@@ -16,6 +16,7 @@ comptime {
     _ = @import("execute.zig");
     _ = @import("csr.zig");
     _ = @import("trap.zig");
+    _ = @import("elf.zig");
 }
 
 const Args = struct {
