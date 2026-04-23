@@ -19,6 +19,15 @@ pub const Op = enum {
     sb,
     sh,
     sw,
+    addi,
+    slti,
+    sltiu,
+    xori,
+    ori,
+    andi,
+    slli,
+    srli,
+    srai,
     // (more added in later tasks)
     illegal,
 };
@@ -153,6 +162,27 @@ pub fn decode(word: u32) Instruction {
             };
             break :blk .{ .op = op, .rs1 = rs1(word), .rs2 = rs2(word), .imm = immS(word), .raw = word };
         },
+        0b0010011 => blk: {
+            const f3 = funct3(word);
+            const f7 = funct7(word);
+            const shamt: i32 = @intCast((word >> 20) & 0x1F);
+            const op: Op = switch (f3) {
+                0b000 => .addi,
+                0b010 => .slti,
+                0b011 => .sltiu,
+                0b100 => .xori,
+                0b110 => .ori,
+                0b111 => .andi,
+                0b001 => if (f7 == 0) Op.slli else Op.illegal,
+                0b101 => switch (f7) {
+                    0b0000000 => Op.srli,
+                    0b0100000 => Op.srai,
+                    else => Op.illegal,
+                },
+            };
+            const imm: i32 = if (op == .slli or op == .srli or op == .srai) shamt else immI(word);
+            break :blk .{ .op = op, .rd = rd(word), .rs1 = rs1(word), .imm = imm, .raw = word };
+        },
         else => .{ .op = .illegal, .raw = word },
     };
 }
@@ -272,4 +302,28 @@ test "decode SW with negative offset" {
     try std.testing.expectEqual(@as(u5, 6), i.rs1);
     try std.testing.expectEqual(@as(u5, 5), i.rs2);
     try std.testing.expectEqual(@as(i32, -4), i.imm);
+}
+
+test "decode ADDI x5, x0, -1 → 0xFFF00293" {
+    const i = decode(0xFFF00293);
+    try std.testing.expectEqual(Op.addi, i.op);
+    try std.testing.expectEqual(@as(u5, 5), i.rd);
+    try std.testing.expectEqual(@as(u5, 0), i.rs1);
+    try std.testing.expectEqual(@as(i32, -1), i.imm);
+}
+
+test "decode SLLI x1, x2, 4 → 0x00411093" {
+    // funct7=0000000, shamt=00100, rs1=00010, funct3=001, rd=00001, opcode=0010011
+    const i = decode(0x00411093);
+    try std.testing.expectEqual(Op.slli, i.op);
+    try std.testing.expectEqual(@as(u5, 1), i.rd);
+    try std.testing.expectEqual(@as(u5, 2), i.rs1);
+    try std.testing.expectEqual(@as(i32, 4), i.imm);
+}
+
+test "decode SRAI x1, x2, 4 → 0x40415093" {
+    // funct7=0100000, shamt=00100, rs1=00010, funct3=101, rd=00001, opcode=0010011
+    const i = decode(0x40415093);
+    try std.testing.expectEqual(Op.srai, i.op);
+    try std.testing.expectEqual(@as(i32, 4), i.imm);
 }

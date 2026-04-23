@@ -95,6 +95,33 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| return mapMemErr(e);
             cpu.pc +%= 4;
         },
+        .addi, .slti, .sltiu, .xori, .ori, .andi => {
+            const a = cpu.readReg(instr.rs1);
+            const imm_u: u32 = @bitCast(instr.imm);
+            const result: u32 = switch (instr.op) {
+                .addi => a +% imm_u,
+                .slti => if (@as(i32, @bitCast(a)) < instr.imm) 1 else 0,
+                .sltiu => if (a < imm_u) 1 else 0,
+                .xori => a ^ imm_u,
+                .ori => a | imm_u,
+                .andi => a & imm_u,
+                else => unreachable,
+            };
+            cpu.writeReg(instr.rd, result);
+            cpu.pc +%= 4;
+        },
+        .slli, .srli, .srai => {
+            const a = cpu.readReg(instr.rs1);
+            const shamt: u5 = @intCast(instr.imm & 0x1F);
+            const result: u32 = switch (instr.op) {
+                .slli => a << shamt,
+                .srli => a >> shamt,
+                .srai => @bitCast(@as(i32, @bitCast(a)) >> shamt),
+                else => unreachable,
+            };
+            cpu.writeReg(instr.rd, result);
+            cpu.pc +%= 4;
+        },
         .illegal => return ExecuteError.IllegalInstruction,
     }
 }
@@ -292,4 +319,69 @@ test "SB to UART address forwards to writer" {
     rig.cpu.writeReg(2, 'A');
     try dispatch(.{ .op = .sb, .rs1 = 1, .rs2 = 2, .imm = 0 }, &rig.cpu);
     try std.testing.expectEqualStrings("A", rig.aw.written());
+}
+
+test "ADDI computes rs1 + imm with sign extension" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 100);
+    try dispatch(.{ .op = .addi, .rd = 2, .rs1 = 1, .imm = -10 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 90), rig.cpu.readReg(2));
+}
+
+test "SLTI: signed comparison" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, @bitCast(@as(i32, -5)));
+    try dispatch(.{ .op = .slti, .rd = 2, .rs1 = 1, .imm = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 1), rig.cpu.readReg(2));
+}
+
+test "SLTIU: unsigned comparison treats imm as unsigned-extended" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 5);
+    // imm = -1 → unsigned 0xFFFF_FFFF, so 5 < 0xFFFF_FFFF → 1
+    try dispatch(.{ .op = .sltiu, .rd = 2, .rs1 = 1, .imm = -1 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 1), rig.cpu.readReg(2));
+}
+
+test "XORI / ORI / ANDI bitwise ops" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0xF0F0_F0F0);
+    try dispatch(.{ .op = .xori, .rd = 2, .rs1 = 1, .imm = @bitCast(@as(u32, 0x0F0)) }, &rig.cpu);
+    // 0xF0F0_F0F0 ^ 0x0000_00F0 (sign-extended from 0x0F0 = +240) = 0xF0F0_F000
+    try std.testing.expectEqual(@as(u32, 0xF0F0_F000), rig.cpu.readReg(2));
+}
+
+test "SLLI shifts left by shamt" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 1);
+    try dispatch(.{ .op = .slli, .rd = 2, .rs1 = 1, .imm = 4 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 16), rig.cpu.readReg(2));
+}
+
+test "SRAI: arithmetic right shift preserves sign" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0xFFFF_FFF0); // -16
+    try dispatch(.{ .op = .srai, .rd = 2, .rs1 = 1, .imm = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFC), rig.cpu.readReg(2)); // -4
+}
+
+test "SRLI: logical right shift" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0xFFFF_FFF0);
+    try dispatch(.{ .op = .srli, .rd = 2, .rs1 = 1, .imm = 4 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x0FFF_FFFF), rig.cpu.readReg(2));
 }
