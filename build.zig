@@ -88,6 +88,30 @@ pub fn build(b: *std.Build) void {
     const e2e_mul_step = b.step("e2e-mul", "Run the end-to-end RV32IMA demo test");
     e2e_mul_step.dependOn(&e2e_mul_run.step);
 
+    // === Hand-crafted trap/privilege demo (Plan 1.C Task 17) ===
+    const trap_demo_encoder = b.addExecutable(.{
+        .name = "encode_trap_demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/trap_demo/encode_trap_demo.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const trap_demo_run = b.addRunArtifact(trap_demo_encoder);
+    const trap_demo_bin = trap_demo_run.addOutputFileArg("trap_demo.bin");
+    const install_trap_demo = b.addInstallFile(trap_demo_bin, "trap_demo.bin");
+
+    const trap_demo_step = b.step("trap-demo", "Build the hand-crafted trap/privilege demo binary");
+    trap_demo_step.dependOn(&install_trap_demo.step);
+
+    const e2e_trap_run = b.addRunArtifact(exe);
+    e2e_trap_run.addArgs(&.{ "--raw", "0x80000000" });
+    e2e_trap_run.addFileArg(trap_demo_bin);
+    e2e_trap_run.expectStdOutEqual("trap ok\n");
+
+    const e2e_trap_step = b.step("e2e-trap", "Run the end-to-end trap/privilege demo test");
+    e2e_trap_step.dependOn(&e2e_trap_run.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
