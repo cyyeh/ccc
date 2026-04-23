@@ -18,6 +18,7 @@ comptime {
     _ = @import("csr.zig");
     _ = @import("trap.zig");
     _ = @import("elf.zig");
+    _ = @import("trace.zig");
 }
 
 const Args = struct {
@@ -162,8 +163,9 @@ pub fn main(init: std.process.Init) !void {
     var cpu = cpu_mod.Cpu.init(&mem, entry);
     cpu.halt_on_trap = args.halt_on_trap;
 
-    // --trace setup is wired in Task 13.
-    _ = args.trace;
+    if (args.trace) {
+        cpu.trace_writer = stderr;
+    }
 
     cpu.run() catch |err| {
         stdout.flush() catch {};

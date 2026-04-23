@@ -56,7 +56,8 @@ pub const Cpu = struct {
     // If true, an unhandled trap prints a dump and halts instead of
     // entering the trap handler. Wired by --halt-on-trap in main.zig.
     halt_on_trap: bool = false,
-    // trace_writer lands in Task 13
+    // Optional writer for instruction trace. Wired by --trace in main.zig.
+    trace_writer: ?*std.Io.Writer = null,
 
     pub fn init(memory: *Memory, entry: u32) Cpu {
         return .{
@@ -67,6 +68,7 @@ pub const Cpu = struct {
             .privilege = .M,
             .csr = .{},
             .halt_on_trap = false,
+            .trace_writer = null,
         };
     }
 
@@ -81,22 +83,28 @@ pub const Cpu = struct {
     }
 
     pub fn step(self: *Cpu) StepError!void {
-        const word = self.memory.loadWord(self.pc) catch |e| switch (e) {
+        const pre_pc = self.pc;
+        const word = self.memory.loadWord(pre_pc) catch |e| switch (e) {
             error.Halt => return StepError.Halt,
             error.MisalignedAccess => {
-                trap.enter(.instr_addr_misaligned, self.pc, self);
+                trap.enter(.instr_addr_misaligned, pre_pc, self);
                 return;
             },
             else => {
-                trap.enter(.instr_access_fault, self.pc, self);
+                trap.enter(.instr_access_fault, pre_pc, self);
                 return;
             },
         };
         const instr = decoder.decode(word);
-        return execute.dispatch(instr, self) catch |e| switch (e) {
-            error.Halt => StepError.Halt,
-            error.FatalTrap => StepError.FatalTrap,
+        const pre_rd = self.regs[instr.rd];
+        execute.dispatch(instr, self) catch |e| switch (e) {
+            error.Halt => return StepError.Halt,
+            error.FatalTrap => return StepError.FatalTrap,
         };
+        if (self.trace_writer) |tw| {
+            const post_rd = self.regs[instr.rd];
+            @import("trace.zig").formatInstr(tw, pre_pc, instr, pre_rd, post_rd, self.pc) catch {};
+        }
     }
 
     pub fn run(self: *Cpu) StepError!void {
