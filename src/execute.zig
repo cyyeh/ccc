@@ -175,7 +175,31 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.writeReg(instr.rd, result);
             cpu.pc +%= 4;
         },
-        .div, .divu, .rem, .remu => return ExecuteError.UnsupportedInstruction,
+        .div, .divu, .rem, .remu => {
+            const a = cpu.readReg(instr.rs1);
+            const b = cpu.readReg(instr.rs2);
+            const result: u32 = switch (instr.op) {
+                .div => blk: {
+                    if (b == 0) break :blk 0xFFFF_FFFF; // div-by-zero → -1
+                    const as: i32 = @bitCast(a);
+                    const bs: i32 = @bitCast(b);
+                    if (as == std.math.minInt(i32) and bs == -1) break :blk a; // overflow → INT_MIN
+                    break :blk @bitCast(@divTrunc(as, bs));
+                },
+                .divu => if (b == 0) @as(u32, 0xFFFF_FFFF) else a / b,
+                .rem => blk: {
+                    if (b == 0) break :blk a; // div-by-zero → dividend
+                    const as: i32 = @bitCast(a);
+                    const bs: i32 = @bitCast(b);
+                    if (as == std.math.minInt(i32) and bs == -1) break :blk 0; // overflow → 0
+                    break :blk @bitCast(@rem(as, bs));
+                },
+                .remu => if (b == 0) a else a % b,
+                else => unreachable,
+            };
+            cpu.writeReg(instr.rd, result);
+            cpu.pc +%= 4;
+        },
         // Zifencei — implemented in Plan 1.B Task 5.
         .fence_i => return ExecuteError.UnsupportedInstruction,
         // A extension — implemented in Plan 1.B Tasks 7 and 8.
@@ -574,4 +598,114 @@ test "MULHSU: signed × unsigned, rs1 negative" {
     rig.cpu.writeReg(2, 0xFFFF_FFFF); // 4294967295 unsigned
     try dispatch(.{ .op = .mulhsu, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
+}
+
+test "DIV: 42 / 6 = 7" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 42);
+    rig.cpu.writeReg(2, 6);
+    try dispatch(.{ .op = .div, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 7), rig.cpu.readReg(3));
+}
+
+test "DIV: signed truncation toward zero (-7 / 2 = -3, not -4)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, @bitCast(@as(i32, -7)));
+    rig.cpu.writeReg(2, 2);
+    try dispatch(.{ .op = .div, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, @bitCast(@as(i32, -3))), rig.cpu.readReg(3));
+}
+
+test "DIV: division by zero returns -1 (all ones)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 42);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .div, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
+}
+
+test "DIV: signed overflow (INT_MIN / -1) returns INT_MIN" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0x8000_0000); // INT_MIN
+    rig.cpu.writeReg(2, @bitCast(@as(i32, -1)));
+    try dispatch(.{ .op = .div, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x8000_0000), rig.cpu.readReg(3));
+}
+
+test "DIVU: unsigned divide by zero returns all-ones" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 42);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .divu, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
+}
+
+test "DIVU: large unsigned divide" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0xFFFF_FFFE); // 4294967294
+    rig.cpu.writeReg(2, 2);
+    try dispatch(.{ .op = .divu, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x7FFF_FFFF), rig.cpu.readReg(3));
+}
+
+test "REM: 42 % 6 = 0" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 42);
+    rig.cpu.writeReg(2, 6);
+    try dispatch(.{ .op = .rem, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(3));
+}
+
+test "REM: result takes sign of dividend (-7 rem 2 = -1)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, @bitCast(@as(i32, -7)));
+    rig.cpu.writeReg(2, 2);
+    try dispatch(.{ .op = .rem, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, @bitCast(@as(i32, -1))), rig.cpu.readReg(3));
+}
+
+test "REM: division by zero returns dividend" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 42);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .rem, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 42), rig.cpu.readReg(3));
+}
+
+test "REM: signed overflow (INT_MIN rem -1) returns 0" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0x8000_0000); // INT_MIN
+    rig.cpu.writeReg(2, @bitCast(@as(i32, -1)));
+    try dispatch(.{ .op = .rem, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(3));
+}
+
+test "REMU: unsigned remainder by zero returns dividend" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 42);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .remu, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 42), rig.cpu.readReg(3));
 }
