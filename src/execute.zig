@@ -142,6 +142,10 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.writeReg(instr.rd, result);
             cpu.pc +%= 4;
         },
+        .fence => {
+            cpu.pc +%= 4;
+        },
+        .ecall, .ebreak => return ExecuteError.UnsupportedInstruction,
         .illegal => return ExecuteError.IllegalInstruction,
     }
 }
@@ -444,4 +448,26 @@ test "SRA: arithmetic right shift preserves sign" {
     rig.cpu.writeReg(2, 4);
     try dispatch(.{ .op = .sra, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
+}
+
+test "FENCE is a no-op that advances PC" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try dispatch(.{ .op = .fence }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "ECALL returns UnsupportedInstruction in Plan 1.A" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try std.testing.expectError(ExecuteError.UnsupportedInstruction, dispatch(.{ .op = .ecall }, &rig.cpu));
+}
+
+test "EBREAK returns UnsupportedInstruction in Plan 1.A" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try std.testing.expectError(ExecuteError.UnsupportedInstruction, dispatch(.{ .op = .ebreak }, &rig.cpu));
 }

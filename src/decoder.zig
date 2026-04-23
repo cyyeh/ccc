@@ -38,6 +38,9 @@ pub const Op = enum {
     sra,
     or_,
     and_,
+    fence,
+    ecall,
+    ebreak,
     // (more added in later tasks)
     illegal,
 };
@@ -216,6 +219,17 @@ pub fn decode(word: u32) Instruction {
             };
             break :blk .{ .op = op, .rd = rd(word), .rs1 = rs1(word), .rs2 = rs2(word), .raw = word };
         },
+        0b0001111 => return .{ .op = .fence, .raw = word },
+        0b1110011 => {
+            // SYSTEM: funct3 must be 000, then imm distinguishes ecall (0) vs ebreak (1).
+            if (funct3(word) != 0) return .{ .op = .illegal, .raw = word };
+            const imm12: u32 = (word >> 20) & 0xFFF;
+            return switch (imm12) {
+                0 => .{ .op = .ecall, .raw = word },
+                1 => .{ .op = .ebreak, .raw = word },
+                else => .{ .op = .illegal, .raw = word },
+            };
+        },
         else => .{ .op = .illegal, .raw = word },
     };
 }
@@ -373,4 +387,20 @@ test "decode ADD x3, x1, x2 → 0x002081B3" {
 test "decode SUB x3, x1, x2 → 0x402081B3" {
     const i = decode(0x402081B3);
     try std.testing.expectEqual(Op.sub, i.op);
+}
+
+test "decode FENCE → 0x0FF0000F" {
+    // FENCE pred=1111, succ=1111, rs1=0, funct3=000, rd=0, opcode=0001111
+    const i = decode(0x0FF0000F);
+    try std.testing.expectEqual(Op.fence, i.op);
+}
+
+test "decode ECALL → 0x00000073" {
+    const i = decode(0x00000073);
+    try std.testing.expectEqual(Op.ecall, i.op);
+}
+
+test "decode EBREAK → 0x00100073" {
+    const i = decode(0x00100073);
+    try std.testing.expectEqual(Op.ebreak, i.op);
 }
