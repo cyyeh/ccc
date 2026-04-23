@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const Op = enum {
+    // RV32I — base integer (Plan 1.A)
     lui,
     auipc,
     jal,
@@ -41,7 +42,30 @@ pub const Op = enum {
     fence,
     ecall,
     ebreak,
-    // (more added in later tasks)
+    // RV32M — multiply/divide (Plan 1.B, Task 2)
+    mul,
+    mulh,
+    mulhsu,
+    mulhu,
+    div,
+    divu,
+    rem,
+    remu,
+    // Zifencei (Plan 1.B, Task 5)
+    fence_i,
+    // RV32A — atomics (Plan 1.B, Task 6)
+    lr_w,
+    sc_w,
+    amoswap_w,
+    amoadd_w,
+    amoxor_w,
+    amoand_w,
+    amoor_w,
+    amomin_w,
+    amomax_w,
+    amominu_w,
+    amomaxu_w,
+    // (more added in later plans)
     illegal,
 };
 
@@ -77,6 +101,10 @@ pub fn funct3(word: u32) u3 {
 
 pub fn funct7(word: u32) u7 {
     return @truncate((word >> 25) & 0x7F);
+}
+
+pub fn funct5(word: u32) u5 {
+    return @truncate((word >> 27) & 0x1F);
 }
 
 // U-type immediate: bits 31:12 → upper 20 bits of result, lower 12 are zero.
@@ -203,23 +231,56 @@ pub fn decode(word: u32) Instruction {
                 0b000 => switch (f7) {
                     0b0000000 => Op.add,
                     0b0100000 => Op.sub,
+                    0b0000001 => Op.mul,
                     else => Op.illegal,
                 },
-                0b001 => if (f7 == 0) Op.sll else Op.illegal,
-                0b010 => if (f7 == 0) Op.slt else Op.illegal,
-                0b011 => if (f7 == 0) Op.sltu else Op.illegal,
-                0b100 => if (f7 == 0) Op.xor_ else Op.illegal,
+                0b001 => switch (f7) {
+                    0b0000000 => Op.sll,
+                    0b0000001 => Op.mulh,
+                    else => Op.illegal,
+                },
+                0b010 => switch (f7) {
+                    0b0000000 => Op.slt,
+                    0b0000001 => Op.mulhsu,
+                    else => Op.illegal,
+                },
+                0b011 => switch (f7) {
+                    0b0000000 => Op.sltu,
+                    0b0000001 => Op.mulhu,
+                    else => Op.illegal,
+                },
+                0b100 => switch (f7) {
+                    0b0000000 => Op.xor_,
+                    0b0000001 => Op.div,
+                    else => Op.illegal,
+                },
                 0b101 => switch (f7) {
                     0b0000000 => Op.srl,
                     0b0100000 => Op.sra,
+                    0b0000001 => Op.divu,
                     else => Op.illegal,
                 },
-                0b110 => if (f7 == 0) Op.or_ else Op.illegal,
-                0b111 => if (f7 == 0) Op.and_ else Op.illegal,
+                0b110 => switch (f7) {
+                    0b0000000 => Op.or_,
+                    0b0000001 => Op.rem,
+                    else => Op.illegal,
+                },
+                0b111 => switch (f7) {
+                    0b0000000 => Op.and_,
+                    0b0000001 => Op.remu,
+                    else => Op.illegal,
+                },
             };
             break :blk .{ .op = op, .rd = rd(word), .rs1 = rs1(word), .rs2 = rs2(word), .raw = word };
         },
-        0b0001111 => return .{ .op = .fence, .raw = word },
+        0b0001111 => {
+            // MISC-MEM: funct3 selects fence (000) vs fence.i (001).
+            return switch (funct3(word)) {
+                0b000 => .{ .op = .fence, .raw = word },
+                0b001 => .{ .op = .fence_i, .raw = word },
+                else => .{ .op = .illegal, .raw = word },
+            };
+        },
         0b1110011 => {
             // SYSTEM: funct3 must be 000, then imm distinguishes ecall (0) vs ebreak (1).
             if (funct3(word) != 0) return .{ .op = .illegal, .raw = word };
@@ -229,6 +290,29 @@ pub fn decode(word: u32) Instruction {
                 1 => .{ .op = .ebreak, .raw = word },
                 else => .{ .op = .illegal, .raw = word },
             };
+        },
+        0b0101111 => blk: {
+            // RV32A — all instructions share opcode 0x2F, funct3 = 010 (W-width).
+            // funct5 (bits 31:27) distinguishes the 11 variants.
+            // Bits 26 (aq) and 25 (rl) are decoded into the raw word but not
+            // acted on; single-hart emulation has no reordering to suppress.
+            if (funct3(word) != 0b010) break :blk .{ .op = .illegal, .raw = word };
+            const f5 = funct5(word);
+            const op: Op = switch (f5) {
+                0b00010 => .lr_w,
+                0b00011 => .sc_w,
+                0b00001 => .amoswap_w,
+                0b00000 => .amoadd_w,
+                0b00100 => .amoxor_w,
+                0b01100 => .amoand_w,
+                0b01000 => .amoor_w,
+                0b10000 => .amomin_w,
+                0b10100 => .amomax_w,
+                0b11000 => .amominu_w,
+                0b11100 => .amomaxu_w,
+                else => .illegal,
+            };
+            break :blk .{ .op = op, .rd = rd(word), .rs1 = rs1(word), .rs2 = rs2(word), .raw = word };
         },
         else => .{ .op = .illegal, .raw = word },
     };
@@ -403,4 +487,158 @@ test "decode ECALL → 0x00000073" {
 test "decode EBREAK → 0x00100073" {
     const i = decode(0x00100073);
     try std.testing.expectEqual(Op.ebreak, i.op);
+}
+
+test "decode MUL x3, x1, x2 → 0x022081B3" {
+    // funct7=0000001, rs2=00010, rs1=00001, funct3=000, rd=00011, opcode=0110011
+    const i = decode(0x022081B3);
+    try std.testing.expectEqual(Op.mul, i.op);
+    try std.testing.expectEqual(@as(u5, 3), i.rd);
+    try std.testing.expectEqual(@as(u5, 1), i.rs1);
+    try std.testing.expectEqual(@as(u5, 2), i.rs2);
+}
+
+test "decode MULH x3, x1, x2 → 0x022091B3" {
+    // funct3=001
+    const i = decode(0x022091B3);
+    try std.testing.expectEqual(Op.mulh, i.op);
+}
+
+test "decode MULHSU x3, x1, x2 → 0x0220A1B3" {
+    // funct3=010
+    const i = decode(0x0220A1B3);
+    try std.testing.expectEqual(Op.mulhsu, i.op);
+}
+
+test "decode MULHU x3, x1, x2 → 0x0220B1B3" {
+    // funct3=011
+    const i = decode(0x0220B1B3);
+    try std.testing.expectEqual(Op.mulhu, i.op);
+}
+
+test "decode DIV x3, x1, x2 → 0x0220C1B3" {
+    // funct3=100
+    const i = decode(0x0220C1B3);
+    try std.testing.expectEqual(Op.div, i.op);
+}
+
+test "decode DIVU x3, x1, x2 → 0x0220D1B3" {
+    // funct3=101, funct7=0000001 (distinct from SRL/SRA which use 0000000/0100000)
+    const i = decode(0x0220D1B3);
+    try std.testing.expectEqual(Op.divu, i.op);
+}
+
+test "decode REM x3, x1, x2 → 0x0220E1B3" {
+    // funct3=110
+    const i = decode(0x0220E1B3);
+    try std.testing.expectEqual(Op.rem, i.op);
+}
+
+test "decode REMU x3, x1, x2 → 0x0220F1B3" {
+    // funct3=111
+    const i = decode(0x0220F1B3);
+    try std.testing.expectEqual(Op.remu, i.op);
+}
+
+test "unknown funct7 on opcode 0x33 still decodes to illegal" {
+    // funct7=0b1111111 (neither 0, 0x20, nor 0x01), funct3=000
+    const i = decode(0xFE2081B3);
+    try std.testing.expectEqual(Op.illegal, i.op);
+}
+
+test "decode FENCE.I → 0x0000100F" {
+    // opcode=0001111, rd=0, funct3=001, rs1=0, imm=0
+    const i = decode(0x0000100F);
+    try std.testing.expectEqual(Op.fence_i, i.op);
+}
+
+test "FENCE (funct3=0) still decodes to fence, not fence_i" {
+    // opcode=0001111, rd=0, funct3=000, rs1=0, imm=0
+    const i = decode(0x0000000F);
+    try std.testing.expectEqual(Op.fence, i.op);
+}
+
+test "decode LR.W x3, (x1) → 0x1000A1AF" {
+    // opcode=0101111, rd=00011, funct3=010, rs1=00001, rs2=00000,
+    // aq=0, rl=0, funct5=00010 → 0x1000A1AF
+    const i = decode(0x1000A1AF);
+    try std.testing.expectEqual(Op.lr_w, i.op);
+    try std.testing.expectEqual(@as(u5, 3), i.rd);
+    try std.testing.expectEqual(@as(u5, 1), i.rs1);
+}
+
+test "decode SC.W x3, x2, (x1) → 0x1820A1AF" {
+    // funct5=00011, rs2=00010
+    const i = decode(0x1820A1AF);
+    try std.testing.expectEqual(Op.sc_w, i.op);
+    try std.testing.expectEqual(@as(u5, 3), i.rd);
+    try std.testing.expectEqual(@as(u5, 1), i.rs1);
+    try std.testing.expectEqual(@as(u5, 2), i.rs2);
+}
+
+test "decode AMOSWAP.W x3, x2, (x1) → 0x0820A1AF" {
+    // funct5=00001
+    const i = decode(0x0820A1AF);
+    try std.testing.expectEqual(Op.amoswap_w, i.op);
+}
+
+test "decode AMOADD.W x3, x2, (x1) → 0x0020A1AF" {
+    // funct5=00000
+    const i = decode(0x0020A1AF);
+    try std.testing.expectEqual(Op.amoadd_w, i.op);
+}
+
+test "decode AMOXOR.W → funct5=00100" {
+    const i = decode(0x2020A1AF);
+    try std.testing.expectEqual(Op.amoxor_w, i.op);
+}
+
+test "decode AMOAND.W → funct5=01100" {
+    const i = decode(0x6020A1AF);
+    try std.testing.expectEqual(Op.amoand_w, i.op);
+}
+
+test "decode AMOOR.W → funct5=01000" {
+    const i = decode(0x4020A1AF);
+    try std.testing.expectEqual(Op.amoor_w, i.op);
+}
+
+test "decode AMOMIN.W → funct5=10000" {
+    const i = decode(0x8020A1AF);
+    try std.testing.expectEqual(Op.amomin_w, i.op);
+}
+
+test "decode AMOMAX.W → funct5=10100" {
+    const i = decode(0xA020A1AF);
+    try std.testing.expectEqual(Op.amomax_w, i.op);
+}
+
+test "decode AMOMINU.W → funct5=11000" {
+    const i = decode(0xC020A1AF);
+    try std.testing.expectEqual(Op.amominu_w, i.op);
+}
+
+test "decode AMOMAXU.W → funct5=11100" {
+    const i = decode(0xE020A1AF);
+    try std.testing.expectEqual(Op.amomaxu_w, i.op);
+}
+
+test "AMO with funct3 != 010 decodes to illegal (no D-width in RV32A)" {
+    // Same as amoswap.w but funct3=011 → illegal
+    const i = decode(0x0820B1AF);
+    try std.testing.expectEqual(Op.illegal, i.op);
+}
+
+test "AMO with unknown funct5 decodes to illegal" {
+    // funct5=11111 (not allocated)
+    const i = decode(0xF820A1AF);
+    try std.testing.expectEqual(Op.illegal, i.op);
+}
+
+test "aq/rl bits in AMO are decoded but don't change Op (amoswap.w with aq=1,rl=1)" {
+    // Same as amoswap.w test but with aq=1, rl=1 → bits 26,25 set.
+    // funct5=00001, aq=1, rl=1 → bits 31..25 = 0000_1_1_1 = 0x07 → 0x0E
+    // Full word: 0x0E20A1AF
+    const i = decode(0x0E20A1AF);
+    try std.testing.expectEqual(Op.amoswap_w, i.op);
 }

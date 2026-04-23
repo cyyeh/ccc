@@ -18,12 +18,17 @@ pub const Cpu = struct {
     regs: [32]u32,
     pc: u32,
     memory: *Memory,
+    // LR/SC reservation: address last reserved by lr.w, or null.
+    // Set by lr.w, cleared by sc.w (on success or failure). Plan 1.C
+    // will additionally clear this on trap entry; Plan 1.B has no traps.
+    reservation: ?u32,
 
     pub fn init(memory: *Memory, entry: u32) Cpu {
         return .{
             .regs = [_]u32{0} ** 32,
             .pc = entry,
             .memory = memory,
+            .reservation = null,
         };
     }
 
@@ -120,4 +125,10 @@ test "Cpu.run propagates UnsupportedInstruction" {
 
     var cpu = Cpu.init(&mem, RAM_BASE);
     try std.testing.expectError(StepError.UnsupportedInstruction, cpu.run());
+}
+
+test "Cpu.init sets reservation to null" {
+    var dummy_mem: Memory = undefined;
+    const cpu = Cpu.init(&dummy_mem, 0);
+    try std.testing.expect(cpu.reservation == null);
 }
