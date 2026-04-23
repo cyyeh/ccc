@@ -19,7 +19,6 @@ our own terminal browser, with every layer written ourselves:
 
 | # | Phase | Rough effort | Demo |
 |---|-------|--------------|------|
-| 0 | Toolchain & Zig warm-up | 2–4 weeks | asm hello world runs in QEMU |
 | 1 | RISC-V CPU emulator | 2–4 months | `ccc hello.elf` prints `hello world` |
 | 2 | Bare-metal kernel | 2–3 months | user program calls `write()`, kernel prints it |
 | 3 | Multi-process OS + FS + shell | 3–4 months | boot to a shell, run our own programs |
