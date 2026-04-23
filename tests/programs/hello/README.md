@@ -1,23 +1,53 @@
-# Hand-crafted hello world
+# hello — the Phase 1 "hello world" demos
 
-`encode_hello.zig` is a Zig program that emits a raw RISC-V binary at
-`hello.bin`.
+Two flavours of hello-world live in this directory:
 
-Build the binary and run the end-to-end demo:
+## 1. `hello.bin` — hand-crafted raw binary (Plan 1.A)
 
-    zig build hello
-    zig build run -- --raw 0x80000000 zig-out/hello.bin
+`encode_hello.zig` is a host Zig program that emits a raw RV32I binary
+implementing a minimal boot loop: UART-write each byte of `"hello world\n"`,
+then write to the halt MMIO. No privilege switches, no ELF, no monitor.
 
-The binary contains a tiny RV32I program followed by the string
-`hello world\n\0` at offset `0x100`. The program loops: read a byte from
-the string, write it to UART, advance the pointer; when it hits `\0` it
-writes to the halt MMIO and the emulator exits.
+```
+zig build hello           # produces zig-out/bin/hello.bin
+zig build e2e             # runs it through ccc and asserts output
+```
 
-The automated end-to-end test runs the built binary through the emulator
-and asserts the UART output equals `hello world\n`:
+This is the Plan 1.A end-to-end test. It exercises RV32I + UART + halt MMIO
+and nothing else.
 
-    zig build e2e
+## 2. `hello.elf` — cross-compiled Zig + M-mode monitor (Plan 1.D)
 
-This is throwaway scaffolding for Plan 1.A. Plan 1.D replaces it with a
-proper Zig-cross-compiled hello world that runs in U-mode through the
-M-mode monitor.
+The Phase 1 §Definition of done demo. Exercises the whole emulator:
+
+- ELF32 loader (Plan 1.C): parses `hello.elf` and sets `PC ← e_entry`.
+- `monitor.S`: M-mode entry (`_start`) sets `sp`, installs `mtvec`, clears
+  `mstatus.MPP` (so post-mret privilege = U), sets `mepc = u_entry`, `mret`s.
+- `hello.zig`: U-mode naked function does `write(1, msg, 12)` via ecall
+  (a7=64), then `exit(0)` via ecall (a7=93).
+- `monitor.S` trap handler: catches both ecalls. `sys_write` copies bytes
+  from `*a1` to UART THR. `sys_exit` writes to the halt MMIO.
+- Halt MMIO: emulator exits with code `a0`.
+
+Build & run:
+
+```
+zig build hello-elf       # produces zig-out/bin/hello.elf
+zig build e2e-hello-elf   # runs it through ccc and asserts "hello world\n"
+```
+
+Run manually with tracing:
+
+```
+./zig-out/bin/ccc --trace zig-out/bin/hello.elf 2>trace.log
+head -20 trace.log
+```
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `encode_hello.zig` | Plan 1.A host encoder → hello.bin |
+| `monitor.S` | Plan 1.D M-mode trap monitor |
+| `hello.zig` | Plan 1.D U-mode payload (naked, inline-asm ecalls) |
+| `linker.ld` | Plan 1.D linker script (places .text.init at 0x80000000) |
