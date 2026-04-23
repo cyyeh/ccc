@@ -396,7 +396,7 @@ Options:
 
 - **Zig version churn.** Zig is pre-1.0 and breaking changes happen
   between minor versions. Mitigation: pin Zig version in
-  `build.zig.zon`. Target Zig 0.14.x at project start; re-evaluate at
+  `build.zig.zon`. Target Zig 0.16.x at project start; re-evaluate at
   each phase boundary.
 - **riscv-tests build dependencies.** The official suite typically
   expects `riscv-gnu-toolchain`, which is awkward to install on Mac.
