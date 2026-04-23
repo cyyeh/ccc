@@ -12,6 +12,7 @@ comptime {
     _ = @import("devices/uart.zig");
     _ = @import("decoder.zig");
     _ = @import("execute.zig");
+    _ = @import("csr.zig");
 }
 
 const Args = struct {

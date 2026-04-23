@@ -27,6 +27,20 @@ pub const PrivilegeMode = enum(u2) {
     M = 0b11,
 };
 
+/// Writable CSR storage. Read-only CSRs (misa, mhartid, mvendorid,
+/// marchid, mimpid) live as constants in csr.zig — they have no storage.
+/// Field semantics live in csr.zig's mask constants and its csrRead /
+/// csrWrite functions; this struct is just the bytes.
+pub const CsrFile = struct {
+    mstatus: u32 = 0,
+    mtvec: u32 = 0,
+    mepc: u32 = 0,
+    mcause: u32 = 0,
+    mtval: u32 = 0,
+    mie: u32 = 0,
+    mip: u32 = 0,
+};
+
 pub const Cpu = struct {
     regs: [32]u32,
     pc: u32,
@@ -40,6 +54,7 @@ pub const Cpu = struct {
     // reserved_s/reserved_h variants; they exist only to round-trip the
     // mstatus.MPP bit field losslessly (see trap.zig).
     privilege: PrivilegeMode,
+    csr: CsrFile,
 
     pub fn init(memory: *Memory, entry: u32) Cpu {
         return .{
@@ -48,6 +63,7 @@ pub const Cpu = struct {
             .memory = memory,
             .reservation = null,
             .privilege = .M,
+            .csr = .{},
         };
     }
 
