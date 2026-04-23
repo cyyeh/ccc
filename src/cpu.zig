@@ -37,6 +37,16 @@ pub const CsrFile = struct {
     mtval: u32 = 0,
     mie: u32 = 0,
     mip: u32 = 0,
+    // mscratch (0x340): M-mode scratch register. Software-writable, no side
+    // effects, no hardware reads. Included in Plan 1.D so rv32mi-csr passes;
+    // the spec's CSR list didn't call it out but the riscv-tests suite
+    // assumes it exists.
+    mscratch: u32 = 0,
+    // mcounteren (0x306): controls U-mode access to time/cycle/instret.
+    // Phase 1 doesn't implement those counters, so this register is
+    // software-visible state only — writes stored, reads returned. Added
+    // for rv32mi-csr conformance.
+    mcounteren: u32 = 0,
 };
 
 pub const Cpu = struct {

@@ -6,8 +6,16 @@ const PrivilegeMode = cpu_mod.PrivilegeMode;
 // Writable (software-visible) CSR addresses we implement in Phase 1.
 pub const CSR_MSTATUS: u12 = 0x300;
 pub const CSR_MISA: u12 = 0x301;
+// medeleg / mideleg: M-mode exception/interrupt delegation to S-mode.
+// Phase 1 has no S-mode, so delegation is meaningless. We implement them
+// as read-as-zero / write-ignored so code that touches them (rv32mi tests,
+// future kernel init) doesn't trap.
+pub const CSR_MEDELEG: u12 = 0x302;
+pub const CSR_MIDELEG: u12 = 0x303;
 pub const CSR_MIE: u12 = 0x304;
 pub const CSR_MTVEC: u12 = 0x305;
+pub const CSR_MCOUNTEREN: u12 = 0x306;
+pub const CSR_MSCRATCH: u12 = 0x340;
 pub const CSR_MEPC: u12 = 0x341;
 pub const CSR_MCAUSE: u12 = 0x342;
 pub const CSR_MTVAL: u12 = 0x343;
@@ -57,8 +65,11 @@ pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
     return switch (addr) {
         CSR_MSTATUS => cpu.csr.mstatus,
         CSR_MISA => MISA_VALUE,
+        CSR_MEDELEG, CSR_MIDELEG => 0,
         CSR_MIE => cpu.csr.mie,
         CSR_MTVEC => cpu.csr.mtvec,
+        CSR_MCOUNTEREN => cpu.csr.mcounteren,
+        CSR_MSCRATCH => cpu.csr.mscratch,
         CSR_MEPC => cpu.csr.mepc & MEPC_ALIGN_MASK,
         CSR_MCAUSE => cpu.csr.mcause,
         CSR_MTVAL => cpu.csr.mtval,
@@ -73,9 +84,29 @@ pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
 pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
     if (cpu.privilege != .M) return CsrError.IllegalInstruction;
     switch (addr) {
-        CSR_MSTATUS => cpu.csr.mstatus = value & MSTATUS_WRITABLE,
+        CSR_MSTATUS => {
+            var ms = value & MSTATUS_WRITABLE;
+            // MPP is WARL: Phase 1 only supports U (00) and M (11). Normalize
+            // writes of 01/10 (would-be S/H modes) to 00 — otherwise rv32mi
+            // tests detect "S-mode present" and take code paths we can't
+            // handle in Phase 1.
+            const mpp_bits = (ms & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
+            if (mpp_bits != 0b00 and mpp_bits != 0b11) {
+                ms &= ~MSTATUS_MPP_MASK;
+            }
+            cpu.csr.mstatus = ms;
+        },
+        // medeleg / mideleg: writes ignored (we report no S-mode, so
+        // delegation has no effect). Reads return 0.
+        CSR_MEDELEG, CSR_MIDELEG => {},
         CSR_MIE => cpu.csr.mie = value,
-        CSR_MTVEC => cpu.csr.mtvec = value,
+        // mtvec.MODE is WARL; Phase 1 only supports direct (MODE=00). Force
+        // the low two bits to 0 on write — the rv32mi-illegal test probes the
+        // MODE bit to decide whether to busy-wait for a vectored interrupt,
+        // and vectored support without interrupt delivery would deadlock it.
+        CSR_MTVEC => cpu.csr.mtvec = value & MTVEC_BASE_MASK,
+        CSR_MCOUNTEREN => cpu.csr.mcounteren = value,
+        CSR_MSCRATCH => cpu.csr.mscratch = value,
         CSR_MEPC => cpu.csr.mepc = value & MEPC_ALIGN_MASK,
         CSR_MCAUSE => cpu.csr.mcause = value,
         CSR_MTVAL => cpu.csr.mtval = value,
@@ -131,6 +162,45 @@ test "mepc forces 4-byte alignment on read and write" {
     var cpu = Cpu.init(&dummy_mem, 0);
     try csrWrite(&cpu, CSR_MEPC, 0x8000_1003); // unaligned low bits
     try std.testing.expectEqual(@as(u32, 0x8000_1000), try csrRead(&cpu, CSR_MEPC));
+}
+
+test "mstatus MPP of 01 (would-be S) normalizes to 00 (U) — WARL" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, @as(u32, 0b01) << MSTATUS_MPP_SHIFT);
+    const mpp_bits = (cpu.csr.mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
+    try std.testing.expectEqual(@as(u32, 0b00), mpp_bits);
+}
+
+test "mstatus MPP of 11 (M) round-trips" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, @as(u32, 0b11) << MSTATUS_MPP_SHIFT);
+    const mpp_bits = (cpu.csr.mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
+    try std.testing.expectEqual(@as(u32, 0b11), mpp_bits);
+}
+
+test "mtvec MODE bits forced to 0 on write — WARL, vectored unsupported" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MTVEC, 0x8000_0401); // BASE=0x80000400, MODE=01 (vectored)
+    try std.testing.expectEqual(@as(u32, 0x8000_0400), try csrRead(&cpu, CSR_MTVEC));
+}
+
+test "medeleg / mideleg read as zero and swallow writes (no trap)" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MEDELEG, 0xFFFF_FFFF);
+    try csrWrite(&cpu, CSR_MIDELEG, 0xFFFF_FFFF);
+    try std.testing.expectEqual(@as(u32, 0), try csrRead(&cpu, CSR_MEDELEG));
+    try std.testing.expectEqual(@as(u32, 0), try csrRead(&cpu, CSR_MIDELEG));
+}
+
+test "mscratch round-trips full 32 bits" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSCRATCH, 0xDEAD_BEEF);
+    try std.testing.expectEqual(@as(u32, 0xDEAD_BEEF), try csrRead(&cpu, CSR_MSCRATCH));
 }
 
 test "mcause round-trips full 32 bits (interrupt high bit + cause)" {

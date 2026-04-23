@@ -41,14 +41,26 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.pc +%= 4;
         },
         .jal => {
-            const link = cpu.pc +% 4;
             const target = cpu.pc +% @as(u32, @bitCast(instr.imm));
+            // RV32 without C: instruction targets must be 4-byte aligned.
+            // Trap on the JAL itself (mepc stays at pc), NOT on the target —
+            // otherwise rd would already be written. riscv-tests rv32mi-ma_fetch
+            // asserts `bnez t1, fail` right after a trapped JAL/JALR.
+            if (target & 3 != 0) {
+                trap.enter(.instr_addr_misaligned, target, cpu);
+                return;
+            }
+            const link = cpu.pc +% 4;
             cpu.writeReg(instr.rd, link);
             cpu.pc = target;
         },
         .jalr => {
-            const link = cpu.pc +% 4;
             const target = (cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm))) & ~@as(u32, 1);
+            if (target & 3 != 0) {
+                trap.enter(.instr_addr_misaligned, target, cpu);
+                return;
+            }
+            const link = cpu.pc +% 4;
             cpu.writeReg(instr.rd, link);
             cpu.pc = target;
         },
@@ -65,7 +77,12 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 else => unreachable,
             };
             if (taken) {
-                cpu.pc = cpu.pc +% @as(u32, @bitCast(instr.imm));
+                const target = cpu.pc +% @as(u32, @bitCast(instr.imm));
+                if (target & 3 != 0) {
+                    trap.enter(.instr_addr_misaligned, target, cpu);
+                    return;
+                }
+                cpu.pc = target;
             } else {
                 cpu.pc +%= 4;
             }

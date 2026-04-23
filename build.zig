@@ -112,22 +112,7 @@ pub fn build(b: *std.Build) void {
     const e2e_trap_step = b.step("e2e-trap", "Run the end-to-end trap/privilege demo test");
     e2e_trap_step.dependOn(&e2e_trap_run.step);
 
-    // === Minimal ELF fixture (Plan 1.C Task 11) ===
-    const min_elf_encoder = b.addExecutable(.{
-        .name = "encode_minimal_elf",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/fixtures/encode_minimal_elf.zig"),
-            .target = b.graph.host,
-            .optimize = .Debug,
-        }),
-    });
-    const min_elf_run = b.addRunArtifact(min_elf_encoder);
-    const min_elf_bin = min_elf_run.addOutputFileArg("minimal.elf");
-    const install_min_elf = b.addInstallFile(min_elf_bin, "../tests/fixtures/minimal.elf");
-    const fixture_step = b.step("fixtures", "Build test-only fixture ELF");
-    fixture_step.dependOn(&install_min_elf.step);
-
-    // === riscv-tests helpers (Plan 1.C Task 14-16) ===
+    // === Shared RV32 cross-compile target (hello.elf + riscv-tests) ===
     // Use generic_rv32 (explicit CPU model) so compressed (C) is OFF.
     // baseline_rv32 silently includes C, which breaks us: our decoder is
     // strictly 32-bit-wide. Plus M + A features.
@@ -144,6 +129,76 @@ pub fn build(b: *std.Build) void {
             break :blk set;
         },
     });
+
+    // === Zig-compiled hello.elf (Plan 1.D — Phase 1 §Definition of done) ===
+    // Two-object link: monitor.S provides _start + trap_vector (M-mode);
+    // hello.zig provides u_entry + msg (U-mode). linker.ld places .text.init
+    // at 0x80000000 and defines _stack_top.
+    const hello_monitor_obj = b.addObject(.{
+        .name = "hello-monitor",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    hello_monitor_obj.root_module.addAssemblyFile(b.path("tests/programs/hello/monitor.S"));
+
+    const hello_umode_obj = b.addObject(.{
+        .name = "hello-umode",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/hello/hello.zig"),
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            // Keep the Zig compiler from stripping u_entry / msg as "unused".
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const hello_elf = b.addExecutable(.{
+        .name = "hello.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    hello_elf.root_module.addObject(hello_monitor_obj);
+    hello_elf.root_module.addObject(hello_umode_obj);
+    hello_elf.setLinkerScript(b.path("tests/programs/hello/linker.ld"));
+    hello_elf.entry = .{ .symbol_name = "_start" };
+
+    const install_hello_elf = b.addInstallArtifact(hello_elf, .{});
+    const hello_elf_step = b.step("hello-elf", "Build the Zig-compiled hello.elf (Phase 1 §Definition of done)");
+    hello_elf_step.dependOn(&install_hello_elf.step);
+
+    // End-to-end: run our emulator against hello.elf and assert UART output.
+    const e2e_hello_elf_run = b.addRunArtifact(exe);
+    e2e_hello_elf_run.addFileArg(hello_elf.getEmittedBin());
+    e2e_hello_elf_run.expectStdOutEqual("hello world\n");
+
+    const e2e_hello_elf_step = b.step("e2e-hello-elf", "Run the Phase 1 §Definition of done demo (ccc hello.elf)");
+    e2e_hello_elf_step.dependOn(&e2e_hello_elf_run.step);
+
+    // === Minimal ELF fixture (Plan 1.C Task 11) ===
+    const min_elf_encoder = b.addExecutable(.{
+        .name = "encode_minimal_elf",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fixtures/encode_minimal_elf.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const min_elf_run = b.addRunArtifact(min_elf_encoder);
+    const min_elf_bin = min_elf_run.addOutputFileArg("minimal.elf");
+    const install_min_elf = b.addInstallFile(min_elf_bin, "../tests/fixtures/minimal.elf");
+    const fixture_step = b.step("fixtures", "Build test-only fixture ELF");
+    fixture_step.dependOn(&install_min_elf.step);
+
+    // === riscv-tests helpers (Plan 1.C Task 14-16) ===
 
     const RiscvTest = struct {
         family: []const u8,
@@ -169,9 +224,29 @@ pub fn build(b: *std.Build) void {
                 }),
             });
             obj.root_module.addAssemblyFile(bb.path(src_path));
+            // Shim must come first: it overrides upstream riscv_test.h
+            // to drop `.weak` handler declarations that LLVM's assembler
+            // rejects when rv32mi tests later `.global` the same symbols.
+            obj.root_module.addIncludePath(bb.path("tests/riscv-tests-shim"));
             obj.root_module.addIncludePath(bb.path("tests/riscv-tests/env/p"));
             obj.root_module.addIncludePath(bb.path("tests/riscv-tests/env"));
             obj.root_module.addIncludePath(bb.path("tests/riscv-tests/isa/macros/scalar"));
+
+            // Companion object: weak refs for mtvec_handler/stvec_handler in a
+            // separate assembly unit. Shim removed them from riscv_test.h to
+            // keep rv32mi clean; rv32ui/um/ua still reference them via the
+            // fall-through trap_vector in RVTEST_CODE_BEGIN and need a weak
+            // undef so ld.lld resolves the unused symbol to 0. See
+            // tests/riscv-tests-shim/weak_handlers.S for the full rationale.
+            const weak_obj = bb.addObject(.{
+                .name = bb.fmt("{s}-{s}-weak", .{ test_def.family, test_def.name }),
+                .root_module = bb.createModule(.{
+                    .root_source_file = null,
+                    .target = rtarget,
+                    .optimize = .Debug,
+                }),
+            });
+            weak_obj.root_module.addAssemblyFile(bb.path("tests/riscv-tests-shim/weak_handlers.S"));
 
             const exe_tst = bb.addExecutable(.{
                 .name = bb.fmt("{s}-{s}-elf", .{ test_def.family, test_def.name }),
@@ -186,6 +261,7 @@ pub fn build(b: *std.Build) void {
                 }),
             });
             exe_tst.root_module.addObject(obj);
+            exe_tst.root_module.addObject(weak_obj);
             exe_tst.setLinkerScript(link_script);
             exe_tst.root_module.single_threaded = true;
 
@@ -199,24 +275,32 @@ pub fn build(b: *std.Build) void {
     const rv32ui_tests = [_][]const u8{ "add", "addi", "and", "andi", "auipc", "beq", "bge", "bgeu", "blt", "bltu", "bne", "fence_i", "jal", "jalr", "lb", "lbu", "lh", "lhu", "lui", "lw", "or", "ori", "sb", "sh", "simple", "sll", "slli", "slt", "slti", "sltiu", "sltu", "sra", "srai", "srl", "srli", "sub", "sw", "xor", "xori" };
     const rv32um_tests = [_][]const u8{ "mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu" };
     const rv32ua_tests = [_][]const u8{ "amoadd_w", "amoand_w", "amomax_w", "amomaxu_w", "amomin_w", "amominu_w", "amoor_w", "amoswap_w", "amoxor_w", "lrsc" };
-    // rv32mi is deferred to Plan 1.D / Phase 2. Every upstream rv32mi-p-* test
-    // uses a `.weak mtvec_handler` declaration in env/p/riscv_test.h's
-    // RVTEST_CODE_BEGIN macro, then redeclares it `.global` later in the test
-    // body. Zig's LLVM-based assembler rejects the weak→global binding change
-    // (GNU assembler accepts it). Fixing this requires either shimming the
-    // upstream header or patching the test sources; both are out of Plan 1.C
-    // scope. The trap model is still exercised end-to-end via the hand-crafted
-    // e2e-trap demo (tests/programs/trap_demo/) — what we lose here is
-    // breadth of conformance, not the trap path itself.
-    const _rv32mi_tests_deferred = [_][]const u8{ "csr", "illegal", "ma_addr", "ma_fetch", "mcsr", "sbreak", "scall", "shamt", "breakpoint" };
-    _ = _rv32mi_tests_deferred;
+    // rv32mi-p: machine-mode CSRs, traps, illegal-instruction, misaligned-addr.
+    // Works via tests/riscv-tests-shim/ (Plan 1.D Task 1): drops the upstream
+    // `.weak` handler declarations that LLVM's assembler rejects when rv32mi
+    // tests later `.global` the same symbols, and provides weak-absolute
+    // fallbacks (value 0) so rv32ui/um/ua still link.
+    //
+    // Excluded from Phase 1 (behaviors not modeled):
+    //   - lh-misaligned/lw-misaligned/sh-misaligned/sw-misaligned: Phase 1
+    //     traps on all misaligned accesses; upstream tests assert hardware
+    //     handles them transparently. Revisit in Phase 2 if a workload needs it.
+    //   - instret_overflow/zicntr: require mcycle/minstret hardware performance
+    //     counters (Zicntr). Phase 1 doesn't implement Zicntr.
+    //   - pmpaddr: requires Physical Memory Protection. Phase 1 has flat
+    //     physical addressing.
+    //   - breakpoint: requires the Debug/Trigger extension (tcontrol, tselect,
+    //     tdata1/2). Phase 1 has no trigger hardware; the test's escape
+    //     hatches (csrr tselect → bne → pass) require tselect to exist.
+    const rv32mi_tests = [_][]const u8{ "csr", "illegal", "ma_addr", "ma_fetch", "mcsr", "sbreak", "scall", "shamt" };
 
-    const rv_step = b.step("riscv-tests", "Run the riscv-tests suite (rv32ui/um/ua)");
+    const rv_step = b.step("riscv-tests", "Run the riscv-tests suite (rv32ui/um/ua/mi)");
 
     const all_families = [_]struct { family: []const u8, list: []const []const u8 }{
         .{ .family = "rv32ui", .list = &rv32ui_tests },
         .{ .family = "rv32um", .list = &rv32um_tests },
         .{ .family = "rv32ua", .list = &rv32ua_tests },
+        .{ .family = "rv32mi", .list = &rv32mi_tests },
     };
 
     for (all_families) |fam| {
