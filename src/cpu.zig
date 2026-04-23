@@ -53,6 +53,10 @@ pub const Cpu = struct {
     // mstatus.MPP bit field losslessly (see trap.zig).
     privilege: PrivilegeMode,
     csr: CsrFile,
+    // If true, an unhandled trap prints a dump and halts instead of
+    // entering the trap handler. Wired by --halt-on-trap in main.zig.
+    halt_on_trap: bool = false,
+    // trace_writer lands in Task 13
 
     pub fn init(memory: *Memory, entry: u32) Cpu {
         return .{
@@ -62,6 +66,7 @@ pub const Cpu = struct {
             .reservation = null,
             .privilege = .M,
             .csr = .{},
+            .halt_on_trap = false,
         };
     }
 
