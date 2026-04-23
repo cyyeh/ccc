@@ -3,6 +3,7 @@ const Io = std.Io;
 
 comptime {
     _ = @import("cpu.zig");
+    _ = @import("memory.zig");
 }
 
 pub fn main(init: std.process.Init) !void {
