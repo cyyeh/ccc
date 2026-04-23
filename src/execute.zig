@@ -198,12 +198,12 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             const rs1_val = cpu.readReg(instr.rs1);
             const do_read = (instr.op != .csrrw) or (instr.rd != 0);
             const do_write = (instr.op == .csrrw) or (instr.rs1 != 0);
-            const old: u32 = if (do_read)
-                csr_mod.csrRead(cpu, instr.csr) catch |e| switch (e) {
-                    error.IllegalInstruction => return ExecuteError.FatalTrap,
-                }
-            else
-                0;
+            const old: u32 = if (do_read) blk: {
+                break :blk csr_mod.csrRead(cpu, instr.csr) catch {
+                    trap.enter(.illegal_instruction, instr.raw, cpu);
+                    return;
+                };
+            } else 0;
             if (do_write) {
                 const new: u32 = switch (instr.op) {
                     .csrrw => rs1_val,
@@ -211,8 +211,9 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     .csrrc => old & ~rs1_val,
                     else => unreachable,
                 };
-                csr_mod.csrWrite(cpu, instr.csr, new) catch |e| switch (e) {
-                    error.IllegalInstruction => return ExecuteError.FatalTrap,
+                csr_mod.csrWrite(cpu, instr.csr, new) catch {
+                    trap.enter(.illegal_instruction, instr.raw, cpu);
+                    return;
                 };
             }
             if (instr.rd != 0) cpu.writeReg(instr.rd, old);
@@ -223,12 +224,12 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             const uimm: u32 = instr.rs1;
             const do_read = (instr.op != .csrrwi) or (instr.rd != 0);
             const do_write = (instr.op == .csrrwi) or (uimm != 0);
-            const old: u32 = if (do_read)
-                csr_mod.csrRead(cpu, instr.csr) catch |e| switch (e) {
-                    error.IllegalInstruction => return ExecuteError.FatalTrap,
-                }
-            else
-                0;
+            const old: u32 = if (do_read) blk: {
+                break :blk csr_mod.csrRead(cpu, instr.csr) catch {
+                    trap.enter(.illegal_instruction, instr.raw, cpu);
+                    return;
+                };
+            } else 0;
             if (do_write) {
                 const new: u32 = switch (instr.op) {
                     .csrrwi => uimm,
@@ -236,8 +237,9 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     .csrrci => old & ~uimm,
                     else => unreachable,
                 };
-                csr_mod.csrWrite(cpu, instr.csr, new) catch |e| switch (e) {
-                    error.IllegalInstruction => return ExecuteError.FatalTrap,
+                csr_mod.csrWrite(cpu, instr.csr, new) catch {
+                    trap.enter(.illegal_instruction, instr.raw, cpu);
+                    return;
                 };
             }
             if (instr.rd != 0) cpu.writeReg(instr.rd, old);
@@ -368,7 +370,9 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.writeReg(instr.rd, old);
             cpu.pc +%= 4;
         },
-        .illegal => return ExecuteError.FatalTrap,
+        .illegal => {
+            trap.enter(.illegal_instruction, instr.raw, cpu);
+        },
     }
 }
 
@@ -1140,17 +1144,36 @@ test "CSRRCI with nonzero uimm clears bits" {
     try std.testing.expectEqual(@as(u32, 0x0000_0FF0), rig.cpu.csr.mie);
 }
 
-test "CSR access in U-mode returns FatalTrap (pre-Task-7 interim)" {
-    // NOTE: In Task 7 this test's expectation flips from "error propagation"
-    // to "traps and continues". For now we assert the pre-trap contract.
+test "illegal opcode traps with cause=illegal_instruction, mtval=raw word" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .illegal, .raw = 0xFFFFFFFF }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), rig.cpu.csr.mtval);
+}
+
+test "U-mode CSR access traps with cause=illegal_instruction" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
     rig.cpu.privilege = .U;
-    try std.testing.expectError(
-        ExecuteError.FatalTrap,
-        dispatch(.{ .op = .csrrw, .rd = 1, .rs1 = 2, .csr = 0x300, .raw = 0 }, &rig.cpu),
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(
+        .{ .op = .csrrw, .rd = 1, .rs1 = 2, .csr = 0x300, .raw = 0xDEADBEEF },
+        &rig.cpu,
     );
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(@as(u32, 0xDEADBEEF), rig.cpu.csr.mtval);
 }
 
 test "AMO on misaligned address traps with cause=store_addr_misaligned" {
