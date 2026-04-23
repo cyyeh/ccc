@@ -12,6 +12,11 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    // Expose tests/fixtures/minimal.elf as an importable module so that
+    // src/elf.zig's test can embed it without escaping src/'s package root.
+    exe.root_module.addAnonymousImport("minimal_elf_fixture", .{
+        .root_source_file = b.path("tests/fixtures/minimal_elf.zig"),
+    });
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -82,4 +87,148 @@ pub fn build(b: *std.Build) void {
 
     const e2e_mul_step = b.step("e2e-mul", "Run the end-to-end RV32IMA demo test");
     e2e_mul_step.dependOn(&e2e_mul_run.step);
+
+    // === Hand-crafted trap/privilege demo (Plan 1.C Task 17) ===
+    const trap_demo_encoder = b.addExecutable(.{
+        .name = "encode_trap_demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/trap_demo/encode_trap_demo.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const trap_demo_run = b.addRunArtifact(trap_demo_encoder);
+    const trap_demo_bin = trap_demo_run.addOutputFileArg("trap_demo.bin");
+    const install_trap_demo = b.addInstallFile(trap_demo_bin, "trap_demo.bin");
+
+    const trap_demo_step = b.step("trap-demo", "Build the hand-crafted trap/privilege demo binary");
+    trap_demo_step.dependOn(&install_trap_demo.step);
+
+    const e2e_trap_run = b.addRunArtifact(exe);
+    e2e_trap_run.addArgs(&.{ "--raw", "0x80000000" });
+    e2e_trap_run.addFileArg(trap_demo_bin);
+    e2e_trap_run.expectStdOutEqual("trap ok\n");
+
+    const e2e_trap_step = b.step("e2e-trap", "Run the end-to-end trap/privilege demo test");
+    e2e_trap_step.dependOn(&e2e_trap_run.step);
+
+    // === Minimal ELF fixture (Plan 1.C Task 11) ===
+    const min_elf_encoder = b.addExecutable(.{
+        .name = "encode_minimal_elf",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fixtures/encode_minimal_elf.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const min_elf_run = b.addRunArtifact(min_elf_encoder);
+    const min_elf_bin = min_elf_run.addOutputFileArg("minimal.elf");
+    const install_min_elf = b.addInstallFile(min_elf_bin, "../tests/fixtures/minimal.elf");
+    const fixture_step = b.step("fixtures", "Build test-only fixture ELF");
+    fixture_step.dependOn(&install_min_elf.step);
+
+    // === riscv-tests helpers (Plan 1.C Task 14-16) ===
+    // Use generic_rv32 (explicit CPU model) so compressed (C) is OFF.
+    // baseline_rv32 silently includes C, which breaks us: our decoder is
+    // strictly 32-bit-wide. Plus M + A features.
+    const rv_target = b.resolveTargetQuery(.{
+        .cpu_arch = .riscv32,
+        .os_tag = .freestanding,
+        .abi = .none,
+        .cpu_model = .{ .explicit = &std.Target.riscv.cpu.generic_rv32 },
+        .cpu_features_add = blk: {
+            const features = std.Target.riscv.Feature;
+            var set = std.Target.Cpu.Feature.Set.empty;
+            set.addFeature(@intFromEnum(features.m));
+            set.addFeature(@intFromEnum(features.a));
+            break :blk set;
+        },
+    });
+
+    const RiscvTest = struct {
+        family: []const u8,
+        name: []const u8,
+    };
+
+    const rv_link_script = b.path("tests/riscv-tests-p.ld");
+
+    const riscvTestStep = struct {
+        fn call(
+            bb: *std.Build,
+            rtarget: std.Build.ResolvedTarget,
+            link_script: std.Build.LazyPath,
+            test_def: RiscvTest,
+        ) struct { bin: std.Build.LazyPath, install: *std.Build.Step.InstallArtifact } {
+            const src_path = bb.fmt("tests/riscv-tests/isa/{s}/{s}.S", .{ test_def.family, test_def.name });
+            const obj = bb.addObject(.{
+                .name = bb.fmt("{s}-{s}", .{ test_def.family, test_def.name }),
+                .root_module = bb.createModule(.{
+                    .root_source_file = null,
+                    .target = rtarget,
+                    .optimize = .Debug,
+                }),
+            });
+            obj.root_module.addAssemblyFile(bb.path(src_path));
+            obj.root_module.addIncludePath(bb.path("tests/riscv-tests/env/p"));
+            obj.root_module.addIncludePath(bb.path("tests/riscv-tests/env"));
+            obj.root_module.addIncludePath(bb.path("tests/riscv-tests/isa/macros/scalar"));
+
+            const exe_tst = bb.addExecutable(.{
+                .name = bb.fmt("{s}-{s}-elf", .{ test_def.family, test_def.name }),
+                .root_module = bb.createModule(.{
+                    .root_source_file = null,
+                    .target = rtarget,
+                    .optimize = .Debug,
+                    // Keep the symbol table: src/elf.zig resolves `tohost` by
+                    // symbol lookup, and the riscv-tests termination protocol
+                    // depends on it. ReleaseSmall strips by default.
+                    .strip = false,
+                }),
+            });
+            exe_tst.root_module.addObject(obj);
+            exe_tst.setLinkerScript(link_script);
+            exe_tst.root_module.single_threaded = true;
+
+            const installed = bb.addInstallArtifact(exe_tst, .{
+                .dest_dir = .{ .override = .{ .custom = bb.fmt("riscv-tests/{s}", .{test_def.family}) } },
+            });
+            return .{ .bin = exe_tst.getEmittedBin(), .install = installed };
+        }
+    }.call;
+
+    const rv32ui_tests = [_][]const u8{ "add", "addi", "and", "andi", "auipc", "beq", "bge", "bgeu", "blt", "bltu", "bne", "fence_i", "jal", "jalr", "lb", "lbu", "lh", "lhu", "lui", "lw", "or", "ori", "sb", "sh", "simple", "sll", "slli", "slt", "slti", "sltiu", "sltu", "sra", "srai", "srl", "srli", "sub", "sw", "xor", "xori" };
+    const rv32um_tests = [_][]const u8{ "mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu" };
+    const rv32ua_tests = [_][]const u8{ "amoadd_w", "amoand_w", "amomax_w", "amomaxu_w", "amomin_w", "amominu_w", "amoor_w", "amoswap_w", "amoxor_w", "lrsc" };
+    // rv32mi is deferred to Plan 1.D / Phase 2. Every upstream rv32mi-p-* test
+    // uses a `.weak mtvec_handler` declaration in env/p/riscv_test.h's
+    // RVTEST_CODE_BEGIN macro, then redeclares it `.global` later in the test
+    // body. Zig's LLVM-based assembler rejects the weak→global binding change
+    // (GNU assembler accepts it). Fixing this requires either shimming the
+    // upstream header or patching the test sources; both are out of Plan 1.C
+    // scope. The trap model is still exercised end-to-end via the hand-crafted
+    // e2e-trap demo (tests/programs/trap_demo/) — what we lose here is
+    // breadth of conformance, not the trap path itself.
+    const _rv32mi_tests_deferred = [_][]const u8{ "csr", "illegal", "ma_addr", "ma_fetch", "mcsr", "sbreak", "scall", "shamt", "breakpoint" };
+    _ = _rv32mi_tests_deferred;
+
+    const rv_step = b.step("riscv-tests", "Run the riscv-tests suite (rv32ui/um/ua)");
+
+    const all_families = [_]struct { family: []const u8, list: []const []const u8 }{
+        .{ .family = "rv32ui", .list = &rv32ui_tests },
+        .{ .family = "rv32um", .list = &rv32um_tests },
+        .{ .family = "rv32ua", .list = &rv32ua_tests },
+    };
+
+    for (all_families) |fam| {
+        for (fam.list) |name| {
+            const elf_path = riscvTestStep(b, rv_target, rv_link_script, .{
+                .family = fam.family,
+                .name = name,
+            });
+            const run_it = b.addRunArtifact(exe);
+            run_it.addFileArg(elf_path.bin);
+            run_it.expectExitCode(0);
+            rv_step.dependOn(&run_it.step);
+        }
+    }
 }

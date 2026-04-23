@@ -1,9 +1,10 @@
 const std = @import("std");
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
+const clint_dev = @import("devices/clint.zig");
 
 pub const RAM_BASE: u32 = 0x8000_0000;
-pub const RAM_SIZE: usize = 128 * 1024 * 1024;
+pub const RAM_SIZE_DEFAULT: usize = 128 * 1024 * 1024;
 
 pub const MemoryError = error{
     OutOfBounds,
@@ -17,31 +18,51 @@ pub const Memory = struct {
     ram: []u8,
     halt: *halt_dev.Halt,
     uart: *uart_dev.Uart,
+    clint: *clint_dev.Clint,
+    /// If set, writes inside [tohost_addr, tohost_addr+8) terminate the run
+    /// via `MemoryError.Halt`. Used by riscv-tests which signal pass/fail by
+    /// writing to a `tohost` symbol.
+    tohost_addr: ?u32,
     allocator: std.mem.Allocator,
 
     pub fn init(
         allocator: std.mem.Allocator,
         halt: *halt_dev.Halt,
         uart: *uart_dev.Uart,
+        clint: *clint_dev.Clint,
+        tohost_addr: ?u32,
+        ram_size: usize,
     ) !Memory {
-        const ram = try allocator.alloc(u8, RAM_SIZE);
+        const ram = try allocator.alloc(u8, ram_size);
         @memset(ram, 0);
-        return .{ .ram = ram, .halt = halt, .uart = uart, .allocator = allocator };
+        return .{
+            .ram = ram,
+            .halt = halt,
+            .uart = uart,
+            .clint = clint,
+            .tohost_addr = tohost_addr,
+            .allocator = allocator,
+        };
     }
 
     pub fn deinit(self: *Memory) void {
         self.allocator.free(self.ram);
     }
 
-    fn ramOffset(addr: u32) MemoryError!usize {
+    fn ramOffset(self: *const Memory, addr: u32) MemoryError!usize {
         if (addr < RAM_BASE) return MemoryError.OutOfBounds;
         const offset = addr - RAM_BASE;
-        if (offset >= RAM_SIZE) return MemoryError.OutOfBounds;
+        if (offset >= self.ram.len) return MemoryError.OutOfBounds;
         return @as(usize, offset);
     }
 
     fn inRange(addr: u32, base: u32, size: u32) bool {
         return addr >= base and addr < base +% size;
+    }
+
+    fn inTohost(self: *const Memory, addr: u32) bool {
+        const base = self.tohost_addr orelse return false;
+        return addr >= base and addr < base +% 8;
     }
 
     pub fn loadByte(self: *Memory, addr: u32) MemoryError!u8 {
@@ -54,7 +75,12 @@ pub const Memory = struct {
         if (inRange(addr, halt_dev.HALT_BASE, halt_dev.HALT_SIZE)) {
             return 0;
         }
-        const off = try ramOffset(addr);
+        if (inRange(addr, clint_dev.CLINT_BASE, clint_dev.CLINT_SIZE)) {
+            return self.clint.readByte(addr - clint_dev.CLINT_BASE) catch |e| switch (e) {
+                error.UnexpectedRegister => MemoryError.UnexpectedRegister,
+            };
+        }
+        const off = try self.ramOffset(addr);
         return self.ram[off];
     }
 
@@ -69,8 +95,8 @@ pub const Memory = struct {
         if (addr & 3 != 0) return MemoryError.MisalignedAccess;
         // Fast path for RAM:
         if (addr >= RAM_BASE) {
-            const off = try ramOffset(addr);
-            if (off + 4 > RAM_SIZE) return MemoryError.OutOfBounds;
+            const off = try self.ramOffset(addr);
+            if (off + 4 > self.ram.len) return MemoryError.OutOfBounds;
             return std.mem.readInt(u32, self.ram[off..][0..4], .little);
         }
         // Generic byte-by-byte path for MMIO:
@@ -96,7 +122,26 @@ pub const Memory = struct {
             };
             return;
         }
-        const off = try ramOffset(addr);
+        if (inRange(addr, clint_dev.CLINT_BASE, clint_dev.CLINT_SIZE)) {
+            self.clint.writeByte(addr - clint_dev.CLINT_BASE, value) catch |e| switch (e) {
+                error.UnexpectedRegister => return MemoryError.UnexpectedRegister,
+            };
+            return;
+        }
+        // tohost: any write inside the 8-byte region halts the run. We still
+        // commit the byte to RAM so post-mortem inspection sees the value.
+        if (self.inTohost(addr)) {
+            const off = try self.ramOffset(addr);
+            self.ram[off] = value;
+            // riscv-tests HTIF convention: the first nonzero byte written to
+            // tohost encodes the result. Value 1 == PASS (exit 0); any other
+            // nonzero value v == FAIL with test number (v >> 1).
+            if (self.halt.exit_code == null and value != 0) {
+                self.halt.exit_code = if (value == 1) 0 else value >> 1;
+            }
+            return MemoryError.Halt;
+        }
+        const off = try self.ramOffset(addr);
         self.ram[off] = value;
     }
 
@@ -108,9 +153,9 @@ pub const Memory = struct {
 
     pub fn storeWord(self: *Memory, addr: u32, value: u32) MemoryError!void {
         if (addr & 3 != 0) return MemoryError.MisalignedAccess;
-        if (addr >= RAM_BASE) {
-            const off = try ramOffset(addr);
-            if (off + 4 > RAM_SIZE) return MemoryError.OutOfBounds;
+        if (addr >= RAM_BASE and !self.inTohost(addr)) {
+            const off = try self.ramOffset(addr);
+            if (off + 4 > self.ram.len) return MemoryError.OutOfBounds;
             std.mem.writeInt(u32, self.ram[off..][0..4], value, .little);
             return;
         }
@@ -127,6 +172,7 @@ pub const Memory = struct {
 const TestRig = struct {
     halt: halt_dev.Halt,
     uart: uart_dev.Uart,
+    clint: clint_dev.Clint,
     aw: std.Io.Writer.Allocating,
     mem: Memory,
 
@@ -134,7 +180,8 @@ const TestRig = struct {
         self.halt = halt_dev.Halt.init();
         self.aw = .init(allocator);
         self.uart = uart_dev.Uart.init(&self.aw.writer);
-        self.mem = try Memory.init(allocator, &self.halt, &self.uart);
+        self.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+        self.mem = try Memory.init(allocator, &self.halt, &self.uart, &self.clint, null, RAM_SIZE_DEFAULT);
     }
 
     fn deinit(self: *TestRig) void {
@@ -189,4 +236,15 @@ test "misaligned word load returns MisalignedAccess" {
     try rig.init(std.testing.allocator);
     defer rig.deinit();
     try std.testing.expectError(MemoryError.MisalignedAccess, rig.mem.loadWord(RAM_BASE + 1));
+}
+
+test "word load from CLINT mtime returns nonzero after clock advances" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    clint_dev.fixture_clock_ns = 0;
+    rig.clint.epoch_ns = 0;
+    clint_dev.fixture_clock_ns = 10_000; // 100 ticks
+    const v = try rig.mem.loadWord(clint_dev.CLINT_BASE + 0xBFF8);
+    try std.testing.expectEqual(@as(u32, 100), v);
 }
