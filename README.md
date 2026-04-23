@@ -1,4 +1,4 @@
-# ccc — From-Scratch Computer
+# ccc — Claude Code Computer
 
 Building a working RISC-V computer from scratch in Zig — emulator, kernel,
 OS, networking, and a tiny text-mode web browser. No Linux. No TLS. No
