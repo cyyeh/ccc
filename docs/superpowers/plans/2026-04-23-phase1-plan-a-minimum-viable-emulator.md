@@ -6,7 +6,7 @@
 
 **Architecture:** A single-binary CLI emulator that loads a raw program at a given physical address, then runs an interpretation loop: fetch a 4-byte word at PC, decode into a tagged-value `Instruction`, dispatch to per-opcode execute logic, repeat. Memory operations route by address to either RAM (a flat byte array) or one of two MMIO devices (UART for output, Halt for termination). No privilege levels, no traps, no CSRs in this plan — those arrive in Plans 1.B/1.C.
 
-**Tech Stack:** Zig 0.14.x (pinned in `build.zig.zon`), no external dependencies, host platform macOS (also works on Linux).
+**Tech Stack:** Zig 0.16.x (pinned in `build.zig.zon`), no external dependencies, host platform macOS (also works on Linux).
 
 **Spec reference:** `docs/superpowers/specs/2026-04-23-phase1-cpu-emulator-design.md` — Plan 1.A implements the subset of that spec marked "minimum viable" below.
 
@@ -61,7 +61,7 @@ ccc/
 
 ## Conventions used in this plan
 
-- All Zig code targets Zig 0.14.x. If the engineer is on a newer Zig, syntax may need minor adjustments (`std.io.bufferedWriter`, `std.process.argsAlloc`, etc. APIs are version-sensitive).
+- All Zig code targets Zig 0.16.x. If the engineer is on a newer Zig, syntax may need minor adjustments (`std.io.bufferedWriter`, `std.process.argsAlloc`, etc. APIs are version-sensitive).
 - Tests live as inline `test "name" { ... }` blocks within source files. `zig build test` runs all of them.
 - Each task ends with a commit. Commit messages follow Conventional Commits (`feat:`, `test:`, `chore:`).
 - All files use 4-space indentation (Zig convention is technically 4 spaces; `zig fmt` enforces it).
@@ -99,7 +99,7 @@ Run `zig init` once to generate a fingerprint, then replace the file contents wi
     .name = .ccc,
     .version = "0.1.0",
     .fingerprint = 0x0,  // replace with whatever zig init generated
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",

@@ -38,6 +38,28 @@ Total scope: roughly 12–20 months of focused part-time work.
 - **Decomposition rule:** one phase's spec at a time — brainstorm → spec →
   plan → implementation, then repeat.
 
+## Building
+
+The project uses Zig's build system. `build.zig` declares the build graph
+and `build.zig.zon` pins the minimum Zig version (0.16.0).
+
+| Command | What it does |
+|---|---|
+| `zig build` | Compile `ccc` and install to `zig-out/bin/` |
+| `zig build run -- <args>` | Build and execute `ccc`, forwarding args after `--` |
+| `zig build test` | Run all unit tests reachable from `src/main.zig` |
+| `zig build hello` | Build the hand-crafted RV32I hello-world binary to `zig-out/hello.bin` |
+| `zig build e2e` | Encode → emulate → assert stdout equals `hello world\n` |
+
+The `hello` and `e2e` steps are worth a closer look: a small host-side
+encoder (`tests/programs/hello/encode_hello.zig`) emits a raw RV32I binary,
+which `e2e` feeds to `ccc --raw 0x80000000` and checks the UART output.
+All three artifacts (encoder, binary, emulator run) are wired into the
+build graph so changes propagate automatically.
+
+Cross-compilation and optimization flags are exposed via the standard
+`-Dtarget=…` and `-Doptimize=…` options.
+
 ## Status
 
 Currently on **Phase 1 — RISC-V CPU emulator**. Design is approved;
