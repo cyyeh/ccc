@@ -53,14 +53,17 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build e2e-mul` | Encode → emulate → assert stdout equals `42\n` (M + A + Zifencei) |
 | `zig build trap-demo` | Build the hand-crafted Plan 1.C privilege/trap demo binary |
 | `zig build e2e-trap` | M→U→ecall→M→UART→halt round-trip; stdout equals `trap ok\n` |
+| `zig build hello-elf` | Build the Zig-compiled `hello.elf` (M-mode monitor + U-mode Zig payload) |
+| `zig build e2e-hello-elf` | Run `ccc hello.elf` and assert stdout equals `hello world\n` (Phase 1 §Definition of done) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
-| `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua-p-*` conformance suite (57 tests) |
+| `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi-p-*` conformance suite (65 tests) |
 
 ## Running programs
 
 By default `ccc` loads an ELF32 RISC-V executable:
 
-    zig build run -- path/to/program.elf
+    zig build hello-elf                          # build the demo ELF
+    zig build run -- zig-out/bin/hello.elf       # prints "hello world"
 
 For hand-crafted raw binaries (the `e2e`, `e2e-mul`, `e2e-trap` demos),
 pass the load address with `--raw`:
@@ -78,10 +81,22 @@ privilege, synchronous traps.
 
 ## Status
 
-Currently on **Phase 1 — RISC-V CPU emulator**. Plans 1.A (RV32I),
-1.B (M + A + Zifencei), and 1.C (Zicsr + privilege + traps + CLINT +
-ELF + `--trace` + riscv-tests) are merged. Plan 1.D (monitor + Zig
-`hello.elf` + QEMU-diff) is next.
+**Phase 1 — RISC-V CPU emulator — complete.**
+
+Plans 1.A (RV32I), 1.B (M + A + Zifencei), 1.C (Zicsr + privilege + traps
++ CLINT + ELF + `--trace` + riscv-tests), and 1.D (monitor + Zig
+`hello.elf` + QEMU-diff + rv32mi conformance) are merged.
+
+The Phase 1 §Definition of done demo:
+
+    $ zig build e2e-hello-elf
+    # passes: stdout equals "hello world\n"
+
+    $ zig build hello-elf && zig build run -- zig-out/bin/hello.elf
+    hello world
+
+Next: **Phase 2 — Bare-metal kernel** (S-mode, Sv32 page tables,
+M↔S↔U privilege transitions, timer interrupt delivery).
 
 ## Layout
 
