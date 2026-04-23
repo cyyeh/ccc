@@ -2,8 +2,10 @@ const std = @import("std");
 const decoder = @import("decoder.zig");
 const execute = @import("execute.zig");
 const trap = @import("trap.zig");
-const Memory = @import("memory.zig").Memory;
-const MemoryError = @import("memory.zig").MemoryError;
+const mem_mod = @import("memory.zig");
+const Memory = mem_mod.Memory;
+const MemoryError = mem_mod.MemoryError;
+const clint_dev = @import("devices/clint.zig");
 
 pub const StepError = error{
     Halt,
@@ -131,7 +133,8 @@ test "Cpu.run halts cleanly when program writes to halt MMIO" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart);
+    var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
 
     // Hand-encoded program at RAM_BASE:

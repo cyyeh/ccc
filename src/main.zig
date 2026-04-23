@@ -4,12 +4,14 @@ const cpu_mod = @import("cpu.zig");
 const mem_mod = @import("memory.zig");
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
+const clint_dev = @import("devices/clint.zig");
 
 comptime {
     _ = @import("cpu.zig");
     _ = @import("memory.zig");
     _ = @import("devices/halt.zig");
     _ = @import("devices/uart.zig");
+    _ = @import("devices/clint.zig");
     _ = @import("decoder.zig");
     _ = @import("execute.zig");
     _ = @import("csr.zig");
@@ -91,7 +93,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     };
 
-    // Load program bytes. 16 MiB cap keeps us well under RAM_SIZE (128 MiB).
+    // Load program bytes. 16 MiB cap keeps us well under RAM_SIZE_DEFAULT (128 MiB).
     const file_data = Io.Dir.cwd().readFileAlloc(io, args.file.?, a, .limited(16 * 1024 * 1024)) catch |err| {
         stderr.print("failed to read {s}: {s}\n", .{ args.file.?, @errorName(err) }) catch {};
         stderr.flush() catch {};
@@ -105,8 +107,9 @@ pub fn main(init: std.process.Init) !void {
 
     var halt = halt_dev.Halt.init();
     var uart = uart_dev.Uart.init(stdout);
+    var clint = clint_dev.Clint.initDefault();
 
-    var mem = try mem_mod.Memory.init(a, &halt, &uart);
+    var mem = try mem_mod.Memory.init(a, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
 
     // Load program bytes into RAM at raw_addr.

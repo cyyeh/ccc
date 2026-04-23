@@ -403,6 +403,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
 
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
+const clint_dev = @import("devices/clint.zig");
 const mem_mod = @import("memory.zig");
 
 // Test fixture: Uart holds `*std.Io.Writer` pointing into the rig's `aw`,
@@ -411,6 +412,7 @@ const mem_mod = @import("memory.zig");
 const Rig = struct {
     halt: halt_dev.Halt,
     uart: uart_dev.Uart,
+    clint: clint_dev.Clint,
     aw: std.Io.Writer.Allocating,
     mem: mem_mod.Memory,
     cpu: cpu_mod.Cpu,
@@ -419,7 +421,8 @@ const Rig = struct {
         self.halt = halt_dev.Halt.init();
         self.aw = .init(allocator);
         self.uart = uart_dev.Uart.init(&self.aw.writer);
-        self.mem = try mem_mod.Memory.init(allocator, &self.halt, &self.uart);
+        self.clint = clint_dev.Clint.init(&clint_dev.zeroClock);
+        self.mem = try mem_mod.Memory.init(allocator, &self.halt, &self.uart, &self.clint, null, mem_mod.RAM_SIZE_DEFAULT);
         self.cpu = cpu_mod.Cpu.init(&self.mem, entry);
     }
 
