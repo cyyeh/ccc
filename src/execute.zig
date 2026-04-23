@@ -122,6 +122,26 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.writeReg(instr.rd, result);
             cpu.pc +%= 4;
         },
+        .add, .sub, .sll, .slt, .sltu, .xor_, .srl, .sra, .or_, .and_ => {
+            const a = cpu.readReg(instr.rs1);
+            const b = cpu.readReg(instr.rs2);
+            const shamt: u5 = @intCast(b & 0x1F);
+            const result: u32 = switch (instr.op) {
+                .add => a +% b,
+                .sub => a -% b,
+                .sll => a << shamt,
+                .slt => if (@as(i32, @bitCast(a)) < @as(i32, @bitCast(b))) 1 else 0,
+                .sltu => if (a < b) 1 else 0,
+                .xor_ => a ^ b,
+                .srl => a >> shamt,
+                .sra => @bitCast(@as(i32, @bitCast(a)) >> shamt),
+                .or_ => a | b,
+                .and_ => a & b,
+                else => unreachable,
+            };
+            cpu.writeReg(instr.rd, result);
+            cpu.pc +%= 4;
+        },
         .illegal => return ExecuteError.IllegalInstruction,
     }
 }
@@ -384,4 +404,44 @@ test "SRLI: logical right shift" {
     rig.cpu.writeReg(1, 0xFFFF_FFF0);
     try dispatch(.{ .op = .srli, .rd = 2, .rs1 = 1, .imm = 4 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x0FFF_FFFF), rig.cpu.readReg(2));
+}
+
+test "ADD: rs1 + rs2 wraps mod 2^32" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0xFFFF_FFFF);
+    rig.cpu.writeReg(2, 1);
+    try dispatch(.{ .op = .add, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(3));
+}
+
+test "SUB: rs1 - rs2 wraps mod 2^32" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0);
+    rig.cpu.writeReg(2, 1);
+    try dispatch(.{ .op = .sub, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
+}
+
+test "SLL: shifts by low 5 bits of rs2 only" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 1);
+    rig.cpu.writeReg(2, 0xFFFF_FFE0 | 4); // shift amount = 4 (low 5 bits)
+    try dispatch(.{ .op = .sll, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 16), rig.cpu.readReg(3));
+}
+
+test "SRA: arithmetic right shift preserves sign" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0xFFFF_FFF0);
+    rig.cpu.writeReg(2, 4);
+    try dispatch(.{ .op = .sra, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
 }
