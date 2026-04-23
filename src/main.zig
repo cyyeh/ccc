@@ -5,6 +5,7 @@ comptime {
     _ = @import("cpu.zig");
     _ = @import("memory.zig");
     _ = @import("devices/halt.zig");
+    _ = @import("devices/uart.zig");
 }
 
 pub fn main(init: std.process.Init) !void {
