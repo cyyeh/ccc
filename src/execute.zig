@@ -147,7 +147,35 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         },
         .ecall, .ebreak => return ExecuteError.UnsupportedInstruction,
         // M extension — implemented in Plan 1.B Tasks 3 and 4.
-        .mul, .mulh, .mulhsu, .mulhu, .div, .divu, .rem, .remu => return ExecuteError.UnsupportedInstruction,
+        .mul, .mulh, .mulhsu, .mulhu => {
+            const a = cpu.readReg(instr.rs1);
+            const b = cpu.readReg(instr.rs2);
+            const result: u32 = switch (instr.op) {
+                .mul => a *% b,
+                .mulh => blk: {
+                    const as: i64 = @as(i32, @bitCast(a));
+                    const bs: i64 = @as(i32, @bitCast(b));
+                    const prod: i64 = as * bs;
+                    break :blk @truncate(@as(u64, @bitCast(prod)) >> 32);
+                },
+                .mulhu => blk: {
+                    const au: u64 = a;
+                    const bu: u64 = b;
+                    const prod: u64 = au * bu;
+                    break :blk @truncate(prod >> 32);
+                },
+                .mulhsu => blk: {
+                    const as: i64 = @as(i32, @bitCast(a));
+                    const bu: i64 = @intCast(b); // unsigned rs2, zero-extended
+                    const prod: i64 = as * bu;
+                    break :blk @truncate(@as(u64, @bitCast(prod)) >> 32);
+                },
+                else => unreachable,
+            };
+            cpu.writeReg(instr.rd, result);
+            cpu.pc +%= 4;
+        },
+        .div, .divu, .rem, .remu => return ExecuteError.UnsupportedInstruction,
         // Zifencei — implemented in Plan 1.B Task 5.
         .fence_i => return ExecuteError.UnsupportedInstruction,
         // A extension — implemented in Plan 1.B Tasks 7 and 8.
@@ -478,4 +506,72 @@ test "EBREAK returns UnsupportedInstruction in Plan 1.A" {
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
     try std.testing.expectError(ExecuteError.UnsupportedInstruction, dispatch(.{ .op = .ebreak }, &rig.cpu));
+}
+
+test "MUL: 6 * 7 = 42" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 6);
+    rig.cpu.writeReg(2, 7);
+    try dispatch(.{ .op = .mul, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 42), rig.cpu.readReg(3));
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "MUL: wraps on unsigned overflow (low 32 bits only)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    // 0x10000 * 0x10000 = 0x100000000, low 32 bits = 0
+    rig.cpu.writeReg(1, 0x10000);
+    rig.cpu.writeReg(2, 0x10000);
+    try dispatch(.{ .op = .mul, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(3));
+}
+
+test "MULH: high bits of signed × signed (negative × negative = positive)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    // -1 * -1 = 1. High 32 bits of 1 (as 64-bit signed) = 0.
+    rig.cpu.writeReg(1, 0xFFFF_FFFF); // -1
+    rig.cpu.writeReg(2, 0xFFFF_FFFF); // -1
+    try dispatch(.{ .op = .mulh, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(3));
+}
+
+test "MULH: high bits when result spans more than 32 bits" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    // 0x40000000 * 2 = 0x80000000 as i64 (= 2^31). High 32 bits = 0.
+    // Try something bigger: 0x40000000 * 4 = 0x100000000. High = 1.
+    rig.cpu.writeReg(1, 0x40000000);
+    rig.cpu.writeReg(2, 4);
+    try dispatch(.{ .op = .mulh, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 1), rig.cpu.readReg(3));
+}
+
+test "MULHU: high bits of unsigned × unsigned" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    // 0xFFFFFFFF * 0xFFFFFFFF = 0xFFFFFFFE_00000001. High = 0xFFFFFFFE.
+    rig.cpu.writeReg(1, 0xFFFF_FFFF);
+    rig.cpu.writeReg(2, 0xFFFF_FFFF);
+    try dispatch(.{ .op = .mulhu, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFE), rig.cpu.readReg(3));
+}
+
+test "MULHSU: signed × unsigned, rs1 negative" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    // -1 (as i32) * 0xFFFFFFFF (as u32) = -0xFFFFFFFF (as i64) = 0xFFFFFFFF_00000001
+    // High 32 bits = 0xFFFFFFFF.
+    rig.cpu.writeReg(1, 0xFFFF_FFFF); // -1 signed
+    rig.cpu.writeReg(2, 0xFFFF_FFFF); // 4294967295 unsigned
+    try dispatch(.{ .op = .mulhsu, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
 }
