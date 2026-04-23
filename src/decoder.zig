@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const Op = enum {
+    // RV32I — base integer (Plan 1.A)
     lui,
     auipc,
     jal,
@@ -41,7 +42,30 @@ pub const Op = enum {
     fence,
     ecall,
     ebreak,
-    // (more added in later tasks)
+    // RV32M — multiply/divide (Plan 1.B, Task 2)
+    mul,
+    mulh,
+    mulhsu,
+    mulhu,
+    div,
+    divu,
+    rem,
+    remu,
+    // Zifencei (Plan 1.B, Task 5)
+    fence_i,
+    // RV32A — atomics (Plan 1.B, Task 6)
+    lr_w,
+    sc_w,
+    amoswap_w,
+    amoadd_w,
+    amoxor_w,
+    amoand_w,
+    amoor_w,
+    amomin_w,
+    amomax_w,
+    amominu_w,
+    amomaxu_w,
+    // (more added in later plans)
     illegal,
 };
 
@@ -203,19 +227,45 @@ pub fn decode(word: u32) Instruction {
                 0b000 => switch (f7) {
                     0b0000000 => Op.add,
                     0b0100000 => Op.sub,
+                    0b0000001 => Op.mul,
                     else => Op.illegal,
                 },
-                0b001 => if (f7 == 0) Op.sll else Op.illegal,
-                0b010 => if (f7 == 0) Op.slt else Op.illegal,
-                0b011 => if (f7 == 0) Op.sltu else Op.illegal,
-                0b100 => if (f7 == 0) Op.xor_ else Op.illegal,
+                0b001 => switch (f7) {
+                    0b0000000 => Op.sll,
+                    0b0000001 => Op.mulh,
+                    else => Op.illegal,
+                },
+                0b010 => switch (f7) {
+                    0b0000000 => Op.slt,
+                    0b0000001 => Op.mulhsu,
+                    else => Op.illegal,
+                },
+                0b011 => switch (f7) {
+                    0b0000000 => Op.sltu,
+                    0b0000001 => Op.mulhu,
+                    else => Op.illegal,
+                },
+                0b100 => switch (f7) {
+                    0b0000000 => Op.xor_,
+                    0b0000001 => Op.div,
+                    else => Op.illegal,
+                },
                 0b101 => switch (f7) {
                     0b0000000 => Op.srl,
                     0b0100000 => Op.sra,
+                    0b0000001 => Op.divu,
                     else => Op.illegal,
                 },
-                0b110 => if (f7 == 0) Op.or_ else Op.illegal,
-                0b111 => if (f7 == 0) Op.and_ else Op.illegal,
+                0b110 => switch (f7) {
+                    0b0000000 => Op.or_,
+                    0b0000001 => Op.rem,
+                    else => Op.illegal,
+                },
+                0b111 => switch (f7) {
+                    0b0000000 => Op.and_,
+                    0b0000001 => Op.remu,
+                    else => Op.illegal,
+                },
             };
             break :blk .{ .op = op, .rd = rd(word), .rs1 = rs1(word), .rs2 = rs2(word), .raw = word };
         },
@@ -403,4 +453,61 @@ test "decode ECALL → 0x00000073" {
 test "decode EBREAK → 0x00100073" {
     const i = decode(0x00100073);
     try std.testing.expectEqual(Op.ebreak, i.op);
+}
+
+test "decode MUL x3, x1, x2 → 0x022081B3" {
+    // funct7=0000001, rs2=00010, rs1=00001, funct3=000, rd=00011, opcode=0110011
+    const i = decode(0x022081B3);
+    try std.testing.expectEqual(Op.mul, i.op);
+    try std.testing.expectEqual(@as(u5, 3), i.rd);
+    try std.testing.expectEqual(@as(u5, 1), i.rs1);
+    try std.testing.expectEqual(@as(u5, 2), i.rs2);
+}
+
+test "decode MULH x3, x1, x2 → 0x022091B3" {
+    // funct3=001
+    const i = decode(0x022091B3);
+    try std.testing.expectEqual(Op.mulh, i.op);
+}
+
+test "decode MULHSU x3, x1, x2 → 0x0220A1B3" {
+    // funct3=010
+    const i = decode(0x0220A1B3);
+    try std.testing.expectEqual(Op.mulhsu, i.op);
+}
+
+test "decode MULHU x3, x1, x2 → 0x0220B1B3" {
+    // funct3=011
+    const i = decode(0x0220B1B3);
+    try std.testing.expectEqual(Op.mulhu, i.op);
+}
+
+test "decode DIV x3, x1, x2 → 0x0220C1B3" {
+    // funct3=100
+    const i = decode(0x0220C1B3);
+    try std.testing.expectEqual(Op.div, i.op);
+}
+
+test "decode DIVU x3, x1, x2 → 0x0220D1B3" {
+    // funct3=101, funct7=0000001 (distinct from SRL/SRA which use 0000000/0100000)
+    const i = decode(0x0220D1B3);
+    try std.testing.expectEqual(Op.divu, i.op);
+}
+
+test "decode REM x3, x1, x2 → 0x0220E1B3" {
+    // funct3=110
+    const i = decode(0x0220E1B3);
+    try std.testing.expectEqual(Op.rem, i.op);
+}
+
+test "decode REMU x3, x1, x2 → 0x0220F1B3" {
+    // funct3=111
+    const i = decode(0x0220F1B3);
+    try std.testing.expectEqual(Op.remu, i.op);
+}
+
+test "unknown funct7 on opcode 0x33 still decodes to illegal" {
+    // funct7=0b1111111 (neither 0, 0x20, nor 0x01), funct3=000
+    const i = decode(0xFE2081B3);
+    try std.testing.expectEqual(Op.illegal, i.op);
 }

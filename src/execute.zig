@@ -146,6 +146,14 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.pc +%= 4;
         },
         .ecall, .ebreak => return ExecuteError.UnsupportedInstruction,
+        // M extension — implemented in Plan 1.B Tasks 3 and 4.
+        .mul, .mulh, .mulhsu, .mulhu, .div, .divu, .rem, .remu => return ExecuteError.UnsupportedInstruction,
+        // Zifencei — implemented in Plan 1.B Task 5.
+        .fence_i => return ExecuteError.UnsupportedInstruction,
+        // A extension — implemented in Plan 1.B Tasks 7 and 8.
+        .lr_w, .sc_w,
+        .amoswap_w, .amoadd_w, .amoxor_w, .amoand_w, .amoor_w,
+        .amomin_w, .amomax_w, .amominu_w, .amomaxu_w => return ExecuteError.UnsupportedInstruction,
         .illegal => return ExecuteError.IllegalInstruction,
     }
 }
