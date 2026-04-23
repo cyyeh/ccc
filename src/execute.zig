@@ -1,6 +1,7 @@
 const std = @import("std");
 const cpu_mod = @import("cpu.zig");
 const decoder = @import("decoder.zig");
+const csr_mod = @import("csr.zig");
 
 pub const ExecuteError = error{
     UnsupportedInstruction,
@@ -145,7 +146,56 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .fence => {
             cpu.pc +%= 4;
         },
-        .ecall, .ebreak, .csrrw, .csrrs, .csrrc, .csrrwi, .csrrsi, .csrrci, .mret, .wfi => return ExecuteError.UnsupportedInstruction,
+        .csrrw, .csrrs, .csrrc => {
+            const rs1_val = cpu.readReg(instr.rs1);
+            const do_read = (instr.op != .csrrw) or (instr.rd != 0);
+            const do_write = (instr.op == .csrrw) or (instr.rs1 != 0);
+            const old: u32 = if (do_read)
+                csr_mod.csrRead(cpu, instr.csr) catch |e| switch (e) {
+                    error.IllegalInstruction => return ExecuteError.IllegalInstruction,
+                }
+            else
+                0;
+            if (do_write) {
+                const new: u32 = switch (instr.op) {
+                    .csrrw => rs1_val,
+                    .csrrs => old | rs1_val,
+                    .csrrc => old & ~rs1_val,
+                    else => unreachable,
+                };
+                csr_mod.csrWrite(cpu, instr.csr, new) catch |e| switch (e) {
+                    error.IllegalInstruction => return ExecuteError.IllegalInstruction,
+                };
+            }
+            if (instr.rd != 0) cpu.writeReg(instr.rd, old);
+            cpu.pc +%= 4;
+        },
+        .csrrwi, .csrrsi, .csrrci => {
+            // rs1 slot holds the 5-bit zero-extended uimm; not a register index.
+            const uimm: u32 = instr.rs1;
+            const do_read = (instr.op != .csrrwi) or (instr.rd != 0);
+            const do_write = (instr.op == .csrrwi) or (uimm != 0);
+            const old: u32 = if (do_read)
+                csr_mod.csrRead(cpu, instr.csr) catch |e| switch (e) {
+                    error.IllegalInstruction => return ExecuteError.IllegalInstruction,
+                }
+            else
+                0;
+            if (do_write) {
+                const new: u32 = switch (instr.op) {
+                    .csrrwi => uimm,
+                    .csrrsi => old | uimm,
+                    .csrrci => old & ~uimm,
+                    else => unreachable,
+                };
+                csr_mod.csrWrite(cpu, instr.csr, new) catch |e| switch (e) {
+                    error.IllegalInstruction => return ExecuteError.IllegalInstruction,
+                };
+            }
+            if (instr.rd != 0) cpu.writeReg(instr.rd, old);
+            cpu.pc +%= 4;
+        },
+        .ecall, .ebreak, .mret, .wfi => return ExecuteError.UnsupportedInstruction,
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
             const b = cpu.readReg(instr.rs2);
@@ -924,6 +974,105 @@ test "AMOMAXU.W unsigned: max(0xFFFFFFFF, 0) = 0xFFFFFFFF" {
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amomaxu_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "CSRRW swaps: rd gets old CSR, CSR gets rs1" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mtvec = 0xDEAD_BEE0;
+    rig.cpu.writeReg(1, 0xCAFE_BABC);
+    try dispatch(.{ .op = .csrrw, .rd = 2, .rs1 = 1, .csr = 0x305, .raw = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xDEAD_BEE0), rig.cpu.readReg(2));
+    try std.testing.expectEqual(@as(u32, 0xCAFE_BABC), rig.cpu.csr.mtvec);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "CSRRW with rd=x0 suppresses CSR read (no trap on write-only CSRs)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mtvec = 0x1111_1110;
+    rig.cpu.writeReg(1, 0x2222_2220);
+    try dispatch(.{ .op = .csrrw, .rd = 0, .rs1 = 1, .csr = 0x305, .raw = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x2222_2220), rig.cpu.csr.mtvec);
+}
+
+test "CSRRS sets bits: new = old | rs1, rd = old" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mcause = 0xAAAA_AAAA;
+    rig.cpu.writeReg(1, 0x5555_5555);
+    try dispatch(.{ .op = .csrrs, .rd = 2, .rs1 = 1, .csr = 0x342, .raw = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xAAAA_AAAA), rig.cpu.readReg(2));
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.csr.mcause);
+}
+
+test "CSRRS with rs1=x0 suppresses CSR write (read-only effect)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mcause = 0xAAAA_AAAA;
+    rig.cpu.writeReg(5, 0x1234_5678);
+    try dispatch(.{ .op = .csrrs, .rd = 5, .rs1 = 0, .csr = 0x342, .raw = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xAAAA_AAAA), rig.cpu.readReg(5));
+    try std.testing.expectEqual(@as(u32, 0xAAAA_AAAA), rig.cpu.csr.mcause);
+}
+
+test "CSRRC clears bits: new = old & ~rs1, rd = old" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mtval = 0xFF00_FF00;
+    rig.cpu.writeReg(1, 0x0F0F_0F0F);
+    try dispatch(.{ .op = .csrrc, .rd = 2, .rs1 = 1, .csr = 0x343, .raw = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFF00_FF00), rig.cpu.readReg(2));
+    try std.testing.expectEqual(@as(u32, 0xF000_F000), rig.cpu.csr.mtval);
+}
+
+test "CSRRWI writes zero-extended uimm to CSR, rd gets old value" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mepc = 0x8000_1000;
+    try dispatch(.{ .op = .csrrwi, .rd = 2, .rs1 = 0x1F, .csr = 0x341, .raw = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x8000_1000), rig.cpu.readReg(2));
+    // mepc forces 4-byte alignment on write → 31 & ~3 = 28 = 0x1C.
+    try std.testing.expectEqual(@as(u32, 0x0000_001C), rig.cpu.csr.mepc);
+}
+
+test "CSRRSI with uimm=0 suppresses CSR write" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mstatus = 0x0000_1880;
+    try dispatch(.{ .op = .csrrsi, .rd = 2, .rs1 = 0, .csr = 0x300, .raw = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x0000_1880), rig.cpu.readReg(2));
+    try std.testing.expectEqual(@as(u32, 0x0000_1880), rig.cpu.csr.mstatus);
+}
+
+test "CSRRCI with nonzero uimm clears bits" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.csr.mie = 0x0000_0FFF;
+    try dispatch(.{ .op = .csrrci, .rd = 2, .rs1 = 0x0F, .csr = 0x304, .raw = 0 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x0000_0FFF), rig.cpu.readReg(2));
+    try std.testing.expectEqual(@as(u32, 0x0000_0FF0), rig.cpu.csr.mie);
+}
+
+test "CSR access in U-mode returns error.IllegalInstruction (pre-trap-wiring)" {
+    // NOTE: In Task 7 this test's expectation flips from "error propagation"
+    // to "traps and continues". For now we assert the pre-trap contract.
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    try std.testing.expectError(
+        ExecuteError.IllegalInstruction,
+        dispatch(.{ .op = .csrrw, .rd = 1, .rs1 = 2, .csr = 0x300, .raw = 0 }, &rig.cpu),
+    );
 }
 
 test "AMO on misaligned address returns MisalignedAccess" {
