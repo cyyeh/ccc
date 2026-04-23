@@ -269,7 +269,14 @@ pub fn decode(word: u32) Instruction {
             };
             break :blk .{ .op = op, .rd = rd(word), .rs1 = rs1(word), .rs2 = rs2(word), .raw = word };
         },
-        0b0001111 => return .{ .op = .fence, .raw = word },
+        0b0001111 => {
+            // MISC-MEM: funct3 selects fence (000) vs fence.i (001).
+            return switch (funct3(word)) {
+                0b000 => .{ .op = .fence, .raw = word },
+                0b001 => .{ .op = .fence_i, .raw = word },
+                else => .{ .op = .illegal, .raw = word },
+            };
+        },
         0b1110011 => {
             // SYSTEM: funct3 must be 000, then imm distinguishes ecall (0) vs ebreak (1).
             if (funct3(word) != 0) return .{ .op = .illegal, .raw = word };
@@ -510,4 +517,16 @@ test "unknown funct7 on opcode 0x33 still decodes to illegal" {
     // funct7=0b1111111 (neither 0, 0x20, nor 0x01), funct3=000
     const i = decode(0xFE2081B3);
     try std.testing.expectEqual(Op.illegal, i.op);
+}
+
+test "decode FENCE.I → 0x0000100F" {
+    // opcode=0001111, rd=0, funct3=001, rs1=0, imm=0
+    const i = decode(0x0000100F);
+    try std.testing.expectEqual(Op.fence_i, i.op);
+}
+
+test "FENCE (funct3=0) still decodes to fence, not fence_i" {
+    // opcode=0001111, rd=0, funct3=000, rs1=0, imm=0
+    const i = decode(0x0000000F);
+    try std.testing.expectEqual(Op.fence, i.op);
 }

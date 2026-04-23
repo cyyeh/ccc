@@ -200,8 +200,10 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.writeReg(instr.rd, result);
             cpu.pc +%= 4;
         },
-        // Zifencei — implemented in Plan 1.B Task 5.
-        .fence_i => return ExecuteError.UnsupportedInstruction,
+        .fence_i => {
+            // No I-cache to invalidate; single hart, fetch-from-memory every step.
+            cpu.pc +%= 4;
+        },
         // A extension — implemented in Plan 1.B Tasks 7 and 8.
         .lr_w, .sc_w,
         .amoswap_w, .amoadd_w, .amoxor_w, .amoand_w, .amoor_w,
@@ -708,4 +710,12 @@ test "REMU: unsigned remainder by zero returns dividend" {
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .remu, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 42), rig.cpu.readReg(3));
+}
+
+test "FENCE.I is a no-op, advances PC by 4" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try dispatch(.{ .op = .fence_i }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
 }
