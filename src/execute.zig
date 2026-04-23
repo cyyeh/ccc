@@ -224,7 +224,27 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.pc +%= 4;
         },
         .amoswap_w, .amoadd_w, .amoxor_w, .amoand_w, .amoor_w,
-        .amomin_w, .amomax_w, .amominu_w, .amomaxu_w => return ExecuteError.UnsupportedInstruction,
+        .amomin_w, .amomax_w, .amominu_w, .amomaxu_w => {
+            const addr = cpu.readReg(instr.rs1);
+            if (addr & 3 != 0) return ExecuteError.MisalignedAccess;
+            const old = cpu.memory.loadWord(addr) catch |e| return mapMemErr(e);
+            const rs2_val = cpu.readReg(instr.rs2);
+            const new: u32 = switch (instr.op) {
+                .amoswap_w => rs2_val,
+                .amoadd_w => old +% rs2_val,
+                .amoxor_w => old ^ rs2_val,
+                .amoand_w => old & rs2_val,
+                .amoor_w => old | rs2_val,
+                .amomin_w => if (@as(i32, @bitCast(old)) < @as(i32, @bitCast(rs2_val))) old else rs2_val,
+                .amomax_w => if (@as(i32, @bitCast(old)) > @as(i32, @bitCast(rs2_val))) old else rs2_val,
+                .amominu_w => if (old < rs2_val) old else rs2_val,
+                .amomaxu_w => if (old > rs2_val) old else rs2_val,
+                else => unreachable,
+            };
+            cpu.memory.storeWord(addr, new) catch |e| return mapMemErr(e);
+            cpu.writeReg(instr.rd, old);
+            cpu.pc +%= 4;
+        },
         .illegal => return ExecuteError.IllegalInstruction,
     }
 }
@@ -792,4 +812,117 @@ test "LR.W on misaligned address returns MisalignedAccess" {
     defer rig.deinit();
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x81); // misaligned
     try std.testing.expectError(ExecuteError.MisalignedAccess, dispatch(.{ .op = .lr_w, .rd = 2, .rs1 = 1 }, &rig.cpu));
+}
+
+test "AMOSWAP.W returns old value, stores rs2" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xAAAA);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 0xBBBB);
+    try dispatch(.{ .op = .amoswap_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xAAAA), rig.cpu.readReg(3));       // old
+    try std.testing.expectEqual(@as(u32, 0xBBBB), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40)); // new
+}
+
+test "AMOADD.W returns old value, stores (old + rs2) with wrap" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 10);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 32);
+    try dispatch(.{ .op = .amoadd_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 10), rig.cpu.readReg(3));
+    try std.testing.expectEqual(@as(u32, 42), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "AMOXOR.W: old XOR rs2" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0x0F0F_0F0F);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 0xFF00_FF00);
+    try dispatch(.{ .op = .amoxor_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x0F0F_0F0F), rig.cpu.readReg(3));
+    try std.testing.expectEqual(@as(u32, 0xF00F_F00F), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "AMOAND.W: old AND rs2" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 0x0000_FFFF);
+    try dispatch(.{ .op = .amoand_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
+    try std.testing.expectEqual(@as(u32, 0x0000_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "AMOOR.W: old OR rs2" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0x0000_00FF);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 0xFF00_0000);
+    try dispatch(.{ .op = .amoor_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFF00_00FF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "AMOMIN.W signed: min(-1, 0) = -1" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF); // -1 as i32
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .amomin_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "AMOMAX.W signed: max(-1, 0) = 0" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .amomax_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "AMOMINU.W unsigned: min(0xFFFFFFFF, 0) = 0" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .amominu_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "AMOMAXU.W unsigned: max(0xFFFFFFFF, 0) = 0xFFFFFFFF" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .amomaxu_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+}
+
+test "AMO on misaligned address returns MisalignedAccess" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x41); // misaligned
+    rig.cpu.writeReg(2, 1);
+    try std.testing.expectError(ExecuteError.MisalignedAccess, dispatch(.{ .op = .amoadd_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu));
 }
