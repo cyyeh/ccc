@@ -4,9 +4,6 @@ Building a working RISC-V computer from scratch in Zig — emulator, kernel,
 OS, networking, and a tiny text-mode web browser. No Linux. No TLS. No
 graphics.
 
-> The project directory is `ccc` for now and will be renamed `riscvbox`
-> once the emulator is working.
-
 ## Goal
 
 Go from an empty repo to `browse http://test-server/` rendering a page in
