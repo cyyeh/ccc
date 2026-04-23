@@ -68,11 +68,25 @@ implementation plan 1.A (minimum viable emulator) is drafted.
 ## Layout
 
 ```
+src/
+  main.zig          # CLI entry point
+  cpu.zig           # hart state: registers, PC, CSRs
+  decoder.zig       # RV32I + M + A + Zicsr + Zifencei decoder
+  execute.zig       # instruction execution
+  memory.zig        # RAM + MMIO dispatch
+  devices/
+    uart.zig        # NS16550A UART
+    halt.zig        # test-only halt device
+tests/
+  programs/
+    hello/          # RV32I hello-world encoder + expected output
 docs/
   superpowers/
-    specs/        # design docs per phase (brainstormed + approved)
-    plans/        # implementation plans per phase
-  references/     # notes on RISC-V specifics (traps, etc.)
+    specs/          # design docs per phase (brainstormed + approved)
+    plans/          # implementation plans per phase
+  references/       # notes on RISC-V specifics (traps, etc.)
+build.zig           # build graph: ccc binary, tests, hello, e2e
+build.zig.zon       # pinned Zig version + dependencies
 ```
 
 The roadmap lives at
