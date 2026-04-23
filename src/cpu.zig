@@ -14,6 +14,19 @@ pub const StepError = error{
     WriteFailed,
 };
 
+/// Two-level RISC-V privilege, spec §Privilege & trap model.
+/// Encoding matches the `mstatus.MPP` field: 0b00 = U, 0b11 = M.
+/// The two reserved middle values (0b01 = S, 0b10 = H) never appear in
+/// Phase 1 but we keep them in the enum so bit-level round-trips through
+/// mstatus are total; `trap.exit_mret` normalizes them to U (spec: WARL
+/// unsupported modes read back as the least-privileged supported mode).
+pub const PrivilegeMode = enum(u2) {
+    U = 0b00,
+    reserved_s = 0b01,
+    reserved_h = 0b10,
+    M = 0b11,
+};
+
 pub const Cpu = struct {
     regs: [32]u32,
     pc: u32,
@@ -22,6 +35,11 @@ pub const Cpu = struct {
     // Set by lr.w, cleared by sc.w (on success or failure). Plan 1.C
     // will additionally clear this on trap entry; Plan 1.B has no traps.
     reservation: ?u32,
+    // Current privilege level. Starts in M; a monitor drops to U via mret,
+    // and synchronous traps return control to M. Phase 1 never uses the
+    // reserved_s/reserved_h variants; they exist only to round-trip the
+    // mstatus.MPP bit field losslessly (see trap.zig).
+    privilege: PrivilegeMode,
 
     pub fn init(memory: *Memory, entry: u32) Cpu {
         return .{
@@ -29,6 +47,7 @@ pub const Cpu = struct {
             .pc = entry,
             .memory = memory,
             .reservation = null,
+            .privilege = .M,
         };
     }
 
@@ -131,4 +150,10 @@ test "Cpu.init sets reservation to null" {
     var dummy_mem: Memory = undefined;
     const cpu = Cpu.init(&dummy_mem, 0);
     try std.testing.expect(cpu.reservation == null);
+}
+
+test "Cpu.init starts in M-mode" {
+    var dummy_mem: Memory = undefined;
+    const cpu = Cpu.init(&dummy_mem, 0);
+    try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
 }
