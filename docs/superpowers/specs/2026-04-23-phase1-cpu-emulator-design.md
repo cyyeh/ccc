@@ -1,7 +1,6 @@
 # Phase 1 — RISC-V CPU Emulator (Design)
 
-**Project:** From-Scratch Computer (directory `nandtetris/`, will be renamed
-`riscvbox` later).
+**Project:** From-Scratch Computer (directory `ccc/`).
 **Phase:** 1 of 6 — see `2026-04-23-from-scratch-computer-roadmap.md`.
 **Status:** Approved design, ready for implementation planning.
 
@@ -14,7 +13,7 @@ syscall and writes the bytes to UART.
 
 ## Definition of done
 
-- `nandtetris hello.elf` prints `hello world\n` to host stdout.
+- `ccc hello.elf` prints `hello world\n` to host stdout.
 - The emulator passes the relevant subset of the official `riscv-tests`
   suite (rv32ui, rv32um, rv32ua, rv32mi).
 - The same `hello.elf` runs in both our emulator and QEMU `riscv32 virt`
@@ -272,7 +271,7 @@ written byte as exit code (truncated to u8). Used by the monitor's
 
 ### ELF (default)
 
-`nandtetris <file.elf>`:
+`ccc <file.elf>`:
 
 1. Parse ELF header. Verify `EI_CLASS = ELFCLASS32`, `e_machine =
    EM_RISCV`, `e_type = ET_EXEC`.
@@ -284,7 +283,7 @@ written byte as exit code (truncated to u8). Used by the monitor's
 
 ### Raw fallback
 
-`nandtetris --raw 0x80000000 <file.bin>`:
+`ccc --raw 0x80000000 <file.bin>`:
 
 1. Copy file bytes into RAM at the given address.
 2. `PC ← that address`. Privilege ← M.
@@ -336,7 +335,7 @@ world\n"` appears in captured stdout.
 
 1. Run in QEMU: `qemu-system-riscv32 -machine virt -bios none -kernel
    <file.elf> -nographic -singlestep -d in_asm,cpu` → trace A.
-2. Run in our emulator: `nandtetris --trace <file.elf>` → trace B.
+2. Run in our emulator: `ccc --trace <file.elf>` → trace B.
 3. Diff A and B, line by line, on `(PC, instruction, register state)`.
    First divergence is almost always the bug.
 
@@ -345,7 +344,7 @@ This is a tool we run by hand when stuck, not part of the CI suite.
 ## Project structure
 
 ```
-nandtetris/                       # → riscvbox (later)
+ccc/
 ├── build.zig
 ├── build.zig.zon
 ├── src/
@@ -378,7 +377,7 @@ nandtetris/                       # → riscvbox (later)
 ## CLI
 
 ```
-usage: nandtetris [options] <program>
+usage: ccc [options] <program>
 
 Run a RISC-V program in the emulator.
 

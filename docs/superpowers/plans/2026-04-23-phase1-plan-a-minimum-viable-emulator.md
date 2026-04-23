@@ -27,7 +27,7 @@ Plans 1.B–1.D fill in the rest of Phase 1 (M+A extensions, CSRs, privilege mod
 ## File structure (final state at end of Plan 1.A)
 
 ```
-nandtetris/
+ccc/
 ├── .gitignore
 ├── build.zig
 ├── build.zig.zon
@@ -73,10 +73,10 @@ nandtetris/
 ### Task 1: Project scaffolding
 
 **Files:**
-- Create: `nandtetris/.gitignore`
-- Create: `nandtetris/build.zig`
-- Create: `nandtetris/build.zig.zon`
-- Create: `nandtetris/src/main.zig`
+- Create: `ccc/.gitignore`
+- Create: `ccc/build.zig`
+- Create: `ccc/build.zig.zon`
+- Create: `ccc/src/main.zig`
 
 **Why this task:** Stand up the Zig project so we can compile and run something. No emulator logic yet — just confirm the toolchain works and we can build/run/test.
 
@@ -96,7 +96,7 @@ Run `zig init` once to generate a fingerprint, then replace the file contents wi
 
 ```zig
 .{
-    .name = .nandtetris,
+    .name = .ccc,
     .version = "0.1.0",
     .fingerprint = 0x0,  // replace with whatever zig init generated
     .minimum_zig_version = "0.14.0",
@@ -121,7 +121,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "nandtetris",
+        .name = "ccc",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -153,7 +153,7 @@ pub fn build(b: *std.Build) void {
 const std = @import("std");
 
 pub fn main() !void {
-    try std.io.getStdOut().writer().print("nandtetris stub — toolchain works\n", .{});
+    try std.io.getStdOut().writer().print("ccc stub — toolchain works\n", .{});
 }
 
 test "trivial" {
@@ -164,10 +164,10 @@ test "trivial" {
 - [ ] **Step 5: Verify build + run + test**
 
 Run: `zig build`
-Expected: succeeds silently, leaves binary in `zig-out/bin/nandtetris`.
+Expected: succeeds silently, leaves binary in `zig-out/bin/ccc`.
 
 Run: `zig build run`
-Expected: prints `nandtetris stub — toolchain works`.
+Expected: prints `ccc stub — toolchain works`.
 
 Run: `zig build test`
 Expected: succeeds (one trivial test passes).
@@ -176,7 +176,7 @@ Expected: succeeds (one trivial test passes).
 
 ```bash
 git add .gitignore build.zig build.zig.zon src/main.zig
-git commit -m "chore: scaffold Zig project for nandtetris emulator"
+git commit -m "chore: scaffold Zig project for ccc emulator"
 ```
 
 ---
@@ -253,7 +253,7 @@ comptime {
 }
 
 pub fn main() !void {
-    try std.io.getStdOut().writer().print("nandtetris stub — toolchain works\n", .{});
+    try std.io.getStdOut().writer().print("ccc stub — toolchain works\n", .{});
 }
 
 test "trivial" {
@@ -2446,7 +2446,7 @@ fn parseArgs(argv: []const [:0]const u8) !Args {
 fn printUsage() !void {
     const w = std.io.getStdErr().writer();
     try w.print(
-        \\usage: nandtetris --raw <hex-addr> <program.bin>
+        \\usage: ccc --raw <hex-addr> <program.bin>
         \\
         \\Plan 1.A only supports raw-binary loading (--raw is required).
         \\ELF support arrives in Plan 1.C.
@@ -2671,7 +2671,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "nandtetris",
+        .name = "ccc",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
