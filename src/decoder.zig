@@ -65,6 +65,16 @@ pub const Op = enum {
     amomax_w,
     amominu_w,
     amomaxu_w,
+    // Zicsr (Plan 1.C, Task 3)
+    csrrw,
+    csrrs,
+    csrrc,
+    csrrwi,
+    csrrsi,
+    csrrci,
+    // Machine-mode privileged (Plan 1.C, Task 9)
+    mret,
+    wfi,
     // (more added in later plans)
     illegal,
 };
@@ -72,9 +82,10 @@ pub const Op = enum {
 pub const Instruction = struct {
     op: Op,
     rd: u5 = 0,
-    rs1: u5 = 0,
+    rs1: u5 = 0, // on csrr*i, this slot holds the 5-bit uimm (not a register)
     rs2: u5 = 0,
     imm: i32 = 0,
+    csr: u12 = 0,
     raw: u32 = 0,
 };
 
@@ -281,14 +292,40 @@ pub fn decode(word: u32) Instruction {
                 else => .{ .op = .illegal, .raw = word },
             };
         },
-        0b1110011 => {
-            // SYSTEM: funct3 must be 000, then imm distinguishes ecall (0) vs ebreak (1).
-            if (funct3(word) != 0) return .{ .op = .illegal, .raw = word };
+        0b1110011 => blk: {
+            const f3 = funct3(word);
             const imm12: u32 = (word >> 20) & 0xFFF;
-            return switch (imm12) {
-                0 => .{ .op = .ecall, .raw = word },
-                1 => .{ .op = .ebreak, .raw = word },
-                else => .{ .op = .illegal, .raw = word },
+            if (f3 == 0b000) {
+                // ecall / ebreak / mret / wfi — distinguished by the full 12-bit imm field.
+                // rd and rs1 are required to be zero for these; if they're not, the
+                // instruction is still a valid encoding per spec, so we don't check.
+                const op: Op = switch (imm12) {
+                    0x000 => .ecall,
+                    0x001 => .ebreak,
+                    0x302 => .mret,
+                    0x105 => .wfi,
+                    else => .illegal,
+                };
+                break :blk .{ .op = op, .raw = word };
+            }
+            // Zicsr — 12-bit csr address lives in bits 31:20.
+            const csr_addr: u12 = @truncate(imm12);
+            const op: Op = switch (f3) {
+                0b001 => .csrrw,
+                0b010 => .csrrs,
+                0b011 => .csrrc,
+                0b100 => .illegal, // reserved funct3
+                0b101 => .csrrwi,
+                0b110 => .csrrsi,
+                0b111 => .csrrci,
+                else => .illegal, // f3 == 0 handled above
+            };
+            break :blk .{
+                .op = op,
+                .rd = rd(word),
+                .rs1 = rs1(word),
+                .csr = csr_addr,
+                .raw = word,
             };
         },
         0b0101111 => blk: {
@@ -641,4 +678,85 @@ test "aq/rl bits in AMO are decoded but don't change Op (amoswap.w with aq=1,rl=
     // Full word: 0x0E20A1AF
     const i = decode(0x0E20A1AF);
     try std.testing.expectEqual(Op.amoswap_w, i.op);
+}
+
+test "decode CSRRW a0, mstatus, t0 → 0x300292F3" {
+    // csrrw x5 (t0) into mstatus (0x300), read into x5 (t0)? Let's pick clear operands.
+    // csrrw rd=x5, rs1=x5, csr=0x300 → bits: csr[31:20]=0x300, rs1[19:15]=00101,
+    // funct3[14:12]=001, rd[11:7]=00101, opcode[6:0]=1110011
+    //   = 0b001100000000_00101_001_00101_1110011
+    //   = 0x300292F3
+    const i = decode(0x300292F3);
+    try std.testing.expectEqual(Op.csrrw, i.op);
+    try std.testing.expectEqual(@as(u5, 5), i.rd);
+    try std.testing.expectEqual(@as(u5, 5), i.rs1);
+    try std.testing.expectEqual(@as(u12, 0x300), i.csr);
+}
+
+test "decode CSRRS rd=x1, rs1=x0, csr=mhartid → 0xF14022F3 has rd=5, not 1; re-encode" {
+    // csrrs rd=x5 (t0), rs1=x0, csr=0xF14 (mhartid)
+    // bits: 0xF14 << 20 | 0 << 15 | 010 << 12 | 5 << 7 | 0b1110011
+    //   = 0xF140_0000 | 0 | 0x2000 | 0x0280 | 0x73
+    //   = 0xF14022F3
+    const i = decode(0xF14022F3);
+    try std.testing.expectEqual(Op.csrrs, i.op);
+    try std.testing.expectEqual(@as(u5, 5), i.rd);
+    try std.testing.expectEqual(@as(u5, 0), i.rs1);
+    try std.testing.expectEqual(@as(u12, 0xF14), i.csr);
+}
+
+test "decode CSRRC rd=x3, rs1=x4, csr=mtvec" {
+    // csrrc rd=x3, rs1=x4, csr=0x305 (mtvec)
+    // 0x305 << 20 | 4 << 15 | 011 << 12 | 3 << 7 | 0x73
+    //   = 0x3050_0000 | 0x0002_0000 | 0x3000 | 0x0180 | 0x73
+    //   = 0x305231F3
+    const i = decode(0x305231F3);
+    try std.testing.expectEqual(Op.csrrc, i.op);
+    try std.testing.expectEqual(@as(u5, 3), i.rd);
+    try std.testing.expectEqual(@as(u5, 4), i.rs1);
+    try std.testing.expectEqual(@as(u12, 0x305), i.csr);
+}
+
+test "decode CSRRWI rd=x1, uimm=0x1F, csr=mepc — uimm lives in the rs1 slot" {
+    // csrrwi rd=x1, zimm=0x1F (= 31), csr=0x341 (mepc)
+    // 0x341 << 20 | 0x1F << 15 | 101 << 12 | 1 << 7 | 0x73
+    //   = 0x3410_0000 | 0x000F_8000 | 0x5000 | 0x0080 | 0x73
+    //   = 0x341FD0F3
+    const i = decode(0x341FD0F3);
+    try std.testing.expectEqual(Op.csrrwi, i.op);
+    try std.testing.expectEqual(@as(u5, 1), i.rd);
+    try std.testing.expectEqual(@as(u5, 0x1F), i.rs1); // uimm stashed in rs1 slot
+    try std.testing.expectEqual(@as(u12, 0x341), i.csr);
+}
+
+test "decode CSRRSI rd=x0, uimm=0, csr=0xC00 (cycle — unsupported in Phase 1 but decode succeeds)" {
+    // csrrsi rd=x0, zimm=0, csr=0xC00
+    // 0xC00 << 20 | 0 << 15 | 110 << 12 | 0 << 7 | 0x73
+    //   = 0xC000_0000 | 0 | 0x6000 | 0 | 0x73
+    //   = 0xC0006073
+    const i = decode(0xC0006073);
+    try std.testing.expectEqual(Op.csrrsi, i.op);
+    try std.testing.expectEqual(@as(u5, 0), i.rd);
+    try std.testing.expectEqual(@as(u5, 0), i.rs1);
+    try std.testing.expectEqual(@as(u12, 0xC00), i.csr);
+}
+
+test "decode CSRRCI rd=x7, uimm=0b10101, csr=mie" {
+    // csrrci rd=x7, zimm=0x15, csr=0x304 (mie)
+    // 0x304 << 20 | 0x15 << 15 | 111 << 12 | 7 << 7 | 0x73
+    //   = 0x3040_0000 | 0x000A_8000 | 0x7000 | 0x0380 | 0x73
+    //   = 0x304AF3F3
+    const i = decode(0x304AF3F3);
+    try std.testing.expectEqual(Op.csrrci, i.op);
+    try std.testing.expectEqual(@as(u5, 7), i.rd);
+    try std.testing.expectEqual(@as(u5, 0x15), i.rs1);
+    try std.testing.expectEqual(@as(u12, 0x304), i.csr);
+}
+
+test "SYSTEM with funct3=100 decodes to illegal (reserved in Zicsr)" {
+    // csr=0x300, rs1=0, funct3=100 (reserved), rd=5, opcode=0x73
+    // 0x300 << 20 | 0 << 15 | 100 << 12 | 5 << 7 | 0x73
+    //   = 0x30004_2F3
+    const i = decode(0x300042F3);
+    try std.testing.expectEqual(Op.illegal, i.op);
 }

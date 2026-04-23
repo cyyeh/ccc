@@ -145,7 +145,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .fence => {
             cpu.pc +%= 4;
         },
-        .ecall, .ebreak => return ExecuteError.UnsupportedInstruction,
+        .ecall, .ebreak, .csrrw, .csrrs, .csrrc, .csrrwi, .csrrsi, .csrrci, .mret, .wfi => return ExecuteError.UnsupportedInstruction,
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
             const b = cpu.readReg(instr.rs2);
