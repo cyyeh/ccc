@@ -164,11 +164,30 @@ pub fn build(b: *std.Build) void {
         }
     }.call;
 
-    const smoke = riscvTestStep(b, rv_target, rv_link_script, .{
-        .family = "rv32ui",
-        .name = "add",
-    });
-    const smoke_step = b.step("riscv-tests-smoke", "Build a single riscv-test as a smoke check");
-    smoke_step.dependOn(&smoke.install.step);
-    _ = smoke.bin;
+    const rv32ui_tests = [_][]const u8{ "add", "addi", "and", "andi", "auipc", "beq", "bge", "bgeu", "blt", "bltu", "bne", "fence_i", "jal", "jalr", "lb", "lbu", "lh", "lhu", "lui", "lw", "or", "ori", "sb", "sh", "simple", "sll", "slli", "slt", "slti", "sltiu", "sltu", "sra", "srai", "srl", "srli", "sub", "sw", "xor", "xori" };
+    const rv32um_tests = [_][]const u8{ "mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu" };
+    const rv32ua_tests = [_][]const u8{ "amoadd_w", "amoand_w", "amomax_w", "amomaxu_w", "amomin_w", "amominu_w", "amoor_w", "amoswap_w", "amoxor_w", "lrsc" };
+    const rv32mi_tests = [_][]const u8{ "csr", "illegal", "ma_addr", "ma_fetch", "mcsr", "sbreak", "scall", "shamt", "breakpoint" };
+
+    const rv_step = b.step("riscv-tests", "Run the riscv-tests suite");
+
+    const all_families = [_]struct { family: []const u8, list: []const []const u8 }{
+        .{ .family = "rv32ui", .list = &rv32ui_tests },
+        .{ .family = "rv32um", .list = &rv32um_tests },
+        .{ .family = "rv32ua", .list = &rv32ua_tests },
+        .{ .family = "rv32mi", .list = &rv32mi_tests },
+    };
+
+    for (all_families) |fam| {
+        for (fam.list) |name| {
+            const elf_path = riscvTestStep(b, rv_target, rv_link_script, .{
+                .family = fam.family,
+                .name = name,
+            });
+            const run_it = b.addRunArtifact(exe);
+            run_it.addFileArg(elf_path.bin);
+            run_it.expectExitCode(0);
+            rv_step.dependOn(&run_it.step);
+        }
+    }
 }
