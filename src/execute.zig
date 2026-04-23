@@ -35,6 +35,24 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.writeReg(instr.rd, link);
             cpu.pc = target;
         },
+        .beq, .bne, .blt, .bge, .bltu, .bgeu => {
+            const a = cpu.readReg(instr.rs1);
+            const b = cpu.readReg(instr.rs2);
+            const taken = switch (instr.op) {
+                .beq => a == b,
+                .bne => a != b,
+                .blt => @as(i32, @bitCast(a)) < @as(i32, @bitCast(b)),
+                .bge => @as(i32, @bitCast(a)) >= @as(i32, @bitCast(b)),
+                .bltu => a < b,
+                .bgeu => a >= b,
+                else => unreachable,
+            };
+            if (taken) {
+                cpu.pc = cpu.pc +% @as(u32, @bitCast(instr.imm));
+            } else {
+                cpu.pc +%= 4;
+            }
+        },
         .illegal => return ExecuteError.IllegalInstruction,
     }
 }
@@ -112,4 +130,44 @@ test "JALR uses rs1+imm for target, clears low bit" {
     try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.readReg(1));
     // RISC-V spec: PC = (rs1 + imm) & ~1
     try std.testing.expectEqual(mem_mod.RAM_BASE + 0x100, rig.cpu.pc);
+}
+
+test "BEQ taken: jumps when rs1 == rs2" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 42);
+    rig.cpu.writeReg(2, 42);
+    try dispatch(.{ .op = .beq, .rs1 = 1, .rs2 = 2, .imm = 12 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 12, rig.cpu.pc);
+}
+
+test "BEQ not-taken: pc += 4 when rs1 != rs2" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 42);
+    rig.cpu.writeReg(2, 0);
+    try dispatch(.{ .op = .beq, .rs1 = 1, .rs2 = 2, .imm = 12 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "BLT signed: -1 < 1" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, @bitCast(@as(i32, -1)));
+    rig.cpu.writeReg(2, 1);
+    try dispatch(.{ .op = .blt, .rs1 = 1, .rs2 = 2, .imm = 8 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 8, rig.cpu.pc);
+}
+
+test "BLTU unsigned: 0xFFFF_FFFF NOT < 1" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0xFFFF_FFFF);
+    rig.cpu.writeReg(2, 1);
+    try dispatch(.{ .op = .bltu, .rs1 = 1, .rs2 = 2, .imm = 8 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
 }
