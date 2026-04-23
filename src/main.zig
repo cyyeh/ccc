@@ -13,6 +13,7 @@ comptime {
     _ = @import("decoder.zig");
     _ = @import("execute.zig");
     _ = @import("csr.zig");
+    _ = @import("trap.zig");
 }
 
 const Args = struct {
