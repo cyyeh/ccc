@@ -256,7 +256,21 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .ebreak => {
             trap.enter(.breakpoint, 0, cpu);
         },
-        .mret, .wfi => return ExecuteError.FatalTrap, // placeholder — Task 9
+        .mret => {
+            if (cpu.privilege != .M) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            trap.exit_mret(cpu);
+        },
+        .wfi => {
+            if (cpu.privilege != .M) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            // Phase 1 has no interrupt sources; wfi is a no-op (advance PC).
+            cpu.pc +%= 4;
+        },
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
             const b = cpu.readReg(instr.rs2);
@@ -1220,4 +1234,57 @@ test "AMO on misaligned address traps with cause=store_addr_misaligned" {
         rig.cpu.csr.mcause,
     );
     try std.testing.expectEqual(mem_mod.RAM_BASE + 0x41, rig.cpu.csr.mtval);
+}
+
+test "MRET in M-mode: PC←mepc, privilege←MPP, MIE←MPIE, MPIE←1, MPP←U" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE + 0x400);
+    defer rig.deinit();
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.mepc = mem_mod.RAM_BASE + 0x108;
+    rig.cpu.csr.mstatus = csr_mod.MSTATUS_MPIE;
+    try dispatch(.{ .op = .mret, .raw = 0x30200073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x108, rig.cpu.pc);
+    try std.testing.expectEqual(cpu_mod.PrivilegeMode.U, rig.cpu.privilege);
+    const ms = rig.cpu.csr.mstatus;
+    try std.testing.expect((ms & csr_mod.MSTATUS_MIE) != 0);
+    try std.testing.expect((ms & csr_mod.MSTATUS_MPIE) != 0);
+    try std.testing.expectEqual(@as(u32, 0), ms & csr_mod.MSTATUS_MPP_MASK);
+}
+
+test "MRET in U-mode traps as illegal-instruction" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .mret, .raw = 0x30200073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
+}
+
+test "WFI in M-mode is a no-op (advances PC by 4)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .M;
+    try dispatch(.{ .op = .wfi, .raw = 0x10500073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "WFI in U-mode traps as illegal-instruction" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .wfi, .raw = 0x10500073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
 }
