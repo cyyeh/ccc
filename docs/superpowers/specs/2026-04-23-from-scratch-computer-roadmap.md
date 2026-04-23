@@ -22,15 +22,6 @@ our own programs (including a tiny HTTP/1.0 text browser).
 
 ## Phases
 
-### Phase 0 — Toolchain & Zig warm-up (~2-4 weeks)
-
-Install pinned Zig + RISC-V cross-compile target + QEMU. Build a tiny
-RISC-V assembly "hello world" running in QEMU as a sanity check on the
-toolchain. Run `ziglings` exercises in parallel to build Zig fluency.
-
-**Demo:** `zig build` produces a RISC-V binary; sample asm hello world
-runs in QEMU.
-
 ### Phase 1 — RISC-V CPU emulator (~2-4 months)
 
 Write the emulator in Zig. Implement the chosen RV32 extension set plus
