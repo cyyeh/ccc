@@ -103,6 +103,10 @@ pub fn funct7(word: u32) u7 {
     return @truncate((word >> 25) & 0x7F);
 }
 
+pub fn funct5(word: u32) u5 {
+    return @truncate((word >> 27) & 0x1F);
+}
+
 // U-type immediate: bits 31:12 → upper 20 bits of result, lower 12 are zero.
 pub fn immU(word: u32) i32 {
     return @bitCast(word & 0xFFFF_F000);
@@ -286,6 +290,29 @@ pub fn decode(word: u32) Instruction {
                 1 => .{ .op = .ebreak, .raw = word },
                 else => .{ .op = .illegal, .raw = word },
             };
+        },
+        0b0101111 => blk: {
+            // RV32A — all instructions share opcode 0x2F, funct3 = 010 (W-width).
+            // funct5 (bits 31:27) distinguishes the 11 variants.
+            // Bits 26 (aq) and 25 (rl) are decoded into the raw word but not
+            // acted on; single-hart emulation has no reordering to suppress.
+            if (funct3(word) != 0b010) break :blk .{ .op = .illegal, .raw = word };
+            const f5 = funct5(word);
+            const op: Op = switch (f5) {
+                0b00010 => .lr_w,
+                0b00011 => .sc_w,
+                0b00001 => .amoswap_w,
+                0b00000 => .amoadd_w,
+                0b00100 => .amoxor_w,
+                0b01100 => .amoand_w,
+                0b01000 => .amoor_w,
+                0b10000 => .amomin_w,
+                0b10100 => .amomax_w,
+                0b11000 => .amominu_w,
+                0b11100 => .amomaxu_w,
+                else => .illegal,
+            };
+            break :blk .{ .op = op, .rd = rd(word), .rs1 = rs1(word), .rs2 = rs2(word), .raw = word };
         },
         else => .{ .op = .illegal, .raw = word },
     };
@@ -529,4 +556,89 @@ test "FENCE (funct3=0) still decodes to fence, not fence_i" {
     // opcode=0001111, rd=0, funct3=000, rs1=0, imm=0
     const i = decode(0x0000000F);
     try std.testing.expectEqual(Op.fence, i.op);
+}
+
+test "decode LR.W x3, (x1) → 0x1000A1AF" {
+    // opcode=0101111, rd=00011, funct3=010, rs1=00001, rs2=00000,
+    // aq=0, rl=0, funct5=00010 → 0x1000A1AF
+    const i = decode(0x1000A1AF);
+    try std.testing.expectEqual(Op.lr_w, i.op);
+    try std.testing.expectEqual(@as(u5, 3), i.rd);
+    try std.testing.expectEqual(@as(u5, 1), i.rs1);
+}
+
+test "decode SC.W x3, x2, (x1) → 0x1820A1AF" {
+    // funct5=00011, rs2=00010
+    const i = decode(0x1820A1AF);
+    try std.testing.expectEqual(Op.sc_w, i.op);
+    try std.testing.expectEqual(@as(u5, 3), i.rd);
+    try std.testing.expectEqual(@as(u5, 1), i.rs1);
+    try std.testing.expectEqual(@as(u5, 2), i.rs2);
+}
+
+test "decode AMOSWAP.W x3, x2, (x1) → 0x0820A1AF" {
+    // funct5=00001
+    const i = decode(0x0820A1AF);
+    try std.testing.expectEqual(Op.amoswap_w, i.op);
+}
+
+test "decode AMOADD.W x3, x2, (x1) → 0x0020A1AF" {
+    // funct5=00000
+    const i = decode(0x0020A1AF);
+    try std.testing.expectEqual(Op.amoadd_w, i.op);
+}
+
+test "decode AMOXOR.W → funct5=00100" {
+    const i = decode(0x2020A1AF);
+    try std.testing.expectEqual(Op.amoxor_w, i.op);
+}
+
+test "decode AMOAND.W → funct5=01100" {
+    const i = decode(0x6020A1AF);
+    try std.testing.expectEqual(Op.amoand_w, i.op);
+}
+
+test "decode AMOOR.W → funct5=01000" {
+    const i = decode(0x4020A1AF);
+    try std.testing.expectEqual(Op.amoor_w, i.op);
+}
+
+test "decode AMOMIN.W → funct5=10000" {
+    const i = decode(0x8020A1AF);
+    try std.testing.expectEqual(Op.amomin_w, i.op);
+}
+
+test "decode AMOMAX.W → funct5=10100" {
+    const i = decode(0xA020A1AF);
+    try std.testing.expectEqual(Op.amomax_w, i.op);
+}
+
+test "decode AMOMINU.W → funct5=11000" {
+    const i = decode(0xC020A1AF);
+    try std.testing.expectEqual(Op.amominu_w, i.op);
+}
+
+test "decode AMOMAXU.W → funct5=11100" {
+    const i = decode(0xE020A1AF);
+    try std.testing.expectEqual(Op.amomaxu_w, i.op);
+}
+
+test "AMO with funct3 != 010 decodes to illegal (no D-width in RV32A)" {
+    // Same as amoswap.w but funct3=011 → illegal
+    const i = decode(0x0820B1AF);
+    try std.testing.expectEqual(Op.illegal, i.op);
+}
+
+test "AMO with unknown funct5 decodes to illegal" {
+    // funct5=11111 (not allocated)
+    const i = decode(0xF820A1AF);
+    try std.testing.expectEqual(Op.illegal, i.op);
+}
+
+test "aq/rl bits in AMO are decoded but don't change Op (amoswap.w with aq=1,rl=1)" {
+    // Same as amoswap.w test but with aq=1, rl=1 → bits 26,25 set.
+    // funct5=00001, aq=1, rl=1 → bits 31..25 = 0000_1_1_1 = 0x07 → 0x0E
+    // Full word: 0x0E20A1AF
+    const i = decode(0x0E20A1AF);
+    try std.testing.expectEqual(Op.amoswap_w, i.op);
 }
