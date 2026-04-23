@@ -7,6 +7,7 @@ comptime {
     _ = @import("devices/halt.zig");
     _ = @import("devices/uart.zig");
     _ = @import("decoder.zig");
+    _ = @import("execute.zig");
 }
 
 pub fn main(init: std.process.Init) !void {
