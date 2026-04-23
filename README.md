@@ -49,21 +49,27 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build run -- <args>` | Build and execute `ccc`, forwarding args after `--` |
 | `zig build test` | Run all unit tests reachable from `src/main.zig` |
 | `zig build hello` | Build the hand-crafted RV32I hello-world binary to `zig-out/hello.bin` |
-| `zig build e2e` | Encode → emulate → assert stdout equals `hello world\n` |
+| `zig build e2e` | Encode → emulate → assert stdout equals `hello world\n` (RV32I) |
+| `zig build mul-demo` | Build the hand-crafted RV32IMA demo binary to `zig-out/mul_demo.bin` |
+| `zig build e2e-mul` | Encode → emulate → assert stdout equals `42\n` (exercises M + A + Zifencei) |
 
-The `hello` and `e2e` steps are worth a closer look: a small host-side
-encoder (`tests/programs/hello/encode_hello.zig`) emits a raw RV32I binary,
-which `e2e` feeds to `ccc --raw 0x80000000` and checks the UART output.
-All three artifacts (encoder, binary, emulator run) are wired into the
-build graph so changes propagate automatically.
+The `hello`/`e2e` and `mul-demo`/`e2e-mul` step pairs are worth a closer
+look: each has a small host-side encoder under `tests/programs/` that
+emits a raw binary, which the corresponding `e2e*` step feeds to
+`ccc --raw 0x80000000` and checks the UART output. All artifacts
+(encoder, binary, emulator run) are wired into the build graph so
+changes propagate automatically. The `e2e` demo covers RV32I only; the
+`e2e-mul` demo additionally exercises M (`mul`, `divu`, `remu`), A
+(`amoswap.w`), and Zifencei (`fence.i`).
 
 Cross-compilation and optimization flags are exposed via the standard
 `-Dtarget=…` and `-Doptimize=…` options.
 
 ## Status
 
-Currently on **Phase 1 — RISC-V CPU emulator**. Design is approved;
-implementation plan 1.A (minimum viable emulator) is drafted.
+Currently on **Phase 1 — RISC-V CPU emulator**. Plans 1.A (RV32I) and
+1.B (M + A + Zifencei) are merged. Plan 1.C (Zicsr + privilege + traps)
+is next.
 
 ## Layout
 
