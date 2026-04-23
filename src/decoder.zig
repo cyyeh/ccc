@@ -11,6 +11,14 @@ pub const Op = enum {
     bge,
     bltu,
     bgeu,
+    lb,
+    lh,
+    lw,
+    lbu,
+    lhu,
+    sb,
+    sh,
+    sw,
     // (more added in later tasks)
     illegal,
 };
@@ -78,6 +86,17 @@ pub fn immB(word: u32) i32 {
     return @bitCast(unsigned);
 }
 
+// S-type immediate: bits 31:25 || 11:7 sign-extended.
+pub fn immS(word: u32) i32 {
+    const high: u32 = (word >> 25) & 0x7F;
+    const low: u32 = (word >> 7) & 0x1F;
+    const unsigned: u32 = (high << 5) | low;
+    if ((high & 0x40) != 0) {
+        return @bitCast(unsigned | 0xFFFF_F000);
+    }
+    return @bitCast(unsigned);
+}
+
 // J-type immediate: bits scrambled, multiplied by 2 implicitly.
 pub fn immJ(word: u32) i32 {
     const imm20: u32 = (word >> 31) & 0x1;
@@ -113,6 +132,26 @@ pub fn decode(word: u32) Instruction {
                 else => .illegal,
             };
             break :blk .{ .op = op, .rs1 = rs1(word), .rs2 = rs2(word), .imm = immB(word), .raw = word };
+        },
+        0b0000011 => blk: {
+            const op: Op = switch (funct3(word)) {
+                0b000 => .lb,
+                0b001 => .lh,
+                0b010 => .lw,
+                0b100 => .lbu,
+                0b101 => .lhu,
+                else => .illegal,
+            };
+            break :blk .{ .op = op, .rd = rd(word), .rs1 = rs1(word), .imm = immI(word), .raw = word };
+        },
+        0b0100011 => blk: {
+            const op: Op = switch (funct3(word)) {
+                0b000 => .sb,
+                0b001 => .sh,
+                0b010 => .sw,
+                else => .illegal,
+            };
+            break :blk .{ .op = op, .rs1 = rs1(word), .rs2 = rs2(word), .imm = immS(word), .raw = word };
         },
         else => .{ .op = .illegal, .raw = word },
     };
@@ -194,4 +233,43 @@ test "decode BNE with negative offset" {
     try std.testing.expectEqual(@as(u5, 1), i.rs1);
     try std.testing.expectEqual(@as(u5, 2), i.rs2);
     try std.testing.expectEqual(@as(i32, -8), i.imm);
+}
+
+test "decode LB t2, 0(t1) → 0x00030383" {
+    const i = decode(0x00030383);
+    try std.testing.expectEqual(Op.lb, i.op);
+    try std.testing.expectEqual(@as(u5, 7), i.rd);
+    try std.testing.expectEqual(@as(u5, 6), i.rs1);
+    try std.testing.expectEqual(@as(i32, 0), i.imm);
+}
+
+test "decode SB t2, 0(t0) → 0x00728023" {
+    const i = decode(0x00728023);
+    try std.testing.expectEqual(Op.sb, i.op);
+    try std.testing.expectEqual(@as(u5, 5), i.rs1);
+    try std.testing.expectEqual(@as(u5, 7), i.rs2);
+    try std.testing.expectEqual(@as(i32, 0), i.imm);
+}
+
+test "decode LW with positive offset" {
+    // lw x5, 8(x6)  → imm=8, rs1=6, funct3=010, rd=5, opcode=0000011
+    // bits 31:20=0x008, 19:15=00110, 14:12=010, 11:7=00101, 6:0=0000011
+    // = 0x00832283
+    const i = decode(0x00832283);
+    try std.testing.expectEqual(Op.lw, i.op);
+    try std.testing.expectEqual(@as(u5, 5), i.rd);
+    try std.testing.expectEqual(@as(u5, 6), i.rs1);
+    try std.testing.expectEqual(@as(i32, 8), i.imm);
+}
+
+test "decode SW with negative offset" {
+    // sw x5, -4(x6)  → imm=-4, rs1=6, rs2=5, funct3=010, opcode=0100011
+    // imm[11:5]=1111111, imm[4:0]=11100
+    // bits 31:25=1111111, 24:20=00101, 19:15=00110, 14:12=010, 11:7=11100, 6:0=0100011
+    // = 0xFE532E23
+    const i = decode(0xFE532E23);
+    try std.testing.expectEqual(Op.sw, i.op);
+    try std.testing.expectEqual(@as(u5, 6), i.rs1);
+    try std.testing.expectEqual(@as(u5, 5), i.rs2);
+    try std.testing.expectEqual(@as(i32, -4), i.imm);
 }

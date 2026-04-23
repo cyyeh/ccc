@@ -53,8 +53,60 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 cpu.pc +%= 4;
             }
         },
+        .lb, .lh, .lw, .lbu, .lhu => {
+            const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
+            const value: u32 = switch (instr.op) {
+                .lb => blk: {
+                    const byte = cpu.memory.loadByte(addr) catch |e| return mapMemErr(e);
+                    break :blk @bitCast(@as(i32, @as(i8, @bitCast(byte))));
+                },
+                .lbu => blk: {
+                    const byte = cpu.memory.loadByte(addr) catch |e| return mapMemErr(e);
+                    break :blk @as(u32, byte);
+                },
+                .lh => blk: {
+                    const half = cpu.memory.loadHalfword(addr) catch |e| return mapMemErr(e);
+                    break :blk @bitCast(@as(i32, @as(i16, @bitCast(half))));
+                },
+                .lhu => blk: {
+                    const half = cpu.memory.loadHalfword(addr) catch |e| return mapMemErr(e);
+                    break :blk @as(u32, half);
+                },
+                .lw => cpu.memory.loadWord(addr) catch |e| return mapMemErr(e),
+                else => unreachable,
+            };
+            cpu.writeReg(instr.rd, value);
+            cpu.pc +%= 4;
+        },
+        .sb => {
+            const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
+            const value: u8 = @truncate(cpu.readReg(instr.rs2));
+            cpu.memory.storeByte(addr, value) catch |e| return mapMemErr(e);
+            cpu.pc +%= 4;
+        },
+        .sh => {
+            const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
+            const value: u16 = @truncate(cpu.readReg(instr.rs2));
+            cpu.memory.storeHalfword(addr, value) catch |e| return mapMemErr(e);
+            cpu.pc +%= 4;
+        },
+        .sw => {
+            const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
+            cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| return mapMemErr(e);
+            cpu.pc +%= 4;
+        },
         .illegal => return ExecuteError.IllegalInstruction,
     }
+}
+
+fn mapMemErr(e: mem_mod.MemoryError) ExecuteError {
+    return switch (e) {
+        error.OutOfBounds => ExecuteError.OutOfBounds,
+        error.MisalignedAccess => ExecuteError.MisalignedAccess,
+        error.UnexpectedRegister => ExecuteError.UnexpectedRegister,
+        error.WriteFailed => ExecuteError.WriteFailed,
+        error.Halt => ExecuteError.Halt,
+    };
 }
 
 const halt_dev = @import("devices/halt.zig");
@@ -170,4 +222,74 @@ test "BLTU unsigned: 0xFFFF_FFFF NOT < 1" {
     rig.cpu.writeReg(2, 1);
     try dispatch(.{ .op = .bltu, .rs1 = 1, .rs2 = 2, .imm = 8 }, &rig.cpu);
     try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "LB sign-extends a negative byte" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeByte(mem_mod.RAM_BASE + 0x40, 0xFF); // -1 as i8
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE);
+    try dispatch(.{ .op = .lb, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(2));
+}
+
+test "LBU zero-extends" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeByte(mem_mod.RAM_BASE + 0x40, 0xFF);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE);
+    try dispatch(.{ .op = .lbu, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x0000_00FF), rig.cpu.readReg(2));
+}
+
+test "LH sign-extends a negative halfword" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeHalfword(mem_mod.RAM_BASE + 0x40, 0x8000);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE);
+    try dispatch(.{ .op = .lh, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_8000), rig.cpu.readReg(2));
+}
+
+test "LW round-trip" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xDEAD_BEEF);
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE);
+    try dispatch(.{ .op = .lw, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xDEAD_BEEF), rig.cpu.readReg(2));
+}
+
+test "SB stores low byte of rs2" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE);
+    rig.cpu.writeReg(2, 0xDEAD_BE12);
+    try dispatch(.{ .op = .sb, .rs1 = 1, .rs2 = 2, .imm = 8 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u8, 0x12), try rig.mem.loadByte(mem_mod.RAM_BASE + 8));
+}
+
+test "SW stores full word" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, mem_mod.RAM_BASE);
+    rig.cpu.writeReg(2, 0xCAFE_BABE);
+    try dispatch(.{ .op = .sw, .rs1 = 1, .rs2 = 2, .imm = 0x10 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xCAFE_BABE), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x10));
+}
+
+test "SB to UART address forwards to writer" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.writeReg(1, 0x1000_0000);
+    rig.cpu.writeReg(2, 'A');
+    try dispatch(.{ .op = .sb, .rs1 = 1, .rs2 = 2, .imm = 0 }, &rig.cpu);
+    try std.testing.expectEqualStrings("A", rig.aw.written());
 }
