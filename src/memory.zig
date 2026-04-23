@@ -133,11 +133,11 @@ pub const Memory = struct {
         if (self.inTohost(addr)) {
             const off = try self.ramOffset(addr);
             self.ram[off] = value;
-            // Record the low byte of the first tohost write as exit code so
-            // `halt.exit_code` reflects the riscv-tests pass/fail convention
-            // (TESTNUM<<1 | 1; value 1 = pass, anything else = TESTNUM).
-            if (self.halt.exit_code == null) {
-                self.halt.exit_code = value;
+            // riscv-tests HTIF convention: the first nonzero byte written to
+            // tohost encodes the result. Value 1 == PASS (exit 0); any other
+            // nonzero value v == FAIL with test number (v >> 1).
+            if (self.halt.exit_code == null and value != 0) {
+                self.halt.exit_code = if (value == 1) 0 else value >> 1;
             }
             return MemoryError.Halt;
         }
