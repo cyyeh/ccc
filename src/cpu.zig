@@ -1,17 +1,13 @@
 const std = @import("std");
 const decoder = @import("decoder.zig");
 const execute = @import("execute.zig");
+const trap = @import("trap.zig");
 const Memory = @import("memory.zig").Memory;
 const MemoryError = @import("memory.zig").MemoryError;
 
 pub const StepError = error{
-    UnsupportedInstruction,
-    IllegalInstruction,
     Halt,
-    OutOfBounds,
-    MisalignedAccess,
-    UnexpectedRegister,
-    WriteFailed,
+    FatalTrap,
 };
 
 /// Two-level RISC-V privilege, spec §Privilege & trap model.
@@ -78,9 +74,22 @@ pub const Cpu = struct {
     }
 
     pub fn step(self: *Cpu) StepError!void {
-        const word = self.memory.loadWord(self.pc) catch |e| return mapMemErr(e);
+        const word = self.memory.loadWord(self.pc) catch |e| switch (e) {
+            error.Halt => return StepError.Halt,
+            error.MisalignedAccess => {
+                trap.enter(.instr_addr_misaligned, self.pc, self);
+                return;
+            },
+            else => {
+                trap.enter(.instr_access_fault, self.pc, self);
+                return;
+            },
+        };
         const instr = decoder.decode(word);
-        return execute.dispatch(instr, self) catch |e| @errorCast(e);
+        return execute.dispatch(instr, self) catch |e| switch (e) {
+            error.Halt => StepError.Halt,
+            error.FatalTrap => StepError.FatalTrap,
+        };
     }
 
     pub fn run(self: *Cpu) StepError!void {
@@ -90,16 +99,6 @@ pub const Cpu = struct {
                 else => return err,
             };
         }
-    }
-
-    fn mapMemErr(e: MemoryError) StepError {
-        return switch (e) {
-            error.OutOfBounds => StepError.OutOfBounds,
-            error.MisalignedAccess => StepError.MisalignedAccess,
-            error.UnexpectedRegister => StepError.UnexpectedRegister,
-            error.WriteFailed => StepError.WriteFailed,
-            error.Halt => StepError.Halt,
-        };
     }
 };
 
@@ -145,21 +144,6 @@ test "Cpu.run halts cleanly when program writes to halt MMIO" {
     var cpu = Cpu.init(&mem, RAM_BASE);
     try cpu.run();
     try std.testing.expectEqual(@as(?u8, 0), halt.exit_code);
-}
-
-test "Cpu.run propagates UnsupportedInstruction" {
-    var halt = @import("devices/halt.zig").Halt.init();
-    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart);
-    defer mem.deinit();
-
-    const RAM_BASE = @import("memory.zig").RAM_BASE;
-    try mem.storeWord(RAM_BASE, 0x00000073); // ECALL
-
-    var cpu = Cpu.init(&mem, RAM_BASE);
-    try std.testing.expectError(StepError.UnsupportedInstruction, cpu.run());
 }
 
 test "Cpu.init sets reservation to null" {

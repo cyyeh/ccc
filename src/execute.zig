@@ -2,15 +2,31 @@ const std = @import("std");
 const cpu_mod = @import("cpu.zig");
 const decoder = @import("decoder.zig");
 const csr_mod = @import("csr.zig");
+const trap = @import("trap.zig");
+const MemoryError = @import("memory.zig").MemoryError;
+
+/// Map a memory error at a load site to the appropriate trap cause.
+/// A Halt error is not a trap — it's the halt-MMIO signal and we
+/// re-raise it so it propagates out of cpu.step to terminate the run.
+fn loadTrapCause(e: MemoryError) !trap.Cause {
+    return switch (e) {
+        error.MisalignedAccess => trap.Cause.load_addr_misaligned,
+        error.OutOfBounds, error.UnexpectedRegister, error.WriteFailed => trap.Cause.load_access_fault,
+        error.Halt => error.Halt,
+    };
+}
+
+fn storeTrapCause(e: MemoryError) !trap.Cause {
+    return switch (e) {
+        error.MisalignedAccess => trap.Cause.store_addr_misaligned,
+        error.OutOfBounds, error.UnexpectedRegister, error.WriteFailed => trap.Cause.store_access_fault,
+        error.Halt => error.Halt,
+    };
+}
 
 pub const ExecuteError = error{
-    UnsupportedInstruction,
-    IllegalInstruction,
     Halt,
-    OutOfBounds,
-    MisalignedAccess,
-    UnexpectedRegister,
-    WriteFailed,
+    FatalTrap,
 };
 
 pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void {
@@ -58,22 +74,42 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u32 = switch (instr.op) {
                 .lb => blk: {
-                    const byte = cpu.memory.loadByte(addr) catch |e| return mapMemErr(e);
+                    const byte = cpu.memory.loadByte(addr) catch |e| {
+                        const cause = loadTrapCause(e) catch return ExecuteError.Halt;
+                        trap.enter(cause, addr, cpu);
+                        return;
+                    };
                     break :blk @bitCast(@as(i32, @as(i8, @bitCast(byte))));
                 },
                 .lbu => blk: {
-                    const byte = cpu.memory.loadByte(addr) catch |e| return mapMemErr(e);
+                    const byte = cpu.memory.loadByte(addr) catch |e| {
+                        const cause = loadTrapCause(e) catch return ExecuteError.Halt;
+                        trap.enter(cause, addr, cpu);
+                        return;
+                    };
                     break :blk @as(u32, byte);
                 },
                 .lh => blk: {
-                    const half = cpu.memory.loadHalfword(addr) catch |e| return mapMemErr(e);
+                    const half = cpu.memory.loadHalfword(addr) catch |e| {
+                        const cause = loadTrapCause(e) catch return ExecuteError.Halt;
+                        trap.enter(cause, addr, cpu);
+                        return;
+                    };
                     break :blk @bitCast(@as(i32, @as(i16, @bitCast(half))));
                 },
                 .lhu => blk: {
-                    const half = cpu.memory.loadHalfword(addr) catch |e| return mapMemErr(e);
+                    const half = cpu.memory.loadHalfword(addr) catch |e| {
+                        const cause = loadTrapCause(e) catch return ExecuteError.Halt;
+                        trap.enter(cause, addr, cpu);
+                        return;
+                    };
                     break :blk @as(u32, half);
                 },
-                .lw => cpu.memory.loadWord(addr) catch |e| return mapMemErr(e),
+                .lw => cpu.memory.loadWord(addr) catch |e| {
+                    const cause = loadTrapCause(e) catch return ExecuteError.Halt;
+                    trap.enter(cause, addr, cpu);
+                    return;
+                },
                 else => unreachable,
             };
             cpu.writeReg(instr.rd, value);
@@ -82,18 +118,30 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .sb => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u8 = @truncate(cpu.readReg(instr.rs2));
-            cpu.memory.storeByte(addr, value) catch |e| return mapMemErr(e);
+            cpu.memory.storeByte(addr, value) catch |e| {
+                const cause = storeTrapCause(e) catch return ExecuteError.Halt;
+                trap.enter(cause, addr, cpu);
+                return;
+            };
             cpu.pc +%= 4;
         },
         .sh => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u16 = @truncate(cpu.readReg(instr.rs2));
-            cpu.memory.storeHalfword(addr, value) catch |e| return mapMemErr(e);
+            cpu.memory.storeHalfword(addr, value) catch |e| {
+                const cause = storeTrapCause(e) catch return ExecuteError.Halt;
+                trap.enter(cause, addr, cpu);
+                return;
+            };
             cpu.pc +%= 4;
         },
         .sw => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
-            cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| return mapMemErr(e);
+            cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| {
+                const cause = storeTrapCause(e) catch return ExecuteError.Halt;
+                trap.enter(cause, addr, cpu);
+                return;
+            };
             cpu.pc +%= 4;
         },
         .addi, .slti, .sltiu, .xori, .ori, .andi => {
@@ -152,7 +200,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             const do_write = (instr.op == .csrrw) or (instr.rs1 != 0);
             const old: u32 = if (do_read)
                 csr_mod.csrRead(cpu, instr.csr) catch |e| switch (e) {
-                    error.IllegalInstruction => return ExecuteError.IllegalInstruction,
+                    error.IllegalInstruction => return ExecuteError.FatalTrap,
                 }
             else
                 0;
@@ -164,7 +212,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     else => unreachable,
                 };
                 csr_mod.csrWrite(cpu, instr.csr, new) catch |e| switch (e) {
-                    error.IllegalInstruction => return ExecuteError.IllegalInstruction,
+                    error.IllegalInstruction => return ExecuteError.FatalTrap,
                 };
             }
             if (instr.rd != 0) cpu.writeReg(instr.rd, old);
@@ -177,7 +225,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             const do_write = (instr.op == .csrrwi) or (uimm != 0);
             const old: u32 = if (do_read)
                 csr_mod.csrRead(cpu, instr.csr) catch |e| switch (e) {
-                    error.IllegalInstruction => return ExecuteError.IllegalInstruction,
+                    error.IllegalInstruction => return ExecuteError.FatalTrap,
                 }
             else
                 0;
@@ -189,13 +237,13 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     else => unreachable,
                 };
                 csr_mod.csrWrite(cpu, instr.csr, new) catch |e| switch (e) {
-                    error.IllegalInstruction => return ExecuteError.IllegalInstruction,
+                    error.IllegalInstruction => return ExecuteError.FatalTrap,
                 };
             }
             if (instr.rd != 0) cpu.writeReg(instr.rd, old);
             cpu.pc +%= 4;
         },
-        .ecall, .ebreak, .mret, .wfi => return ExecuteError.UnsupportedInstruction,
+        .ecall, .ebreak, .mret, .wfi => return ExecuteError.FatalTrap,
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
             const b = cpu.readReg(instr.rs2);
@@ -255,28 +303,50 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         },
         .lr_w => {
             const addr = cpu.readReg(instr.rs1);
-            if (addr & 3 != 0) return ExecuteError.MisalignedAccess;
-            const val = cpu.memory.loadWord(addr) catch |e| return mapMemErr(e);
+            if (addr & 3 != 0) {
+                trap.enter(.load_addr_misaligned, addr, cpu);
+                return;
+            }
+            const val = cpu.memory.loadWord(addr) catch |e| {
+                const cause = loadTrapCause(e) catch return ExecuteError.Halt;
+                trap.enter(cause, addr, cpu);
+                return;
+            };
             cpu.reservation = addr;
             cpu.writeReg(instr.rd, val);
             cpu.pc +%= 4;
         },
         .sc_w => {
             const addr = cpu.readReg(instr.rs1);
-            if (addr & 3 != 0) return ExecuteError.MisalignedAccess;
+            if (addr & 3 != 0) {
+                trap.enter(.store_addr_misaligned, addr, cpu);
+                return;
+            }
             const holds = (cpu.reservation != null and cpu.reservation.? == addr);
             if (holds) {
-                cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| return mapMemErr(e);
+                cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| {
+                    cpu.reservation = null;
+                    const cause = storeTrapCause(e) catch return ExecuteError.Halt;
+                    trap.enter(cause, addr, cpu);
+                    return;
+                };
             }
-            cpu.reservation = null; // always cleared after SC.W (success or failure)
+            cpu.reservation = null;
             cpu.writeReg(instr.rd, if (holds) @as(u32, 0) else @as(u32, 1));
             cpu.pc +%= 4;
         },
         .amoswap_w, .amoadd_w, .amoxor_w, .amoand_w, .amoor_w,
         .amomin_w, .amomax_w, .amominu_w, .amomaxu_w => {
             const addr = cpu.readReg(instr.rs1);
-            if (addr & 3 != 0) return ExecuteError.MisalignedAccess;
-            const old = cpu.memory.loadWord(addr) catch |e| return mapMemErr(e);
+            if (addr & 3 != 0) {
+                trap.enter(.store_addr_misaligned, addr, cpu);
+                return;
+            }
+            const old = cpu.memory.loadWord(addr) catch |e| {
+                const cause = loadTrapCause(e) catch return ExecuteError.Halt;
+                trap.enter(cause, addr, cpu);
+                return;
+            };
             const rs2_val = cpu.readReg(instr.rs2);
             const new: u32 = switch (instr.op) {
                 .amoswap_w => rs2_val,
@@ -290,22 +360,16 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 .amomaxu_w => if (old > rs2_val) old else rs2_val,
                 else => unreachable,
             };
-            cpu.memory.storeWord(addr, new) catch |e| return mapMemErr(e);
+            cpu.memory.storeWord(addr, new) catch |e| {
+                const cause = storeTrapCause(e) catch return ExecuteError.Halt;
+                trap.enter(cause, addr, cpu);
+                return;
+            };
             cpu.writeReg(instr.rd, old);
             cpu.pc +%= 4;
         },
-        .illegal => return ExecuteError.IllegalInstruction,
+        .illegal => return ExecuteError.FatalTrap,
     }
-}
-
-fn mapMemErr(e: mem_mod.MemoryError) ExecuteError {
-    return switch (e) {
-        error.OutOfBounds => ExecuteError.OutOfBounds,
-        error.MisalignedAccess => ExecuteError.MisalignedAccess,
-        error.UnexpectedRegister => ExecuteError.UnexpectedRegister,
-        error.WriteFailed => ExecuteError.WriteFailed,
-        error.Halt => ExecuteError.Halt,
-    };
 }
 
 const halt_dev = @import("devices/halt.zig");
@@ -606,18 +670,18 @@ test "FENCE is a no-op that advances PC" {
     try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
 }
 
-test "ECALL returns UnsupportedInstruction in Plan 1.A" {
+test "ECALL returns FatalTrap (pre-Task-8 interim)" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try std.testing.expectError(ExecuteError.UnsupportedInstruction, dispatch(.{ .op = .ecall }, &rig.cpu));
+    try std.testing.expectError(ExecuteError.FatalTrap, dispatch(.{ .op = .ecall }, &rig.cpu));
 }
 
-test "EBREAK returns UnsupportedInstruction in Plan 1.A" {
+test "EBREAK returns FatalTrap (pre-Task-8 interim)" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try std.testing.expectError(ExecuteError.UnsupportedInstruction, dispatch(.{ .op = .ebreak }, &rig.cpu));
+    try std.testing.expectError(ExecuteError.FatalTrap, dispatch(.{ .op = .ebreak }, &rig.cpu));
 }
 
 test "MUL: 6 * 7 = 42" {
@@ -855,21 +919,35 @@ test "SC.W fails when reservation address doesn't match" {
     try std.testing.expect(rig.cpu.reservation == null); // cleared regardless
 }
 
-test "LR.W on misaligned address returns MisalignedAccess" {
+test "LR.W on misaligned address traps with cause=load_addr_misaligned" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x81); // misaligned
-    try std.testing.expectError(ExecuteError.MisalignedAccess, dispatch(.{ .op = .lr_w, .rd = 2, .rs1 = 1 }, &rig.cpu));
+    try dispatch(.{ .op = .lr_w, .rd = 2, .rs1 = 1 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.load_addr_misaligned),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x81, rig.cpu.csr.mtval);
 }
 
-test "SC.W on misaligned address returns MisalignedAccess" {
+test "SC.W on misaligned address traps with cause=store_addr_misaligned" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x81); // misaligned
     rig.cpu.writeReg(2, 0xDEADBEEF);
-    try std.testing.expectError(ExecuteError.MisalignedAccess, dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu));
+    try dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.store_addr_misaligned),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x81, rig.cpu.csr.mtval);
 }
 
 test "AMOSWAP.W returns old value, stores rs2" {
@@ -1062,7 +1140,7 @@ test "CSRRCI with nonzero uimm clears bits" {
     try std.testing.expectEqual(@as(u32, 0x0000_0FF0), rig.cpu.csr.mie);
 }
 
-test "CSR access in U-mode returns error.IllegalInstruction (pre-trap-wiring)" {
+test "CSR access in U-mode returns FatalTrap (pre-Task-7 interim)" {
     // NOTE: In Task 7 this test's expectation flips from "error propagation"
     // to "traps and continues". For now we assert the pre-trap contract.
     var rig: Rig = undefined;
@@ -1070,16 +1148,23 @@ test "CSR access in U-mode returns error.IllegalInstruction (pre-trap-wiring)" {
     defer rig.deinit();
     rig.cpu.privilege = .U;
     try std.testing.expectError(
-        ExecuteError.IllegalInstruction,
+        ExecuteError.FatalTrap,
         dispatch(.{ .op = .csrrw, .rd = 1, .rs1 = 2, .csr = 0x300, .raw = 0 }, &rig.cpu),
     );
 }
 
-test "AMO on misaligned address returns MisalignedAccess" {
+test "AMO on misaligned address traps with cause=store_addr_misaligned" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x41); // misaligned
     rig.cpu.writeReg(2, 1);
-    try std.testing.expectError(ExecuteError.MisalignedAccess, dispatch(.{ .op = .amoadd_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu));
+    try dispatch(.{ .op = .amoadd_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x200, rig.cpu.pc);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.store_addr_misaligned),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 0x41, rig.cpu.csr.mtval);
 }
