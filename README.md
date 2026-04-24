@@ -78,8 +78,10 @@ Extra flags:
     --memory <MB>        Override RAM size (default: 128).
 
 ISA coverage: RV32I + M + A + Zicsr + Zifencei, M/S/U privilege,
-synchronous traps, Sv32 paging. `--trace` renders a `[M]`/`[S]`/`[U]`
-privilege column.
+synchronous traps with delegation, async interrupt delivery, Sv32
+paging. `--trace` renders a `[M]`/`[S]`/`[U]` privilege column, plus
+a synthetic `--- interrupt N (<name>) taken in <old>, now <new> ---`
+marker on async trap entry.
 
 ## Status
 
@@ -97,24 +99,30 @@ The Phase 1 §Definition of done demo:
     $ zig build hello-elf && zig build run -- zig-out/bin/hello.elf
     hello world
 
-**Plan 2.A (emulator S-mode + Sv32) merged.**
+**Plan 2.B (emulator trap delegation + async interrupts) merged.**
 
-The emulator now supports:
+The emulator now supports, in addition to the Plan 2.A surface:
 
-- S-mode privilege + full S-CSR file (`sstatus`, `stvec`, `sepc`,
-  `scause`, `stval`, `sscratch`, `sie`, `sip`, `satp`).
-- `sret`, `sfence.vma`.
-- Sv32 two-level paging (4 KB pages; no superpages; no TLB model).
-- `misa` advertises `'S'`.
-- `--trace` includes a privilege column: `[M]` / `[S]` / `[U]`.
-- `rv32si-p-*` conformance tests for `csr`, `scall`, `wfi`. The `dirty`,
-  `sbreak`, and `ma_fetch` upstream tests are excluded with rationale in
-  `build.zig`: they depend on trap delegation or Sv32 superpages, both
-  of which are explicit Plan 2.B / beyond-2.A features.
+- `medeleg` / `mideleg` WARL storage; synchronous trap routing to S when
+  the cause bit is delegated and the current privilege is < M.
+- Asynchronous interrupt delivery: per-instruction-boundary check of
+  `mip & mie` with delegation via `mideleg` and per-privilege enable
+  gating (`mstatus.MIE` / `mstatus.SIE`).
+- CLINT `mtime >= mtimecmp && mtimecmp != 0` drives live `mip.MTIP`;
+  writes to `mip.MTIP` are silently dropped (hardware-only signal).
+- `--trace` emits a synthetic marker on async interrupt entry:
+  `--- interrupt N (<name>) taken in <old>, now <new> ---`.
+- `rv32si-p-*` conformance now also includes `sbreak` and `ma_fetch`.
+  Only `dirty` remains excluded — it depends on Sv32 superpages, which
+  the Phase 2 spec permanently rejects.
 
-Trap delegation and async interrupt delivery arrive in Plan 2.B.
+The end-to-end `CLINT → M MTI ISR → mip.SSIP → S SSI ISR` forwarding
+round-trip is validated by a dedicated integration test in
+`src/cpu.zig` — the substrate Plan 2.C's kernel `mtimer.S` will
+consume.
 
-Next: **Plan 2.B — emulator trap delegation + async interrupts**.
+Next: **Plan 2.C — kernel skeleton (M-mode boot shim, single page
+table, sret-to-U, user `write`+`exit` demo)**.
 
 ## Layout
 
