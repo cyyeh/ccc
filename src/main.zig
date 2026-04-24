@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const cpu_mod = @import("cpu.zig");
+const csr_mod = @import("csr.zig");
 const mem_mod = @import("memory.zig");
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
@@ -98,8 +99,9 @@ fn dumpTrapDiagnostic(w: *Io.Writer, cpu: *const cpu_mod.Cpu) !void {
     try w.print("mcause=0x{X:0>8}  mepc=0x{X:0>8}  mtval=0x{X:0>8}\n", .{
         cpu.csr.mcause, cpu.csr.mepc, cpu.csr.mtval,
     });
+    const mstatus_view = csr_mod.csrRead(cpu, csr_mod.CSR_MSTATUS) catch 0;
     try w.print("mstatus=0x{X:0>8}  mtvec=0x{X:0>8}  privilege={s}\n", .{
-        cpu.csr.mstatus, cpu.csr.mtvec, @tagName(cpu.privilege),
+        mstatus_view, cpu.csr.mtvec, @tagName(cpu.privilege),
     });
     try w.print("PC=0x{X:0>8}\n", .{cpu.pc});
     var i: u5 = 0;

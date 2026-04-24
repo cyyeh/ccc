@@ -15,9 +15,10 @@ pub const StepError = error{
 /// RISC-V privilege levels, spec §Privilege & trap model.
 /// Encoding matches the `mstatus.MPP` / `sstatus.SPP` field encoding:
 ///   0b00 = U, 0b01 = S, 0b11 = M.
-/// The reserved H-mode value (0b10) is kept so bit-level round-trips through
-/// mstatus are total; `trap.exit_mret` normalizes it to U (spec: WARL
-/// unsupported modes read back as the least-privileged supported mode).
+/// The reserved H-mode value (0b10) is kept so `@enumFromInt(mstatus_mpp)`
+/// is total for any u2 value. csrWrite clamps 0b10 to 0b00 (U) before it
+/// reaches storage, so this variant normally cannot arise, but the variant
+/// exists as a type-level safety net for defensive reads.
 /// Phase 1 implemented U and M only. Phase 2 adds S.
 pub const PrivilegeMode = enum(u2) {
     U = 0b00,

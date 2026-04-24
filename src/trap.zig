@@ -53,9 +53,10 @@ pub fn enter(cause: Cause, tval: u32, cpu: *Cpu) void {
 ///   2. privilege ← mstatus.MPP
 ///   3. mstatus.MIE ← mstatus.MPIE
 ///      mstatus.MPIE ← 1
-///      mstatus.MPP ← U (least-privileged supported mode)
-/// MPP values not supported by the implementation (0b01 = S, 0b10 = H)
-/// are normalized to U, matching RISC-V WARL semantics.
+///      mstatus.MPP ← U (0b00, least-privileged mode, after restoring caller)
+/// MPP=0b10 (reserved H-mode) is clamped to 0b00 (U) at the csrWrite level,
+/// so exit_mret never observes it. All other u2 values (U, S, M) map to
+/// valid PrivilegeMode variants and are used directly via @enumFromInt.
 pub fn exit_mret(cpu: *Cpu) void {
     cpu.pc = cpu.csr.mepc & csr.MEPC_ALIGN_MASK;
 
