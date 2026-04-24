@@ -43,6 +43,19 @@ const SIE_MASK       : u32 = (1 << 1) | (1 << 5) | (1 << 9); // SSIE | STIE | SE
 const SIP_READ_MASK  : u32 = (1 << 1) | (1 << 5) | (1 << 9); // SSIP | STIP | SEIP reads
 const SIP_WRITE_MASK : u32 = (1 << 1);                        // only SSIP writable from S
 
+// mip write mask: MTIP (bit 7) is a hardware-driven read-only bit; writes
+// to it from software are silently dropped. MEIP (bit 11) and SEIP (bit 9)
+// are platform-driven (PLIC writes through dedicated APIs, not plain CSR
+// writes); we permit software writes to them since Phase 2 has no PLIC and
+// tests sometimes inject SEIP by hand. MSIP (bit 3), SSIP (bit 1), and
+// STIP (bit 5) are software-writable per spec.
+pub const MIP_WRITE_MASK: u32 =
+    (1 << 1)  | // SSIP
+    (1 << 3)  | // MSIP
+    (1 << 5)  | // STIP
+    (1 << 9)  | // SEIP
+    (1 << 11);  // MEIP
+
 // Writable (software-visible) CSR addresses we implement in Phase 1.
 pub const CSR_MSTATUS: u12 = 0x300;
 pub const CSR_MISA: u12 = 0x301;
@@ -173,7 +186,11 @@ fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
     return switch (addr) {
         CSR_SSTATUS => (try csrReadUnchecked(cpu, CSR_MSTATUS)) & SSTATUS_READ_MASK,
         CSR_SIE => cpu.csr.mie & SIE_MASK,
-        CSR_SIP => cpu.csr.mip & SIP_READ_MASK,
+        CSR_SIP => blk: {
+            var v = cpu.csr.mip;
+            if (cpu.memory.clint.isMtipPending()) v |= 1 << 7;
+            break :blk v & SIP_READ_MASK;
+        },
         CSR_SATP => blk: {
             try satpTvmCheck(cpu);
             break :blk cpu.csr.satp;
@@ -209,7 +226,11 @@ fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
         CSR_MEPC => cpu.csr.mepc & MEPC_ALIGN_MASK,
         CSR_MCAUSE => cpu.csr.mcause,
         CSR_MTVAL => cpu.csr.mtval,
-        CSR_MIP => cpu.csr.mip,
+        CSR_MIP => blk: {
+            var v = cpu.csr.mip;
+            if (cpu.memory.clint.isMtipPending()) v |= 1 << 7;
+            break :blk v;
+        },
         CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID => 0,
         else => CsrError.IllegalInstruction,
     };
@@ -272,7 +293,11 @@ fn csrWriteUnchecked(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
         CSR_MEPC => cpu.csr.mepc = value & MEPC_ALIGN_MASK,
         CSR_MCAUSE => cpu.csr.mcause = value,
         CSR_MTVAL => cpu.csr.mtval = value,
-        CSR_MIP => cpu.csr.mip = value,
+        // MTIP (bit 7) is hardware-read-only in the Phase 2 model; other
+        // bits follow the standard spec's software-writability rules via
+        // MIP_WRITE_MASK.
+        CSR_MIP => cpu.csr.mip =
+            (cpu.csr.mip & ~MIP_WRITE_MASK) | (value & MIP_WRITE_MASK),
         // Read-only / hardwired — accept writes silently (WARL behavior).
         CSR_MISA, CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID => {},
         else => return CsrError.IllegalInstruction,
@@ -565,24 +590,24 @@ test "sie write merges into mie preserving M-only bits" {
     try std.testing.expect((m & (1 << 9))  != 0); // SEIE
 }
 
-test "sip reads SSIP/STIP/SEIP from mip" {
-    var dummy_mem: @import("memory.zig").Memory = undefined;
-    var cpu = Cpu.init(&dummy_mem, 0);
-    try csrWrite(&cpu, CSR_MIP, (1 << 1) | (1 << 5) | (1 << 9));
-    const s = try csrRead(&cpu, CSR_SIP);
+test "sip reads SSIP/STIP/SEIP from mip (rig)" {
+    var rig = try csrRigWithMtimecmp(0);
+    defer rig.deinit();
+    try csrWrite(&rig.cpu, CSR_MIP, (1 << 1) | (1 << 5) | (1 << 9));
+    const s = try csrRead(&rig.cpu, CSR_SIP);
     try std.testing.expectEqual(@as(u32, (1 << 1) | (1 << 5) | (1 << 9)), s);
 }
 
-test "sip writes only SSIP into mip" {
-    var dummy_mem: @import("memory.zig").Memory = undefined;
-    var cpu = Cpu.init(&dummy_mem, 0);
-    try csrWrite(&cpu, CSR_MIP, (1 << 7) | (1 << 5)); // M-only + STIP
-    try csrWrite(&cpu, CSR_SIP, 0xFFFF_FFFF);
-    const m = try csrRead(&cpu, CSR_MIP);
-    try std.testing.expect((m & (1 << 7)) != 0); // MTIP preserved
-    try std.testing.expect((m & (1 << 5)) != 0); // STIP preserved (not S-writable via sip)
+test "sip writes only SSIP into mip (rig)" {
+    var rig = try csrRigWithMtimecmp(0);
+    defer rig.deinit();
+    try csrWrite(&rig.cpu, CSR_MIP, 1 << 5);
+    try csrWrite(&rig.cpu, CSR_SIP, 0xFFFF_FFFF);
+    const m = try csrRead(&rig.cpu, CSR_MIP);
+    try std.testing.expect((m & (1 << 7)) == 0); // MTIP always clear when CLINT not pending
+    try std.testing.expect((m & (1 << 5)) != 0); // STIP preserved
     try std.testing.expect((m & (1 << 1)) != 0); // SSIP set by sip write
-    try std.testing.expect((m & (1 << 9)) == 0); // SEIP NOT set (not in sip write-mask)
+    try std.testing.expect((m & (1 << 9)) == 0); // SEIP NOT set
 }
 
 test "satp accepts MODE=Bare" {
@@ -722,4 +747,71 @@ test "mideleg masks out MSIP/MTIP/MEIP" {
     try std.testing.expect((v & (1 << 1)) != 0); // SSIP
     try std.testing.expect((v & (1 << 5)) != 0); // STIP
     try std.testing.expect((v & (1 << 9)) != 0); // SEIP
+}
+
+// ---------------------------------------------------------------------------
+// CsrRig: fully-wired Cpu + Memory + CLINT rig for MIP/SIP live-MTIP tests.
+// ---------------------------------------------------------------------------
+
+const halt_dev = @import("devices/halt.zig");
+const uart_dev = @import("devices/uart.zig");
+const clint_dev = @import("devices/clint.zig");
+const mem_mod = @import("memory.zig");
+
+/// Test rig that stands up a fully-wired Cpu + Memory + CLINT, needed by
+/// any CSR test that hits the MIP / SIP live-MTIP read path. The Phase 2.A
+/// `var dummy_mem: Memory = undefined` shorthand is insufficient once csr.zig
+/// dereferences `cpu.memory.clint` inside csrReadUnchecked.
+const CsrRig = struct {
+    halt: halt_dev.Halt,
+    aw: std.Io.Writer.Allocating,
+    uart: uart_dev.Uart,
+    clint: clint_dev.Clint,
+    mem: mem_mod.Memory,
+    cpu: Cpu,
+
+    fn deinit(self: *CsrRig) void {
+        self.mem.deinit();
+        self.aw.deinit();
+    }
+};
+
+fn csrRigWithMtimecmp(mtimecmp: u64) !CsrRig {
+    clint_dev.fixture_clock_ns = 0;
+    var rig: CsrRig = undefined;
+    rig.halt = halt_dev.Halt.init();
+    rig.aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    rig.uart = uart_dev.Uart.init(&rig.aw.writer);
+    rig.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    rig.clint.mtimecmp = mtimecmp;
+    rig.mem = try mem_mod.Memory.init(
+        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, null,
+        mem_mod.RAM_SIZE_DEFAULT,
+    );
+    rig.cpu = Cpu.init(&rig.mem, 0);
+    return rig;
+}
+
+test "CSR_MIP read reflects live MTIP from CLINT when pending" {
+    var rig = try csrRigWithMtimecmp(50);
+    defer rig.deinit();
+    clint_dev.fixture_clock_ns = 10_000; // mtime = 100 > mtimecmp
+    const v = try csrRead(&rig.cpu, CSR_MIP);
+    try std.testing.expect((v & (1 << 7)) != 0); // MTIP set
+}
+
+test "CSR_MIP read: MTIP stays clear when CLINT says not pending" {
+    var rig = try csrRigWithMtimecmp(50);
+    defer rig.deinit();
+    clint_dev.fixture_clock_ns = 0; // mtime = 0 < mtimecmp
+    const v = try csrRead(&rig.cpu, CSR_MIP);
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 7));
+}
+
+test "CSR_MIP write masks out MTIP (bit 7 is read-only)" {
+    var rig = try csrRigWithMtimecmp(0);
+    defer rig.deinit();
+    try csrWrite(&rig.cpu, CSR_MIP, (1 << 7) | (1 << 1));
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mip & (1 << 7));
+    try std.testing.expectEqual(@as(u32, 1 << 1), rig.cpu.csr.mip & (1 << 1));
 }
