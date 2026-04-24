@@ -314,15 +314,26 @@ pub fn build(b: *std.Build) void {
     const kernel_step = b.step("kernel", "Alias for kernel-elf");
     kernel_step.dependOn(&install_kernel_elf.step);
 
-    // End-to-end: run the Plan 2.C kernel.elf through the emulator and
-    // assert the observable stdout. The expected output grows across
-    // Tasks 2, 8, 17 before settling at "hello from u-mode\n" in Task 17.
-    const e2e_kernel_run = b.addRunArtifact(exe);
+    // End-to-end: Plan 2.D uses a host-compiled verifier that spawns ccc
+    // on kernel.elf, captures stdout, and asserts the Phase 2 §Definition
+    // of done shape ("hello from u-mode\nticks observed: N\n" with N > 0
+    // and exit code 0). Replaces expectStdOutEqual which couldn't express
+    // a variable N.
+    const verify_e2e = b.addExecutable(.{
+        .name = "verify_e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/verify_e2e.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const e2e_kernel_run = b.addRunArtifact(verify_e2e);
+    e2e_kernel_run.addFileArg(exe.getEmittedBin());
     e2e_kernel_run.addFileArg(kernel_elf.getEmittedBin());
-    e2e_kernel_run.expectStdOutEqual("hello from u-mode\n");
     e2e_kernel_run.expectExitCode(0);
 
-    const e2e_kernel_step = b.step("e2e-kernel", "Run the Plan 2.C kernel e2e test");
+    const e2e_kernel_step = b.step("e2e-kernel", "Run the Phase 2 kernel e2e test (hello + ticks)");
     e2e_kernel_step.dependOn(&e2e_kernel_run.step);
 
     // === Minimal ELF fixture (Plan 1.C Task 11) ===

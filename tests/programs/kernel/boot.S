@@ -26,10 +26,12 @@
 .equ CLINT_MTIME_LO,    0x0200BFF8
 .equ CLINT_MTIME_HI,    0x0200BFFC
 
-# Timer quantum: 1,000,000 CLINT ticks per slice. At the emulator's
-# 10 MHz nominal CLINT rate, that's ~100 ms — coarse enough that the
-# short write+exit program completes well before the first tick.
-.equ TIMESLICE, 1000000
+# Timer quantum: 10,000 CLINT ticks per slice. At the emulator's
+# 10 MHz nominal CLINT rate, that's ~1 ms — short enough that even a
+# brief user program guarantees multiple ticks fire, but long enough
+# that the per-tick overhead (~30 instructions for the M-ISR +
+# M→S SSIP forwarding + S-mode handler) stays well under 10%.
+.equ TIMESLICE, 10000
 
 .section .text.init, "ax", @progbits
 .balign 4
