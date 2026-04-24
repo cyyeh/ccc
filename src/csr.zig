@@ -104,6 +104,10 @@ pub const MEPC_ALIGN_MASK: u32 = ~@as(u32, 0b11);
 // ECALL_FROM_M (bit 11) are deliberately excluded: the Phase 2 spec
 // routes these to M-mode with no delegation. Reserved bits (10, 14, 16+)
 // are also excluded to keep the register deterministic.
+// Access-fault bits (1 = inst, 5 = load, 7 = store/AMO) are spec-
+// delegatable, but the Phase 2 boot shim never programs them and our
+// emulator's memory model can't raise them (no unreadable RAM, no PMP).
+// Excluded from the Phase 2 subset; revisit if a later phase needs them.
 pub const MEDELEG_WRITABLE: u32 =
     (1 << 0)  | // inst addr misaligned
     (1 << 2)  | // illegal instruction
@@ -366,7 +370,6 @@ test "mtvec MODE bits forced to 0 on write — WARL, vectored unsupported" {
     try csrWrite(&cpu, CSR_MTVEC, 0x8000_0401); // BASE=0x80000400, MODE=01 (vectored)
     try std.testing.expectEqual(@as(u32, 0x8000_0400), try csrRead(&cpu, CSR_MTVEC));
 }
-
 
 test "mscratch round-trips full 32 bits" {
     var dummy_mem: @import("memory.zig").Memory = undefined;
