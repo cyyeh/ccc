@@ -12,15 +12,16 @@ pub const StepError = error{
     FatalTrap,
 };
 
-/// Two-level RISC-V privilege, spec §Privilege & trap model.
-/// Encoding matches the `mstatus.MPP` field: 0b00 = U, 0b11 = M.
-/// The two reserved middle values (0b01 = S, 0b10 = H) never appear in
-/// Phase 1 but we keep them in the enum so bit-level round-trips through
-/// mstatus are total; `trap.exit_mret` normalizes them to U (spec: WARL
+/// RISC-V privilege levels, spec §Privilege & trap model.
+/// Encoding matches the `mstatus.MPP` / `sstatus.SPP` field encoding:
+///   0b00 = U, 0b01 = S, 0b11 = M.
+/// The reserved H-mode value (0b10) is kept so bit-level round-trips through
+/// mstatus are total; `trap.exit_mret` normalizes it to U (spec: WARL
 /// unsupported modes read back as the least-privileged supported mode).
+/// Phase 1 implemented U and M only. Phase 2 adds S.
 pub const PrivilegeMode = enum(u2) {
     U = 0b00,
-    reserved_s = 0b01,
+    S = 0b01,
     reserved_h = 0b10,
     M = 0b11,
 };
@@ -58,8 +59,8 @@ pub const Cpu = struct {
     // will additionally clear this on trap entry; Plan 1.B has no traps.
     reservation: ?u32,
     // Current privilege level. Starts in M; a monitor drops to U via mret,
-    // and synchronous traps return control to M. Phase 1 never uses the
-    // reserved_s/reserved_h variants; they exist only to round-trip the
+    // and synchronous traps return control to M. Phase 1 used only U and M;
+    // Phase 2 adds S. The reserved_h variant exists only to round-trip the
     // mstatus.MPP bit field losslessly (see trap.zig).
     privilege: PrivilegeMode,
     csr: CsrFile,
@@ -190,4 +191,13 @@ test "Cpu.init starts in M-mode" {
     var dummy_mem: Memory = undefined;
     const cpu = Cpu.init(&dummy_mem, 0);
     try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+}
+
+test "PrivilegeMode has M, S, and U" {
+    const m = PrivilegeMode.M;
+    const s = PrivilegeMode.S;
+    const u = PrivilegeMode.U;
+    try std.testing.expect(m != s);
+    try std.testing.expect(s != u);
+    try std.testing.expect(u != m);
 }

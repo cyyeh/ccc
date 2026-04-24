@@ -158,7 +158,7 @@ test "exit_mret with MPP=M restores M-mode" {
     try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
 }
 
-test "exit_mret unsupported MPP (reserved_s) normalizes to U" {
+test "exit_mret MPP=S (0b01) normalizes to U in mret (S trap delegation not yet wired)" {
     var dummy_mem: Memory = undefined;
     var cpu = Cpu.init(&dummy_mem, 0x8000_0400);
     cpu.privilege = .M;
