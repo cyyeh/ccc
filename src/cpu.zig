@@ -56,6 +56,11 @@ pub const CsrFile = struct {
     mtval: u32 = 0,
     mie: u32 = 0,
     mip: u32 = 0,
+    // Plan 2.B: trap delegation registers. Controlled by M; read by trap
+    // routing logic in trap.zig and the interrupt boundary check in
+    // cpu.check_interrupt. WARL-masked by csr.zig per the Phase 2 spec.
+    medeleg: u32 = 0,
+    mideleg: u32 = 0,
     // mscratch (0x340): M-mode scratch register. Software-writable, no side
     // effects, no hardware reads. Included in Plan 1.D so rv32mi-csr passes;
     // the spec's CSR list didn't call it out but the riscv-tests suite
@@ -271,4 +276,11 @@ test "instruction page fault: step() from unmapped PC in U-mode updates mcause a
     try std.testing.expectEqual(@as(u32, faulting_pc), cpu.csr.mtval);
     try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
     try std.testing.expectEqual(@as(u32, 0x8000_1000), cpu.pc);
+}
+
+test "CsrFile default has zero medeleg and mideleg" {
+    var dummy_mem: Memory = undefined;
+    const cpu = Cpu.init(&dummy_mem, 0);
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.medeleg);
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.mideleg);
 }
