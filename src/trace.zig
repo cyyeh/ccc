@@ -36,13 +36,47 @@ pub fn formatInstr(
     try writer.flush();
 }
 
-/// Plan 2.B Task 10 replaces this with the real formatter.
+/// Human-readable name for an async interrupt cause code. RISC-V priv spec
+/// §3.1.9 Table "Machine and Supervisor Interrupts".
+fn interruptName(cause_code: u32) []const u8 {
+    return switch (cause_code) {
+        1 => "supervisor software",
+        3 => "machine software",
+        5 => "supervisor timer",
+        7 => "machine timer",
+        9 => "supervisor external",
+        11 => "machine external",
+        else => "unknown",
+    };
+}
+
+fn privStr(p: PrivilegeMode) []const u8 {
+    return switch (p) {
+        .M => "M",
+        .S => "S",
+        .U => "U",
+        .reserved_h => "?",
+    };
+}
+
+/// Emit one line denoting an async interrupt entry:
+///   --- interrupt N (<name>) taken in <old>, now <new> ---
+///
+/// Called by trap.enter_interrupt BEFORE the privilege switch so `from`
+/// captures the pre-interrupt state. Synchronous traps do NOT emit this
+/// marker — they appear in trace as the target-vector instruction.
 pub fn formatInterruptMarker(
-    _: *std.Io.Writer,
-    _: u32,
-    _: PrivilegeMode,
-    _: PrivilegeMode,
-) !void {}
+    writer: *std.Io.Writer,
+    cause_code: u32,
+    from: PrivilegeMode,
+    to: PrivilegeMode,
+) !void {
+    try writer.print(
+        "--- interrupt {d} ({s}) taken in {s}, now {s} ---\n",
+        .{ cause_code, interruptName(cause_code), privStr(from), privStr(to) },
+    );
+    try writer.flush();
+}
 
 test "format an addi with rd write" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
@@ -96,4 +130,34 @@ test "formatInstr emits [S] for S-mode and [U] for U-mode" {
     defer aw2.deinit();
     try formatInstr(&aw2.writer, .U, 0x80000000, i, 0, 0, 0x80000004);
     try std.testing.expect(std.mem.indexOf(u8, aw2.written(), "[U]") != null);
+}
+
+test "formatInterruptMarker: machine timer (cause 7), taken in U, now M" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try formatInterruptMarker(&aw.writer, 7, .U, .M);
+    try std.testing.expectEqualStrings(
+        "--- interrupt 7 (machine timer) taken in U, now M ---\n",
+        aw.written(),
+    );
+}
+
+test "formatInterruptMarker: supervisor software (cause 1), taken in S, now S" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try formatInterruptMarker(&aw.writer, 1, .S, .S);
+    try std.testing.expectEqualStrings(
+        "--- interrupt 1 (supervisor software) taken in S, now S ---\n",
+        aw.written(),
+    );
+}
+
+test "formatInterruptMarker: unknown cause → \"unknown\"" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try formatInterruptMarker(&aw.writer, 42, .M, .M);
+    try std.testing.expectEqualStrings(
+        "--- interrupt 42 (unknown) taken in M, now M ---\n",
+        aw.written(),
+    );
 }
