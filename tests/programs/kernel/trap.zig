@@ -100,3 +100,11 @@ comptime {
     std.debug.assert(@offsetOf(TrapFrame, "sepc") == TF_SEPC);
     std.debug.assert(@sizeOf(TrapFrame) == TF_SIZE);
 }
+
+// Task 9 shim: asm references s_trap_dispatch at link time; this stub
+// lets the linker resolve the symbol. Task 10 replaces this with the
+// real dispatcher body.
+export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
+    _ = tf;
+    @import("kprintf.zig").panic("s_trap_dispatch: not implemented (Task 9 stub)", .{});
+}

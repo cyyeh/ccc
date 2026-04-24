@@ -206,6 +206,16 @@ pub fn build(b: *std.Build) void {
     });
     kernel_boot_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/boot.S"));
 
+    const kernel_trampoline_obj = b.addObject(.{
+        .name = "kernel-trampoline",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_trampoline_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/trampoline.S"));
+
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
         .root_module = b.createModule(.{
@@ -228,6 +238,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     kernel_elf.root_module.addObject(kernel_boot_obj);
+    kernel_elf.root_module.addObject(kernel_trampoline_obj);
     kernel_elf.root_module.addObject(kernel_kmain_obj);
     kernel_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
     kernel_elf.entry = .{ .symbol_name = "_M_start" };

@@ -1,20 +1,22 @@
 // tests/programs/kernel/kmain.zig — Phase 2 Plan 2.C kernel S-mode entry.
 //
-// Task 7 state: proves Sv32 paging works under a bare kernel. After the
-// csrw satp + sfence.vma, every load/fetch/store walks the page table we
-// just built. uart.writeBytes, the halt MMIO store, and the `wfi` spin
-// all go through translation.
-//
-// No traps handled yet (stvec is not installed) — a page fault here
-// would be fatal. Task 10 adds the trap plumbing.
+// Task 9 state: paging still works (from Task 7); `the_tf` is exported
+// for trampoline.S to reach via `la`. kmain does not yet install stvec
+// or jump into the trampoline — that happens in Tasks 13 and 17.
 
+const std = @import("std");
 const uart = @import("uart.zig");
 const vm = @import("vm.zig");
 const page_alloc = @import("page_alloc.zig");
+const trap = @import("trap.zig");
 
 const SATP_MODE_SV32: u32 = 1 << 31;
 
 const HALT_MMIO: *volatile u8 = @ptrFromInt(0x00100000);
+
+// Exported so trampoline.S can reference via `la the_tf`. Initial zero
+// values are placeholders; Task 17 fills them in before the first sret.
+pub export var the_tf: trap.TrapFrame = std.mem.zeroes(trap.TrapFrame);
 
 export fn kmain() callconv(.c) noreturn {
     page_alloc.init();
