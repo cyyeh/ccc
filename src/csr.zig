@@ -56,6 +56,16 @@ pub const MIP_WRITE_MASK: u32 =
     (1 << 9)  | // SEIP
     (1 << 11);  // MEIP
 
+// mie WARL mask: the six interrupt-enable bits defined by the RISC-V
+// privileged spec §3.1.9. Writes outside these bits are dropped.
+pub const MIE_MASK: u32 =
+    (1 << 1)  | // SSIE
+    (1 << 3)  | // MSIE
+    (1 << 5)  | // STIE
+    (1 << 7)  | // MTIE
+    (1 << 9)  | // SEIE
+    (1 << 11);  // MEIE
+
 // Writable (software-visible) CSR addresses we implement in Phase 1.
 pub const CSR_MSTATUS: u12 = 0x300;
 pub const CSR_MISA: u12 = 0x301;
@@ -276,7 +286,7 @@ fn csrWriteUnchecked(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
         // rationale behind each included/excluded bit.
         CSR_MEDELEG => cpu.csr.medeleg = value & MEDELEG_WRITABLE,
         CSR_MIDELEG => cpu.csr.mideleg = value & MIDELEG_WRITABLE,
-        CSR_MIE => cpu.csr.mie = value,
+        CSR_MIE => cpu.csr.mie = value & MIE_MASK,
         CSR_STVEC      => cpu.csr.stvec      = value,
         CSR_SCOUNTEREN => cpu.csr.scounteren = value,
         CSR_SSCRATCH   => cpu.csr.sscratch   = value,
@@ -814,4 +824,24 @@ test "CSR_MIP write masks out MTIP (bit 7 is read-only)" {
     try csrWrite(&rig.cpu, CSR_MIP, (1 << 7) | (1 << 1));
     try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mip & (1 << 7));
     try std.testing.expectEqual(@as(u32, 1 << 1), rig.cpu.csr.mip & (1 << 1));
+}
+
+test "mie write keeps only SSIE/MSIE/STIE/MTIE/SEIE/MEIE" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MIE, 0xFFFF_FFFF);
+    const expected: u32 =
+        (1 << 1) | (1 << 3) | (1 << 5) | (1 << 7) | (1 << 9) | (1 << 11);
+    try std.testing.expectEqual(expected, try csrRead(&cpu, CSR_MIE));
+}
+
+test "mie reserved bits (0, 2, 4, 6, 8, 10, 12+) stay zero" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MIE, 0xFFFF_FFFF);
+    const v = try csrRead(&cpu, CSR_MIE);
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 0));
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 2));
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 12));
+    try std.testing.expectEqual(@as(u32, 0), v & 0xFFFF_0000);
 }

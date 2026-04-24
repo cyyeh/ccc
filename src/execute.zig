@@ -1252,10 +1252,12 @@ test "CSRRCI with nonzero uimm clears bits" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    rig.cpu.csr.mie = 0x0000_0FFF;
+    try csr_mod.csrWrite(&rig.cpu, csr_mod.CSR_MIE, 0x0000_0FFF);
     try dispatch(.{ .op = .csrrci, .rd = 2, .rs1 = 0x0F, .csr = 0x304, .raw = 0 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0x0000_0FFF), rig.cpu.readReg(2));
-    try std.testing.expectEqual(@as(u32, 0x0000_0FF0), rig.cpu.csr.mie);
+    // After MIE_MASK applied to initial write, mie becomes 0x0AAA (bits 1,3,5,7,9,11 set).
+    // CSRRCI clears bits 0x0F, so: 0x0AAA & ~0x0F = 0x0AA0
+    try std.testing.expectEqual(@as(u32, 0x0000_0AAA), rig.cpu.readReg(2));
+    try std.testing.expectEqual(@as(u32, 0x0000_0AA0), rig.cpu.csr.mie);
 }
 
 test "illegal opcode traps with cause=illegal_instruction, mtval=raw word" {
