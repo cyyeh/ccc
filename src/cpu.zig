@@ -124,6 +124,7 @@ pub const Cpu = struct {
 
     pub fn step(self: *Cpu) StepError!void {
         const pre_pc = self.pc;
+        const pre_priv = self.privilege; // captured before any fetch/execute may trap-switch privilege
         // Instruction fetch: translate using the current privilege directly —
         // MPRV is non-applicable to fetch per the spec, so we intentionally
         // bypass `effectivePriv` and the translating `loadWord` wrapper.
@@ -153,7 +154,7 @@ pub const Cpu = struct {
         };
         if (self.trace_writer) |tw| {
             const post_rd = self.regs[instr.rd];
-            @import("trace.zig").formatInstr(tw, pre_pc, instr, pre_rd, post_rd, self.pc) catch {};
+            @import("trace.zig").formatInstr(tw, pre_priv, pre_pc, instr, pre_rd, post_rd, self.pc) catch {};
         }
     }
 
