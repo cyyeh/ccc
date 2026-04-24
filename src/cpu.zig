@@ -508,3 +508,113 @@ test "Cpu.step() with no pending interrupts runs the fetched instruction" {
     try std.testing.expectEqual(saved_pc + 4, rig.cpu.pc);
     try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mcause);
 }
+
+test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
+    clint_dev.fixture_clock_ns = 0;
+    var halt = @import("devices/halt.zig").Halt.init();
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
+    var clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    var mem = try Memory.init(
+        std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT,
+    );
+    defer mem.deinit();
+
+    // --- Program layout ---
+    // 0x80000000  reset: setup delegation, CSRs, drop to U at 0x80001000
+    // 0x80000400  M-mode MTI ISR
+    // 0x80000600  S-mode SSI ISR
+    // 0x80000800  sentinel word (starts 0, S ISR writes 1)
+    // 0x80001000  U-mode infinite loop
+
+    const RAM_BASE = mem_mod.RAM_BASE;
+
+    // --- Reset code @ 0x80000000 ---
+    // csrrwi zero, mideleg, 2      # mideleg = (1<<1) = SSIP
+    try mem.storeWordPhysical(RAM_BASE + 0x000, 0x30315073);
+    // lui t0, 0x80000; addi t0, t0, 0x400  (pre-compute mtvec target)
+    try mem.storeWordPhysical(RAM_BASE + 0x004, 0x800002B7); // lui t0, 0x80000
+    try mem.storeWordPhysical(RAM_BASE + 0x008, 0x40028293); // addi t0, t0, 0x400
+    // csrw mtvec, t0 (0x305)
+    try mem.storeWordPhysical(RAM_BASE + 0x00C, 0x30529073);
+    // lui t0, 0x80000; addi t0, t0, 0x600  → stvec
+    try mem.storeWordPhysical(RAM_BASE + 0x010, 0x800002B7);
+    try mem.storeWordPhysical(RAM_BASE + 0x014, 0x60028293);
+    // csrw stvec, t0 (0x105)
+    try mem.storeWordPhysical(RAM_BASE + 0x018, 0x10529073);
+    // li t0, (1<<7) | (1<<1)        # MTIE | SSIE
+    try mem.storeWordPhysical(RAM_BASE + 0x01C, 0x08200293); // addi t0, x0, 0x82
+    // csrw mie, t0
+    try mem.storeWordPhysical(RAM_BASE + 0x020, 0x30429073);
+    // csrrsi zero, mstatus, 0x8     # MIE = 1
+    try mem.storeWordPhysical(RAM_BASE + 0x024, 0x30046073);
+    // csrrsi zero, sstatus, 0x2     # SIE = 1
+    try mem.storeWordPhysical(RAM_BASE + 0x028, 0x10016073);
+    // li t1, 100; write mtimecmp = 100
+    //   CLINT_MTIMECMP = 0x02004000
+    try mem.storeWordPhysical(RAM_BASE + 0x02C, 0x06400313); // addi t1, x0, 100
+    try mem.storeWordPhysical(RAM_BASE + 0x030, 0x020043B7); // lui t2, 0x2004
+    try mem.storeWordPhysical(RAM_BASE + 0x034, 0x0063A023); // sw t1, 0(t2)
+    try mem.storeWordPhysical(RAM_BASE + 0x038, 0x0003A223); // sw zero, 4(t2)
+    // lui t0, 0x80001; csrw mepc, t0
+    try mem.storeWordPhysical(RAM_BASE + 0x03C, 0x800012B7);
+    try mem.storeWordPhysical(RAM_BASE + 0x040, 0x34129073);
+    // mret
+    try mem.storeWordPhysical(RAM_BASE + 0x044, 0x30200073);
+
+    // --- M-mode MTI ISR @ 0x80000400 ---
+    //   Ack by moving mtimecmp far into the future; forward to SSIP; mret.
+    //   li t0, -1; lui t2, 0x2004; sw t0, 0(t2); sw t0, 4(t2)
+    //   csrrsi zero, mip, 0x2       # set SSIP
+    //   mret
+    try mem.storeWordPhysical(RAM_BASE + 0x400, 0xFFF00293); // addi t0, x0, -1
+    try mem.storeWordPhysical(RAM_BASE + 0x404, 0x020043B7); // lui t2, 0x2004
+    try mem.storeWordPhysical(RAM_BASE + 0x408, 0x0053A023); // sw t0, 0(t2)
+    try mem.storeWordPhysical(RAM_BASE + 0x40C, 0x0053A223); // sw t0, 4(t2)
+    try mem.storeWordPhysical(RAM_BASE + 0x410, 0x34416073); // csrrsi zero, mip, 0x2
+    try mem.storeWordPhysical(RAM_BASE + 0x414, 0x30200073); // mret
+
+    // --- S-mode SSI ISR @ 0x80000600 ---
+    // Clear SSIP via sip; compute sentinel address via auipc+addi; write
+    // 1 to sentinel; loop forever.
+    //   csrrci zero, sip, 0x2     # clear SSIP
+    //   auipc  t0, 0x0             # t0 = 0x80000604
+    //   addi   t0, t0, 0x1FC       # t0 = 0x80000800 (sentinel VA)
+    //   addi   t1, x0, 1
+    //   sw     t1, 0(t0)
+    //   loop: j loop
+    try mem.storeWordPhysical(RAM_BASE + 0x600, 0x14417073); // csrrci zero, sip, 0x2
+    try mem.storeWordPhysical(RAM_BASE + 0x604, 0x00000297); // auipc t0, 0x0
+    try mem.storeWordPhysical(RAM_BASE + 0x608, 0x1FC28293); // addi t0, t0, 0x1FC
+    try mem.storeWordPhysical(RAM_BASE + 0x60C, 0x00100313); // addi t1, x0, 1
+    try mem.storeWordPhysical(RAM_BASE + 0x610, 0x0062A023); // sw t1, 0(t0)
+    try mem.storeWordPhysical(RAM_BASE + 0x614, 0x0000006F); // loop: j self
+
+    // --- U-mode loop @ 0x80001000 ---
+    //   j 0   (loop forever; MTI will interrupt us)
+    try mem.storeWordPhysical(RAM_BASE + 0x1000, 0x0000006F);
+
+    // Sentinel starts at zero.
+    try mem.storeWordPhysical(RAM_BASE + 0x800, 0);
+
+    var cpu = Cpu.init(&mem, RAM_BASE);
+
+    // Step through reset, then drop into U, then let CLINT fire.
+    var i: u32 = 0;
+    while (i < 30) : (i += 1) {
+        cpu.step() catch |e| switch (e) { error.Halt, error.FatalTrap => break };
+    }
+    // Now advance the wall clock so MTIP fires at the next boundary.
+    clint_dev.fixture_clock_ns = 20_000; // mtime = 200, mtimecmp = 100 → pending
+    i = 0;
+    while (i < 200) : (i += 1) {
+        cpu.step() catch |e| switch (e) { error.Halt, error.FatalTrap => break };
+        const sentinel = try mem.loadWordPhysical(RAM_BASE + 0x800);
+        if (sentinel == 1) break;
+    }
+    const sentinel = try mem.loadWordPhysical(RAM_BASE + 0x800);
+    try std.testing.expectEqual(@as(u32, 1), sentinel);
+    // Final privilege should be S (SSI ISR loops there).
+    try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
+}
