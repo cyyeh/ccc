@@ -66,6 +66,9 @@ pub const CsrFile = struct {
     // software-visible state only — writes stored, reads returned. Added
     // for rv32mi-csr conformance.
     mcounteren: u32 = 0,
+    // scounteren (0x106): S-mode analog of mcounteren. Same rationale —
+    // counters aren't implemented, register is software-visible only.
+    scounteren: u32 = 0,
     // S-mode CSRs (placeholders for Tasks 4, 5, 6, 7, etc.)
     stvec: u32 = 0,
     sscratch: u32 = 0,

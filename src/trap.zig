@@ -17,6 +17,7 @@ pub const Cause = enum(u32) {
     store_addr_misaligned = 6,
     store_access_fault = 7,
     ecall_from_u = 8,
+    ecall_from_s = 9,
     ecall_from_m = 11,
     instr_page_fault = 12,
     load_page_fault = 13,
@@ -183,6 +184,10 @@ test "page-fault Cause enum values match spec" {
     try std.testing.expectEqual(@as(u32, 12), @intFromEnum(Cause.instr_page_fault));
     try std.testing.expectEqual(@as(u32, 13), @intFromEnum(Cause.load_page_fault));
     try std.testing.expectEqual(@as(u32, 15), @intFromEnum(Cause.store_page_fault));
+}
+
+test "ecall_from_s Cause has value 9" {
+    try std.testing.expectEqual(@as(u32, 9), @intFromEnum(Cause.ecall_from_s));
 }
 
 test "trap.enter sets mcause and mtval for a load page fault" {

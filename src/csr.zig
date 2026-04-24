@@ -4,15 +4,16 @@ const Cpu = cpu_mod.Cpu;
 const PrivilegeMode = cpu_mod.PrivilegeMode;
 
 // S-mode CSR addresses (Phase 2.A).
-pub const CSR_SSTATUS  : u12 = 0x100;
-pub const CSR_SIE      : u12 = 0x104;
-pub const CSR_STVEC    : u12 = 0x105;
-pub const CSR_SSCRATCH : u12 = 0x140;
-pub const CSR_SEPC     : u12 = 0x141;
-pub const CSR_SCAUSE   : u12 = 0x142;
-pub const CSR_STVAL    : u12 = 0x143;
-pub const CSR_SIP      : u12 = 0x144;
-pub const CSR_SATP     : u12 = 0x180;
+pub const CSR_SSTATUS    : u12 = 0x100;
+pub const CSR_SIE        : u12 = 0x104;
+pub const CSR_STVEC      : u12 = 0x105;
+pub const CSR_SCOUNTEREN : u12 = 0x106;
+pub const CSR_SSCRATCH   : u12 = 0x140;
+pub const CSR_SEPC       : u12 = 0x141;
+pub const CSR_SCAUSE     : u12 = 0x142;
+pub const CSR_STVAL      : u12 = 0x143;
+pub const CSR_SIP        : u12 = 0x144;
+pub const CSR_SATP       : u12 = 0x180;
 
 // satp field constants (RV32 Sv32).
 // Bit 31: MODE — 0 = Bare (no translation), 1 = Sv32.
@@ -168,8 +169,9 @@ fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
         CSR_MISA => MISA_VALUE,
         CSR_MEDELEG, CSR_MIDELEG => 0,
         CSR_MIE => cpu.csr.mie,
-        CSR_STVEC    => cpu.csr.stvec,
-        CSR_SSCRATCH => cpu.csr.sscratch,
+        CSR_STVEC      => cpu.csr.stvec,
+        CSR_SCOUNTEREN => cpu.csr.scounteren,
+        CSR_SSCRATCH   => cpu.csr.sscratch,
         CSR_SEPC     => cpu.csr.sepc,
         CSR_SCAUSE   => cpu.csr.scause,
         CSR_STVAL    => cpu.csr.stval,
@@ -224,8 +226,9 @@ fn csrWriteUnchecked(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
         // delegation has no effect). Reads return 0.
         CSR_MEDELEG, CSR_MIDELEG => {},
         CSR_MIE => cpu.csr.mie = value,
-        CSR_STVEC    => cpu.csr.stvec    = value,
-        CSR_SSCRATCH => cpu.csr.sscratch = value,
+        CSR_STVEC      => cpu.csr.stvec      = value,
+        CSR_SCOUNTEREN => cpu.csr.scounteren = value,
+        CSR_SSCRATCH   => cpu.csr.sscratch   = value,
         CSR_SEPC     => cpu.csr.sepc     = value,
         CSR_SCAUSE   => cpu.csr.scause   = value,
         CSR_STVAL    => cpu.csr.stval    = value,
@@ -452,6 +455,13 @@ test "sscratch round-trip" {
     var cpu = Cpu.init(&dummy_mem, 0);
     try csrWrite(&cpu, CSR_SSCRATCH, 0xdead_beef);
     try std.testing.expectEqual(@as(u32, 0xdead_beef), try csrRead(&cpu, CSR_SSCRATCH));
+}
+
+test "scounteren round-trip" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_SCOUNTEREN, 0x0000_0007);
+    try std.testing.expectEqual(@as(u32, 0x0000_0007), try csrRead(&cpu, CSR_SCOUNTEREN));
 }
 
 test "sepc round-trip" {

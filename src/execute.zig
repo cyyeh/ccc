@@ -272,8 +272,9 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .ecall => {
             const cause: trap.Cause = switch (cpu.privilege) {
                 .M => .ecall_from_m,
+                .S => .ecall_from_s,
                 .U => .ecall_from_u,
-                else => .ecall_from_u, // reserved modes treated as U (shouldn't happen)
+                else => .ecall_from_u, // reserved_h — shouldn't happen, defensive
             };
             trap.enter(cause, 0, cpu);
         },
@@ -288,11 +289,15 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             trap.exit_mret(cpu);
         },
         .wfi => {
-            if (cpu.privilege != .M) {
+            // wfi is legal in M-mode unconditionally. In S-mode it is legal
+            // when mstatus.TW=0 — Plan 2.A does not model TW, so S-mode wfi
+            // is treated as permitted. U-mode wfi always traps as illegal.
+            // Spec §3.1.6.5 / §9.2.3.
+            if (cpu.privilege == .U) {
                 trap.enter(.illegal_instruction, instr.raw, cpu);
                 return;
             }
-            // Phase 1 has no interrupt sources; wfi is a no-op (advance PC).
+            // Phase 1/2 has no interrupt sources; wfi is a no-op (advance PC).
             cpu.pc +%= 4;
         },
         .sret => {
@@ -769,6 +774,18 @@ test "ECALL from M-mode traps with mcause=11" {
     rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
     try dispatch(.{ .op = .ecall, .raw = 0x73 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 11), rig.cpu.csr.mcause);
+}
+
+test "ECALL from S-mode traps with mcause=9" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .ecall, .raw = 0x73 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 9), rig.cpu.csr.mcause);
+    // S-mode ecall traps to M by default (no delegation in Plan 2.A).
+    try std.testing.expectEqual(@import("cpu.zig").PrivilegeMode.M, rig.cpu.privilege);
 }
 
 test "EBREAK traps with mcause=3 (breakpoint)" {
@@ -1343,6 +1360,15 @@ test "WFI in U-mode traps as illegal-instruction" {
         @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
         rig.cpu.csr.mcause,
     );
+}
+
+test "WFI in S-mode is a no-op (advances PC by 4)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    try dispatch(.{ .op = .wfi, .raw = 0x10500073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
 }
 
 test "halt-on-trap propagates FatalTrap from cpu.run" {
