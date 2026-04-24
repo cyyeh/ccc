@@ -4,11 +4,23 @@ const Cpu = cpu_mod.Cpu;
 const PrivilegeMode = cpu_mod.PrivilegeMode;
 
 // S-mode CSR addresses (Phase 2.A).
+pub const CSR_SSTATUS  : u12 = 0x100;
 pub const CSR_STVEC    : u12 = 0x105;
 pub const CSR_SSCRATCH : u12 = 0x140;
 pub const CSR_SEPC     : u12 = 0x141;
 pub const CSR_SCAUSE   : u12 = 0x142;
 pub const CSR_STVAL    : u12 = 0x143;
+
+// sstatus visible/writable field mask (RV32).
+// S-mode can see and modify: SIE (1), SPIE (5), SPP (8), SUM (18), MXR (19).
+// UBE (6), VS/FS/XS (9-16), SD (31) are WARL-zero or read-only in our subset.
+const SSTATUS_WRITABLE_MASK: u32 =
+    (1 << 1)  |  // SIE
+    (1 << 5)  |  // SPIE
+    (1 << 8)  |  // SPP
+    (1 << 18) |  // SUM
+    (1 << 19);   // MXR
+const SSTATUS_READ_MASK: u32 = SSTATUS_WRITABLE_MASK; // no read-only bits in our subset
 
 // Writable (software-visible) CSR addresses we implement in Phase 1.
 pub const CSR_MSTATUS: u12 = 0x300;
@@ -87,6 +99,7 @@ pub const CsrError = error{IllegalInstruction};
 pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
     if (cpu.privilege != .M) return CsrError.IllegalInstruction;
     return switch (addr) {
+        CSR_SSTATUS => (try csrRead(cpu, CSR_MSTATUS)) & SSTATUS_READ_MASK,
         CSR_MSTATUS => blk: {
             var v: u32 = 0;
             if (cpu.csr.mstatus_sie) v |= 1 << 1;
@@ -127,6 +140,11 @@ pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
 pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
     if (cpu.privilege != .M) return CsrError.IllegalInstruction;
     switch (addr) {
+        CSR_SSTATUS => {
+            const current = try csrRead(cpu, CSR_MSTATUS);
+            const merged  = (current & ~SSTATUS_WRITABLE_MASK) | (value & SSTATUS_WRITABLE_MASK);
+            try csrWrite(cpu, CSR_MSTATUS, merged);
+        },
         CSR_MSTATUS => {
             cpu.csr.mstatus_sie = (value & (1 << 1)) != 0;
             cpu.csr.mstatus_mie = (value & (1 << 3)) != 0;
@@ -381,4 +399,40 @@ test "stval round-trip" {
     var cpu = Cpu.init(&dummy_mem, 0);
     try csrWrite(&cpu, CSR_STVAL, 0x0001_0000);
     try std.testing.expectEqual(@as(u32, 0x0001_0000), try csrRead(&cpu, CSR_STVAL));
+}
+
+test "sstatus reads the S-visible subset of mstatus" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    // set a full bag of mstatus bits via the M-mode write path
+    try csrWrite(&cpu, CSR_MSTATUS,
+        (1 << 1)  | (1 << 3)  | (1 << 5)  | (1 << 7) |
+        (1 << 8)  | (3 << 11) | (1 << 17) | (1 << 18) |
+        (1 << 19) | (1 << 20) | (1 << 22));
+    // read sstatus — should expose only the S-visible bits
+    const s = try csrRead(&cpu, CSR_SSTATUS);
+    const expected: u32 = (1 << 1) | (1 << 5) | (1 << 8) | (1 << 18) | (1 << 19);
+    try std.testing.expectEqual(expected, s);
+}
+
+test "sstatus write affects only the writable bits of mstatus" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    // pre-populate mstatus with some M-only bits we expect to survive
+    try csrWrite(&cpu, CSR_MSTATUS, (1 << 3) | (1 << 7) | (1 << 17) | (1 << 20) | (1 << 22));
+    // write all-ones through sstatus
+    try csrWrite(&cpu, CSR_SSTATUS, 0xFFFF_FFFF);
+    const m = try csrRead(&cpu, CSR_MSTATUS);
+    // M-only bits preserved
+    try std.testing.expect((m & (1 << 3))  != 0); // MIE
+    try std.testing.expect((m & (1 << 7))  != 0); // MPIE
+    try std.testing.expect((m & (1 << 17)) != 0); // MPRV
+    try std.testing.expect((m & (1 << 20)) != 0); // TVM
+    try std.testing.expect((m & (1 << 22)) != 0); // TSR
+    // S-writable bits set to 1
+    try std.testing.expect((m & (1 << 1))  != 0); // SIE
+    try std.testing.expect((m & (1 << 5))  != 0); // SPIE
+    try std.testing.expect((m & (1 << 8))  != 0); // SPP
+    try std.testing.expect((m & (1 << 18)) != 0); // SUM
+    try std.testing.expect((m & (1 << 19)) != 0); // MXR
 }
