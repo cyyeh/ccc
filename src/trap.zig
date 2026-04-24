@@ -25,7 +25,7 @@ pub const Cause = enum(u32) {
 };
 
 /// Take a synchronous trap. Implements spec §Trap entry and §Exception
-/// delegation (§3.1.9).
+/// delegation (§3.1.8).
 ///
 /// Routing:
 ///   if cpu.privilege != .M AND (medeleg >> cause_code) & 1 == 1
@@ -276,6 +276,12 @@ test "enter from S with delegated cause routes to S, SPP=S" {
     try std.testing.expectEqual(@as(u32, 0x8000_0200), cpu.csr.sepc);
     // SPP ← S (coming from S).
     try std.testing.expectEqual(@as(u1, 1), cpu.csr.mstatus_spp);
+    // sstatus side-effects on S-from-S entry mirror the U-from-U case:
+    // SPIE ← old SIE (true), SIE cleared.
+    try std.testing.expect(cpu.csr.mstatus_spie);
+    try std.testing.expect(!cpu.csr.mstatus_sie);
+    // scause carries the cause code (no bit 31 for sync traps).
+    try std.testing.expectEqual(@intFromEnum(Cause.breakpoint), cpu.csr.scause);
 }
 
 test "enter from U without delegation routes to M (baseline)" {
