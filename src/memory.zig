@@ -208,32 +208,32 @@ pub const Memory = struct {
     // / MPRV) and then funnels through the physical-address bypass.
     // ------------------------------------------------------------------
 
-    pub fn loadByte(self: *Memory, va: u32, cpu: *Cpu) (MemoryError || TranslationError)!u8 {
+    pub fn loadByte(self: *Memory, va: u32, cpu: *const Cpu) (MemoryError || TranslationError)!u8 {
         const pa = try self.translate(va, .load, effectivePriv(cpu, .load), cpu);
         return self.loadBytePhysical(pa);
     }
 
-    pub fn loadHalfword(self: *Memory, va: u32, cpu: *Cpu) (MemoryError || TranslationError)!u16 {
+    pub fn loadHalfword(self: *Memory, va: u32, cpu: *const Cpu) (MemoryError || TranslationError)!u16 {
         const pa = try self.translate(va, .load, effectivePriv(cpu, .load), cpu);
         return self.loadHalfwordPhysical(pa);
     }
 
-    pub fn loadWord(self: *Memory, va: u32, cpu: *Cpu) (MemoryError || TranslationError)!u32 {
+    pub fn loadWord(self: *Memory, va: u32, cpu: *const Cpu) (MemoryError || TranslationError)!u32 {
         const pa = try self.translate(va, .load, effectivePriv(cpu, .load), cpu);
         return self.loadWordPhysical(pa);
     }
 
-    pub fn storeByte(self: *Memory, va: u32, value: u8, cpu: *Cpu) (MemoryError || TranslationError)!void {
+    pub fn storeByte(self: *Memory, va: u32, value: u8, cpu: *const Cpu) (MemoryError || TranslationError)!void {
         const pa = try self.translate(va, .store, effectivePriv(cpu, .store), cpu);
         return self.storeBytePhysical(pa, value);
     }
 
-    pub fn storeHalfword(self: *Memory, va: u32, value: u16, cpu: *Cpu) (MemoryError || TranslationError)!void {
+    pub fn storeHalfword(self: *Memory, va: u32, value: u16, cpu: *const Cpu) (MemoryError || TranslationError)!void {
         const pa = try self.translate(va, .store, effectivePriv(cpu, .store), cpu);
         return self.storeHalfwordPhysical(pa, value);
     }
 
-    pub fn storeWord(self: *Memory, va: u32, value: u32, cpu: *Cpu) (MemoryError || TranslationError)!void {
+    pub fn storeWord(self: *Memory, va: u32, value: u32, cpu: *const Cpu) (MemoryError || TranslationError)!void {
         const pa = try self.translate(va, .store, effectivePriv(cpu, .store), cpu);
         return self.storeWordPhysical(pa, value);
     }

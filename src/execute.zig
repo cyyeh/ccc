@@ -1449,3 +1449,48 @@ test "sfence.vma from S with TVM=0 is a PC-advancing no-op" {
     try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
     try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
 }
+
+test "load page fault: LW from unmapped VA in U-mode updates mcause and mtval" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+
+    // Point satp at an empty root page (all zero RAM at root_pa → L1 PTE.V=0 → fault).
+    const root_pa: u32 = 0x8010_0000;
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    rig.cpu.csr.mtvec = 0x8000_1000;
+
+    // lw x5, 0(x6)  with x6 = 0x0001_0000 (the faulting VA)
+    rig.cpu.writeReg(6, 0x0001_0000);
+    try dispatch(.{ .op = .lw, .rd = 5, .rs1 = 6, .rs2 = 0, .imm = 0 }, &rig.cpu);
+
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(@import("trap.zig").Cause.load_page_fault)),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(@as(u32, 0x0001_0000), rig.cpu.csr.mtval);
+}
+
+test "store page fault: SW to unmapped VA in U-mode updates mcause and mtval" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+
+    // Point satp at an empty root page (all zero RAM at root_pa → L1 PTE.V=0 → fault).
+    const root_pa: u32 = 0x8010_0000;
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    rig.cpu.csr.mtvec = 0x8000_1000;
+
+    // sw x7, 0(x6)  with x6 = 0x0001_0000 (the faulting VA), x7 = value to store
+    rig.cpu.writeReg(6, 0x0001_0000);
+    rig.cpu.writeReg(7, 0xDEAD_BEEF);
+    try dispatch(.{ .op = .sw, .rd = 0, .rs1 = 6, .rs2 = 7, .imm = 0 }, &rig.cpu);
+
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(@import("trap.zig").Cause.store_page_fault)),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(@as(u32, 0x0001_0000), rig.cpu.csr.mtval);
+}

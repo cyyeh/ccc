@@ -236,3 +236,35 @@ test "PrivilegeMode has M, S, and U" {
     try std.testing.expect(s != u);
     try std.testing.expect(u != m);
 }
+
+test "instruction page fault: step() from unmapped PC in U-mode updates mcause and mtval" {
+    var halt = @import("devices/halt.zig").Halt.init();
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
+    var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
+    defer mem.deinit();
+
+    // Point satp at an empty root page (all zero RAM → L1 PTE.V=0 → fetch fault).
+    const root_pa: u32 = 0x8010_0000;
+    const faulting_pc: u32 = 0x0001_0000; // unmapped virtual address
+
+    // CPU starts in M-mode; switch to U-mode and set up Sv32 with empty root.
+    var cpu = Cpu.init(&mem, faulting_pc);
+    cpu.privilege = .U;
+    cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    cpu.csr.mtvec = 0x8000_1000;
+
+    // step() will attempt to fetch from faulting_pc, translation will fault,
+    // trap.enter sets mcause/mtval/mepc, and step() returns normally.
+    try cpu.step();
+
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(trap.Cause.instr_page_fault)),
+        cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(@as(u32, faulting_pc), cpu.csr.mtval);
+    try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_1000), cpu.pc);
+}
