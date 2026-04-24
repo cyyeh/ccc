@@ -180,6 +180,65 @@ pub const Cpu = struct {
     }
 };
 
+/// Compute the effective `mip` for the interrupt-boundary check. This is
+/// cpu.csr.mip OR'd with CLINT's live MTIP bit. We never store MTIP in
+/// cpu.csr.mip — the bit is always derived here and inside csrRead.
+fn pendingInterrupts(cpu: *const Cpu) u32 {
+    var mip = cpu.csr.mip;
+    if (cpu.memory.clint.isMtipPending()) mip |= 1 << 7;
+    return mip;
+}
+
+/// Returns true if an interrupt would be deliverable at `target` given the
+/// current privilege level and the relevant global-enable bit.
+/// Spec §3.1.6.1 / §3.1.9 rule:
+///   current < target → always taken (lower privilege can't mask higher)
+///   current == target → consult global enable (MIE for M, SIE for S)
+///   current > target → never taken this cycle (pend until we drop down)
+fn interruptDeliverableAt(target: PrivilegeMode, cpu: *const Cpu) bool {
+    const target_rank = @intFromEnum(target);
+    const current_rank = @intFromEnum(cpu.privilege);
+    if (current_rank < target_rank) return true;
+    if (current_rank > target_rank) return false;
+    return switch (target) {
+        .M => cpu.csr.mstatus_mie,
+        .S => cpu.csr.mstatus_sie,
+        else => false,
+    };
+}
+
+/// Check for a deliverable async interrupt at the current instruction
+/// boundary. If one exists, enter the trap and return true; otherwise
+/// return false (caller proceeds with the fetch).
+///
+/// Priority uses the RISC-V spec order exposed in trap.INTERRUPT_PRIORITY_ORDER.
+/// For each cause code in that order, we consult the effective mip AND mie
+/// to see if it's pending+enabled, then route via mideleg to determine the
+/// target privilege (but never delegate when cpu.privilege == .M), then
+/// apply the deliverability rule above. The first cause passing all three
+/// gates wins.
+pub fn check_interrupt(cpu: *Cpu) bool {
+    const effective_mip = pendingInterrupts(cpu);
+    const pending_enabled = effective_mip & cpu.csr.mie;
+    if (pending_enabled == 0) return false;
+
+    for (trap.INTERRUPT_PRIORITY_ORDER) |cause_code| {
+        const bit = @as(u32, 1) << @intCast(cause_code);
+        if ((pending_enabled & bit) == 0) continue;
+
+        const delegated = (cpu.csr.mideleg & bit) != 0;
+        const target: PrivilegeMode =
+            if (cpu.privilege != .M and delegated) .S else .M;
+
+        if (!interruptDeliverableAt(target, cpu)) continue;
+
+        trap.enter_interrupt(cause_code, cpu);
+        return true;
+    }
+
+    return false;
+}
+
 test "x0 is hardwired to zero — write is a no-op" {
     var dummy_mem: Memory = undefined;
     var cpu = Cpu.init(&dummy_mem, 0);
@@ -283,4 +342,131 @@ test "CsrFile default has zero medeleg and mideleg" {
     const cpu = Cpu.init(&dummy_mem, 0);
     try std.testing.expectEqual(@as(u32, 0), cpu.csr.medeleg);
     try std.testing.expectEqual(@as(u32, 0), cpu.csr.mideleg);
+}
+
+const trap_mod = @import("trap.zig");
+const halt_dev_t = @import("devices/halt.zig");
+const uart_dev_t = @import("devices/uart.zig");
+
+const CpuRig = struct {
+    halt: halt_dev_t.Halt,
+    aw: std.Io.Writer.Allocating,
+    uart: uart_dev_t.Uart,
+    clint: clint_dev.Clint,
+    mem: Memory,
+    cpu: Cpu,
+    fn deinit(self: *CpuRig) void {
+        self.mem.deinit();
+        self.aw.deinit();
+        std.testing.allocator.destroy(self);
+    }
+};
+
+/// Allocates a CpuRig on the heap so that internal pointers (mem→clint,
+/// mem→uart, cpu→mem, uart→writer) remain stable across the return. Callers
+/// must `defer rig.deinit()` which frees both the heap object and the RAM.
+fn cpuRig() !*CpuRig {
+    clint_dev.fixture_clock_ns = 0;
+    const rig = try std.testing.allocator.create(CpuRig);
+    rig.halt = halt_dev_t.Halt.init();
+    rig.aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    rig.uart = uart_dev_t.Uart.init(&rig.aw.writer);
+    rig.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    rig.mem = try Memory.init(
+        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, null,
+        mem_mod.RAM_SIZE_DEFAULT,
+    );
+    rig.cpu = Cpu.init(&rig.mem, mem_mod.RAM_BASE);
+    return rig;
+}
+
+test "check_interrupt: no pending → returns false, cpu state unchanged" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mie = 0xFFFF_FFFF & @import("csr.zig").MIE_MASK;
+    const taken = check_interrupt(&rig.cpu);
+    try std.testing.expect(!taken);
+    try std.testing.expectEqual(PrivilegeMode.U, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mcause);
+}
+
+test "check_interrupt: MTIP pending, MIE+MTIE set in M-mode → M-trap taken" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.mstatus_mie = true;
+    rig.cpu.csr.mie = 1 << 7;
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    const taken = check_interrupt(&rig.cpu);
+    try std.testing.expect(taken);
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0007), rig.cpu.csr.mcause);
+    try std.testing.expectEqual(@as(u32, 0x8000_0400), rig.cpu.pc);
+}
+
+test "check_interrupt: M-mode with MIE=0 → MTIP pending but not taken" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.mstatus_mie = false;
+    rig.cpu.csr.mie = 1 << 7;
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    try std.testing.expect(!check_interrupt(&rig.cpu));
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mcause);
+}
+
+test "check_interrupt: U-mode always allows M-interrupt regardless of MIE" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.mstatus_mie = false;
+    rig.cpu.csr.mie = 1 << 7;
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    try std.testing.expect(check_interrupt(&rig.cpu));
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+}
+
+test "check_interrupt: SSIP delegated, in U → trap taken at S" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.stvec = 0x8000_0600;
+    rig.cpu.csr.mideleg = 1 << 1;
+    rig.cpu.csr.mstatus_sie = false;
+    rig.cpu.csr.mie = 1 << 1;
+    rig.cpu.csr.mip = 1 << 1;
+
+    try std.testing.expect(check_interrupt(&rig.cpu));
+    try std.testing.expectEqual(PrivilegeMode.S, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0001), rig.cpu.csr.scause);
+    try std.testing.expectEqual(@as(u32, 0x8000_0600), rig.cpu.pc);
+}
+
+test "check_interrupt: priority order — MTI beats SSI when both pending at U" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.stvec = 0x8000_0600;
+    rig.cpu.csr.mideleg = 1 << 1;
+    rig.cpu.csr.mie = (1 << 7) | (1 << 1);
+    rig.cpu.csr.mip = 1 << 1;
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    try std.testing.expect(check_interrupt(&rig.cpu));
+    // MTI beats SSI in priority order.
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0007), rig.cpu.csr.mcause);
 }
