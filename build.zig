@@ -183,6 +183,148 @@ pub fn build(b: *std.Build) void {
     const e2e_hello_elf_step = b.step("e2e-hello-elf", "Run the Phase 1 §Definition of done demo (ccc hello.elf)");
     e2e_hello_elf_step.dependOn(&e2e_hello_elf_run.step);
 
+    // === Kernel.elf (Plan 2.C) ===
+    //
+    // Two-piece build:
+    //   1. userprog.bin — a flat RV32 U-mode binary produced by objcopy
+    //      (added in Task 14). For now (Task 2), userprog.bin does not
+    //      exist yet and the kernel does not embed it.
+    //   2. kernel.elf — M-mode boot.S + mtimer.S + trampoline.S + kernel
+    //      Zig (kmain, vm, page_alloc, trap, syscall, uart, kprintf) all
+    //      linked per kernel/linker.ld, entry _M_start.
+    //
+    // Task 2 state: only boot.S + kmain.zig exist; the other .zig / .S
+    // files and the userprog embed arrive in later tasks.
+
+    const kernel_boot_obj = b.addObject(.{
+        .name = "kernel-boot",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_boot_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/boot.S"));
+
+    const kernel_trampoline_obj = b.addObject(.{
+        .name = "kernel-trampoline",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_trampoline_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/trampoline.S"));
+
+    const kernel_mtimer_obj = b.addObject(.{
+        .name = "kernel-mtimer",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_mtimer_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/mtimer.S"));
+
+    // === User program (Plan 2.C) ===
+    const userprog_obj = b.addObject(.{
+        .name = "userprog",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/user/userprog.zig"),
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const userprog_elf = b.addExecutable(.{
+        .name = "userprog.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    userprog_elf.root_module.addObject(userprog_obj);
+    userprog_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    userprog_elf.entry = .{ .symbol_name = "_start" };
+
+    // Flatten ELF -> raw binary so the kernel can @embedFile it. Use
+    // Zig's built-in ObjCopy step (backed by llvm-objcopy from the Zig
+    // distribution) — avoids depending on a system llvm-objcopy binary.
+    const userprog_objcopy = b.addObjCopy(userprog_elf.getEmittedBin(), .{
+        .format = .bin,
+        .basename = "userprog.bin",
+    });
+    const userprog_bin = userprog_objcopy.getOutput();
+
+    // WriteFile step that co-locates a tiny Zig stub with userprog.bin
+    // in a single output dir. The stub `pub const BLOB = @embedFile(...)`
+    // is resolved relative to itself, so the bin must be its sibling.
+    const user_blob_stub_dir = b.addWriteFiles();
+    const user_blob_zig = user_blob_stub_dir.add(
+        "user_blob.zig",
+        "pub const BLOB = @embedFile(\"userprog.bin\");\n",
+    );
+    _ = user_blob_stub_dir.addCopyFile(userprog_bin, "userprog.bin");
+
+    // Expose a top-level step for CI / debugging.
+    const install_userprog_bin = b.addInstallFile(userprog_bin, "userprog.bin");
+    const kernel_user_step = b.step("kernel-user", "Build the Plan 2.C userprog.bin");
+    kernel_user_step.dependOn(&install_userprog_bin.step);
+
+    const kernel_kmain_obj = b.addObject(.{
+        .name = "kernel-kmain",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_kmain_obj.root_module.addAnonymousImport("user_blob", .{
+        .root_source_file = user_blob_zig,
+    });
+
+    const kernel_elf = b.addExecutable(.{
+        .name = "kernel.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_elf.root_module.addObject(kernel_boot_obj);
+    kernel_elf.root_module.addObject(kernel_trampoline_obj);
+    kernel_elf.root_module.addObject(kernel_mtimer_obj);
+    kernel_elf.root_module.addObject(kernel_kmain_obj);
+    kernel_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_kernel_elf = b.addInstallArtifact(kernel_elf, .{});
+    const kernel_elf_step = b.step("kernel-elf", "Build the Plan 2.C kernel.elf");
+    kernel_elf_step.dependOn(&install_kernel_elf.step);
+
+    const kernel_step = b.step("kernel", "Alias for kernel-elf");
+    kernel_step.dependOn(&install_kernel_elf.step);
+
+    // End-to-end: run the Plan 2.C kernel.elf through the emulator and
+    // assert the observable stdout. The expected output grows across
+    // Tasks 2, 8, 17 before settling at "hello from u-mode\n" in Task 17.
+    const e2e_kernel_run = b.addRunArtifact(exe);
+    e2e_kernel_run.addFileArg(kernel_elf.getEmittedBin());
+    e2e_kernel_run.expectStdOutEqual("hello from u-mode\n");
+    e2e_kernel_run.expectExitCode(0);
+
+    const e2e_kernel_step = b.step("e2e-kernel", "Run the Plan 2.C kernel e2e test");
+    e2e_kernel_step.dependOn(&e2e_kernel_run.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
