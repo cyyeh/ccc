@@ -18,6 +18,9 @@ pub const Cause = enum(u32) {
     store_access_fault = 7,
     ecall_from_u = 8,
     ecall_from_m = 11,
+    inst_page_fault = 12,
+    load_page_fault = 13,
+    store_page_fault = 15,
 };
 
 /// Take a synchronous trap. Implements spec §Trap entry:
@@ -174,4 +177,29 @@ test "exit_mret MPP=S (0b01) restores S-mode privilege" {
     exit_mret(&cpu);
     // Phase 2.A: S-mode is now a valid PrivilegeMode, so MPP=S restores S.
     try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
+}
+
+test "page-fault Cause enum values match spec" {
+    try std.testing.expectEqual(@as(u32, 12), @intFromEnum(Cause.inst_page_fault));
+    try std.testing.expectEqual(@as(u32, 13), @intFromEnum(Cause.load_page_fault));
+    try std.testing.expectEqual(@as(u32, 15), @intFromEnum(Cause.store_page_fault));
+}
+
+test "trap.enter sets mcause and mtval for a load page fault" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8001_0000);
+    cpu.privilege = .U;
+    cpu.csr.mtvec = 0x8000_1000;
+    cpu.csr.mstatus_mie = true;
+
+    enter(.load_page_fault, 0xDEAD_BEEF, &cpu);
+
+    try std.testing.expectEqual(@as(u32, 13), cpu.csr.mcause);
+    try std.testing.expectEqual(@as(u32, 0xDEAD_BEEF), cpu.csr.mtval);
+    try std.testing.expectEqual(@as(u32, 0x8001_0000), cpu.csr.mepc);
+    try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+    try std.testing.expectEqual(@as(u2, @intFromEnum(PrivilegeMode.U)), cpu.csr.mstatus_mpp);
+    try std.testing.expectEqual(true, cpu.csr.mstatus_mpie);
+    try std.testing.expectEqual(false, cpu.csr.mstatus_mie);
+    try std.testing.expectEqual(@as(u32, 0x8000_1000), cpu.pc);
 }
