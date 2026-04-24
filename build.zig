@@ -291,20 +291,16 @@ pub fn build(b: *std.Build) void {
     //     tdata1/2). Phase 1 has no trigger hardware; the test's escape
     //     hatches (csrr tselect → bne → pass) require tselect to exist.
     const rv32mi_tests = [_][]const u8{ "csr", "illegal", "ma_addr", "ma_fetch", "mcsr", "sbreak", "scall", "shamt" };
-    // rv32si-p: S-mode CSRs, Sv32 page walks, A/D bits, S-mode WFI.
+    // rv32si-p: S-mode CSRs, Sv32 page walks, A/D bits, S-mode WFI, plus
+    // S-mode synchronous trap delegation (Plan 2.B).
     // NOTE: no illegal.S exists in the upstream submodule for this family;
     // illegal-instruction coverage lives in rv32mi.
     //
-    // Excluded from Plan 2.A (behaviors not modeled — all pushed to Plan 2.B):
-    //   - sbreak, ma_fetch: these tests run the test body in S-mode and
-    //     rely on trap delegation (medeleg) so BREAKPOINT and MISALIGNED_FETCH
-    //     exceptions vector to the test's `stvec_handler` instead of trap_vector.
-    //     Plan 2.A explicitly defers medeleg/mideleg to Plan 2.B, so these tests
-    //     fall through to `other_exception` and fail.
-    //   - dirty: exercises a root-level (L1) leaf PTE — a 4 MiB Sv32 superpage.
-    //     Plan 2.A supports 4 KiB leaves only; the walker deliberately rejects
-    //     L1 leaf PTEs. Superpage support is deferred to Plan 2.B.
-    const rv32si_tests = [_][]const u8{ "csr", "scall", "wfi" };
+    // Excluded (permanent in Phase 2):
+    //   - dirty: exercises a root-level (L1) leaf PTE — a 4 MiB Sv32
+    //     superpage. Phase 2 permanently rejects superpages (spec
+    //     §Sv32 translation). Revisit only if a future phase adopts them.
+    const rv32si_tests = [_][]const u8{ "csr", "scall", "wfi", "sbreak", "ma_fetch" };
 
     const rv_step = b.step("riscv-tests", "Run the riscv-tests suite (rv32ui/um/ua/mi/si)");
 
