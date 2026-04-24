@@ -253,6 +253,28 @@ pub const Memory = struct {
         if ((l0_pte & (PTE_R | PTE_W | PTE_X)) == 0) return pageFaultFor(access);
 
         const leaf_pa = ((l0_pte >> 10) & 0x003F_FFFF) << 12;
+
+        // Permission check
+        const pte_u = (l0_pte & PTE_U) != 0;
+        const pte_r = (l0_pte & PTE_R) != 0;
+        const pte_w = (l0_pte & PTE_W) != 0;
+        const pte_x = (l0_pte & PTE_X) != 0;
+
+        // U-bit vs privilege
+        if (effective_priv == .U and !pte_u) return pageFaultFor(access);
+        if (effective_priv == .S) {
+            if (access == .fetch and pte_u) return pageFaultFor(access);  // S never executes U pages
+            if (access != .fetch and pte_u and !cpu.csr.mstatus_sum) return pageFaultFor(access);
+        }
+
+        // Access-type vs PTE.R/W/X (with MXR extending readability)
+        const effective_readable = pte_r or (pte_x and cpu.csr.mstatus_mxr);
+        switch (access) {
+            .fetch => if (!pte_x) return pageFaultFor(access),
+            .load  => if (!effective_readable) return pageFaultFor(access),
+            .store => if (!pte_w) return pageFaultFor(access),
+        }
+
         return leaf_pa | off;
     }
 };
@@ -410,4 +432,115 @@ test "translate: Sv32 4K leaf preserves offset" {
 
     const pa = try rig.mem.translate(0x0001_0ABC, .load, .U, &rig.cpu);
     try std.testing.expectEqual(leaf_pa + 0xABC, pa);
+}
+
+test "translate: U-mode cannot access a page with U=0" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+        PTE_V | PTE_R | PTE_W));  // U=0
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    try std.testing.expectError(error.LoadPageFault,
+        rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu));
+}
+
+test "translate: S-mode without SUM cannot access U=1 page" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+        PTE_V | PTE_R | PTE_W | PTE_U));
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_sum = false;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    try std.testing.expectError(error.LoadPageFault,
+        rig.mem.translate(0x0001_0000, .load, .S, &rig.cpu));
+}
+
+test "translate: S-mode with SUM=1 may access U=1 page for load/store but never for fetch" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+        PTE_V | PTE_R | PTE_W | PTE_X | PTE_U));
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_sum = true;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    // load ok
+    _ = try rig.mem.translate(0x0001_0000, .load, .S, &rig.cpu);
+    // store ok
+    _ = try rig.mem.translate(0x0001_0000, .store, .S, &rig.cpu);
+    // fetch from U=1 page is always a fault
+    try std.testing.expectError(error.InstPageFault,
+        rig.mem.translate(0x0001_0000, .fetch, .S, &rig.cpu));
+}
+
+test "translate: write to page without W bit is a store page fault" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+        PTE_V | PTE_R | PTE_U));  // no W
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    try std.testing.expectError(error.StorePageFault,
+        rig.mem.translate(0x0001_0000, .store, .U, &rig.cpu));
+}
+
+test "translate: fetch from R-only page is a fault; fetch from X page succeeds" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+        PTE_V | PTE_R | PTE_U));  // R only
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    try std.testing.expectError(error.InstPageFault,
+        rig.mem.translate(0x0001_0000, .fetch, .U, &rig.cpu));
+
+    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+        PTE_V | PTE_X | PTE_U));  // X only
+    _ = try rig.mem.translate(0x0001_0000, .fetch, .U, &rig.cpu);
+}
+
+test "translate: MXR=1 allows load from X-only page" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+        PTE_V | PTE_X | PTE_U));  // X only
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mstatus_mxr = false;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    try std.testing.expectError(error.LoadPageFault,
+        rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu));
+    rig.cpu.csr.mstatus_mxr = true;
+    _ = try rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu);
 }
