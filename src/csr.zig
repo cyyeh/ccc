@@ -5,11 +5,13 @@ const PrivilegeMode = cpu_mod.PrivilegeMode;
 
 // S-mode CSR addresses (Phase 2.A).
 pub const CSR_SSTATUS  : u12 = 0x100;
+pub const CSR_SIE      : u12 = 0x104;
 pub const CSR_STVEC    : u12 = 0x105;
 pub const CSR_SSCRATCH : u12 = 0x140;
 pub const CSR_SEPC     : u12 = 0x141;
 pub const CSR_SCAUSE   : u12 = 0x142;
 pub const CSR_STVAL    : u12 = 0x143;
+pub const CSR_SIP      : u12 = 0x144;
 
 // sstatus visible/writable field mask (RV32).
 // S-mode can see and modify: SIE (1), SPIE (5), SPP (8), SUM (18), MXR (19).
@@ -21,6 +23,13 @@ const SSTATUS_WRITABLE_MASK: u32 =
     (1 << 18) |  // SUM
     (1 << 19);   // MXR
 const SSTATUS_READ_MASK: u32 = SSTATUS_WRITABLE_MASK; // no read-only bits in our subset
+
+// sie/sip masked-view constants.
+// S-mode can see SSIE(1)/STIE(5)/SEIE(9) through sie and SSIP(1)/STIP(5)/SEIP(9) through sip.
+// Writes to sip are limited to SSIP(1) only; STIP and SEIP are M/hardware-maintained.
+const SIE_MASK       : u32 = (1 << 1) | (1 << 5) | (1 << 9); // SSIE | STIE | SEIE
+const SIP_READ_MASK  : u32 = (1 << 1) | (1 << 5) | (1 << 9); // SSIP | STIP | SEIP reads
+const SIP_WRITE_MASK : u32 = (1 << 1);                        // only SSIP writable from S
 
 // Writable (software-visible) CSR addresses we implement in Phase 1.
 pub const CSR_MSTATUS: u12 = 0x300;
@@ -100,6 +109,8 @@ pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
     if (cpu.privilege != .M) return CsrError.IllegalInstruction;
     return switch (addr) {
         CSR_SSTATUS => (try csrRead(cpu, CSR_MSTATUS)) & SSTATUS_READ_MASK,
+        CSR_SIE => cpu.csr.mie & SIE_MASK,
+        CSR_SIP => cpu.csr.mip & SIP_READ_MASK,
         CSR_MSTATUS => blk: {
             var v: u32 = 0;
             if (cpu.csr.mstatus_sie) v |= 1 << 1;
@@ -145,6 +156,8 @@ pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
             const merged  = (current & ~SSTATUS_WRITABLE_MASK) | (value & SSTATUS_WRITABLE_MASK);
             try csrWrite(cpu, CSR_MSTATUS, merged);
         },
+        CSR_SIE => cpu.csr.mie = (cpu.csr.mie & ~SIE_MASK) | (value & SIE_MASK),
+        CSR_SIP => cpu.csr.mip = (cpu.csr.mip & ~SIP_WRITE_MASK) | (value & SIP_WRITE_MASK),
         CSR_MSTATUS => {
             cpu.csr.mstatus_sie = (value & (1 << 1)) != 0;
             cpu.csr.mstatus_mie = (value & (1 << 3)) != 0;
@@ -435,4 +448,47 @@ test "sstatus write affects only the writable bits of mstatus" {
     try std.testing.expect((m & (1 << 8))  != 0); // SPP
     try std.testing.expect((m & (1 << 18)) != 0); // SUM
     try std.testing.expect((m & (1 << 19)) != 0); // MXR
+}
+
+test "sie reads the S-visible bits of mie" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MIE,
+        (1 << 1) | (1 << 3) | (1 << 5) | (1 << 7) | (1 << 9) | (1 << 11));
+    const s = try csrRead(&cpu, CSR_SIE);
+    try std.testing.expectEqual(@as(u32, (1 << 1) | (1 << 5) | (1 << 9)), s);
+}
+
+test "sie write merges into mie preserving M-only bits" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MIE, (1 << 3) | (1 << 7) | (1 << 11)); // M-only
+    try csrWrite(&cpu, CSR_SIE, 0xFFFF_FFFF);
+    const m = try csrRead(&cpu, CSR_MIE);
+    try std.testing.expect((m & (1 << 3))  != 0); // MSIE
+    try std.testing.expect((m & (1 << 7))  != 0); // MTIE
+    try std.testing.expect((m & (1 << 11)) != 0); // MEIE
+    try std.testing.expect((m & (1 << 1))  != 0); // SSIE
+    try std.testing.expect((m & (1 << 5))  != 0); // STIE
+    try std.testing.expect((m & (1 << 9))  != 0); // SEIE
+}
+
+test "sip reads SSIP/STIP/SEIP from mip" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MIP, (1 << 1) | (1 << 5) | (1 << 9));
+    const s = try csrRead(&cpu, CSR_SIP);
+    try std.testing.expectEqual(@as(u32, (1 << 1) | (1 << 5) | (1 << 9)), s);
+}
+
+test "sip writes only SSIP into mip" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MIP, (1 << 7) | (1 << 5)); // M-only + STIP
+    try csrWrite(&cpu, CSR_SIP, 0xFFFF_FFFF);
+    const m = try csrRead(&cpu, CSR_MIP);
+    try std.testing.expect((m & (1 << 7)) != 0); // MTIP preserved
+    try std.testing.expect((m & (1 << 5)) != 0); // STIP preserved (not S-writable via sip)
+    try std.testing.expect((m & (1 << 1)) != 0); // SSIP set by sip write
+    try std.testing.expect((m & (1 << 9)) == 0); // SEIP NOT set (not in sip write-mask)
 }
