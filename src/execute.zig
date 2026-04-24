@@ -3,24 +3,31 @@ const cpu_mod = @import("cpu.zig");
 const decoder = @import("decoder.zig");
 const csr_mod = @import("csr.zig");
 const trap = @import("trap.zig");
-const MemoryError = @import("memory.zig").MemoryError;
+const mem_mod = @import("memory.zig");
+const MemoryError = mem_mod.MemoryError;
+const TranslationError = mem_mod.TranslationError;
+const LoadOrTransError = MemoryError || TranslationError;
 
 /// Map a memory error at a load site to the appropriate trap cause.
 /// A Halt error is not a trap — it's the halt-MMIO signal and we
 /// re-raise it so it propagates out of cpu.step to terminate the run.
-fn loadTrapCause(e: MemoryError) !trap.Cause {
+fn loadTrapCause(e: LoadOrTransError) !trap.Cause {
     return switch (e) {
         error.MisalignedAccess => trap.Cause.load_addr_misaligned,
         error.OutOfBounds, error.UnexpectedRegister, error.WriteFailed => trap.Cause.load_access_fault,
         error.Halt => error.Halt,
+        error.LoadPageFault => trap.Cause.load_page_fault,
+        error.InstPageFault, error.StorePageFault => unreachable, // load path can't produce these
     };
 }
 
-fn storeTrapCause(e: MemoryError) !trap.Cause {
+fn storeTrapCause(e: LoadOrTransError) !trap.Cause {
     return switch (e) {
         error.MisalignedAccess => trap.Cause.store_addr_misaligned,
         error.OutOfBounds, error.UnexpectedRegister, error.WriteFailed => trap.Cause.store_access_fault,
         error.Halt => error.Halt,
+        error.StorePageFault => trap.Cause.store_page_fault,
+        error.InstPageFault, error.LoadPageFault => unreachable, // store path can't produce these
     };
 }
 
@@ -91,7 +98,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u32 = switch (instr.op) {
                 .lb => blk: {
-                    const byte = cpu.memory.loadByte(addr) catch |e| {
+                    const byte = cpu.memory.loadByte(addr, cpu) catch |e| {
                         const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                         trap.enter(cause, addr, cpu);
                         return;
@@ -99,7 +106,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     break :blk @bitCast(@as(i32, @as(i8, @bitCast(byte))));
                 },
                 .lbu => blk: {
-                    const byte = cpu.memory.loadByte(addr) catch |e| {
+                    const byte = cpu.memory.loadByte(addr, cpu) catch |e| {
                         const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                         trap.enter(cause, addr, cpu);
                         return;
@@ -107,7 +114,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     break :blk @as(u32, byte);
                 },
                 .lh => blk: {
-                    const half = cpu.memory.loadHalfword(addr) catch |e| {
+                    const half = cpu.memory.loadHalfword(addr, cpu) catch |e| {
                         const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                         trap.enter(cause, addr, cpu);
                         return;
@@ -115,14 +122,14 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     break :blk @bitCast(@as(i32, @as(i16, @bitCast(half))));
                 },
                 .lhu => blk: {
-                    const half = cpu.memory.loadHalfword(addr) catch |e| {
+                    const half = cpu.memory.loadHalfword(addr, cpu) catch |e| {
                         const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                         trap.enter(cause, addr, cpu);
                         return;
                     };
                     break :blk @as(u32, half);
                 },
-                .lw => cpu.memory.loadWord(addr) catch |e| {
+                .lw => cpu.memory.loadWord(addr, cpu) catch |e| {
                     const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                     trap.enter(cause, addr, cpu);
                     return;
@@ -135,7 +142,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .sb => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u8 = @truncate(cpu.readReg(instr.rs2));
-            cpu.memory.storeByte(addr, value) catch |e| {
+            cpu.memory.storeByte(addr, value, cpu) catch |e| {
                 const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -145,7 +152,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .sh => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u16 = @truncate(cpu.readReg(instr.rs2));
-            cpu.memory.storeHalfword(addr, value) catch |e| {
+            cpu.memory.storeHalfword(addr, value, cpu) catch |e| {
                 const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -154,7 +161,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         },
         .sw => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
-            cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| {
+            cpu.memory.storeWord(addr, cpu.readReg(instr.rs2), cpu) catch |e| {
                 const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -374,7 +381,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 trap.enter(.load_addr_misaligned, addr, cpu);
                 return;
             }
-            const val = cpu.memory.loadWord(addr) catch |e| {
+            const val = cpu.memory.loadWord(addr, cpu) catch |e| {
                 const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -391,7 +398,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             }
             const holds = (cpu.reservation != null and cpu.reservation.? == addr);
             if (holds) {
-                cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| {
+                cpu.memory.storeWord(addr, cpu.readReg(instr.rs2), cpu) catch |e| {
                     cpu.reservation = null;
                     const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                     trap.enter(cause, addr, cpu);
@@ -409,7 +416,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 trap.enter(.store_addr_misaligned, addr, cpu);
                 return;
             }
-            const old = cpu.memory.loadWord(addr) catch |e| {
+            const old = cpu.memory.loadWord(addr, cpu) catch |e| {
                 const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -427,7 +434,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 .amomaxu_w => if (old > rs2_val) old else rs2_val,
                 else => unreachable,
             };
-            cpu.memory.storeWord(addr, new) catch |e| {
+            cpu.memory.storeWord(addr, new, cpu) catch |e| {
                 const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -444,7 +451,6 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
-const mem_mod = @import("memory.zig");
 
 // Test fixture: Uart holds `*std.Io.Writer` pointing into the rig's `aw`,
 // so the rig MUST NOT be moved/copied after init. Fill-in-place pattern
@@ -563,7 +569,7 @@ test "LB sign-extends a negative byte" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeByte(mem_mod.RAM_BASE + 0x40, 0xFF); // -1 as i8
+    try rig.mem.storeBytePhysical(mem_mod.RAM_BASE + 0x40, 0xFF); // -1 as i8
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     try dispatch(.{ .op = .lb, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(2));
@@ -573,7 +579,7 @@ test "LBU zero-extends" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeByte(mem_mod.RAM_BASE + 0x40, 0xFF);
+    try rig.mem.storeBytePhysical(mem_mod.RAM_BASE + 0x40, 0xFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     try dispatch(.{ .op = .lbu, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x0000_00FF), rig.cpu.readReg(2));
@@ -583,7 +589,7 @@ test "LH sign-extends a negative halfword" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeHalfword(mem_mod.RAM_BASE + 0x40, 0x8000);
+    try rig.mem.storeHalfwordPhysical(mem_mod.RAM_BASE + 0x40, 0x8000);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     try dispatch(.{ .op = .lh, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_8000), rig.cpu.readReg(2));
@@ -593,7 +599,7 @@ test "LW round-trip" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xDEAD_BEEF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xDEAD_BEEF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     try dispatch(.{ .op = .lw, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xDEAD_BEEF), rig.cpu.readReg(2));
@@ -606,7 +612,7 @@ test "SB stores low byte of rs2" {
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     rig.cpu.writeReg(2, 0xDEAD_BE12);
     try dispatch(.{ .op = .sb, .rs1 = 1, .rs2 = 2, .imm = 8 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u8, 0x12), try rig.mem.loadByte(mem_mod.RAM_BASE + 8));
+    try std.testing.expectEqual(@as(u8, 0x12), try rig.mem.loadBytePhysical(mem_mod.RAM_BASE + 8));
 }
 
 test "SW stores full word" {
@@ -616,7 +622,7 @@ test "SW stores full word" {
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     rig.cpu.writeReg(2, 0xCAFE_BABE);
     try dispatch(.{ .op = .sw, .rs1 = 1, .rs2 = 2, .imm = 0x10 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0xCAFE_BABE), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x10));
+    try std.testing.expectEqual(@as(u32, 0xCAFE_BABE), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x10));
 }
 
 test "SB to UART address forwards to writer" {
@@ -965,7 +971,7 @@ test "LR.W loads a word and records a reservation" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x80, 0xCAFEBABE);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x80, 0xCAFEBABE);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x80);
     try dispatch(.{ .op = .lr_w, .rd = 2, .rs1 = 1 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xCAFEBABE), rig.cpu.readReg(2));
@@ -981,7 +987,7 @@ test "SC.W succeeds when reservation matches, writes 0 to rd" {
     rig.cpu.writeReg(2, 0xDEADBEEF);
     try dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(3)); // 0 = success
-    try std.testing.expectEqual(@as(u32, 0xDEADBEEF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x80));
+    try std.testing.expectEqual(@as(u32, 0xDEADBEEF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x80));
     try std.testing.expect(rig.cpu.reservation == null); // cleared after SC.W
 }
 
@@ -995,7 +1001,7 @@ test "SC.W fails when no reservation is held, writes nonzero to rd" {
     try dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expect(rig.cpu.readReg(3) != 0); // nonzero = failure
     // Memory must NOT be updated on SC.W failure.
-    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x80));
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x80));
 }
 
 test "SC.W fails when reservation address doesn't match" {
@@ -1045,104 +1051,104 @@ test "AMOSWAP.W returns old value, stores rs2" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xAAAA);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xAAAA);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0xBBBB);
     try dispatch(.{ .op = .amoswap_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xAAAA), rig.cpu.readReg(3));       // old
-    try std.testing.expectEqual(@as(u32, 0xBBBB), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40)); // new
+    try std.testing.expectEqual(@as(u32, 0xBBBB), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40)); // new
 }
 
 test "AMOADD.W returns old value, stores (old + rs2) with wrap" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 10);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 10);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 32);
     try dispatch(.{ .op = .amoadd_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 10), rig.cpu.readReg(3));
-    try std.testing.expectEqual(@as(u32, 42), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 42), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOXOR.W: old XOR rs2" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0x0F0F_0F0F);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0x0F0F_0F0F);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0xFF00_FF00);
     try dispatch(.{ .op = .amoxor_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x0F0F_0F0F), rig.cpu.readReg(3));
-    try std.testing.expectEqual(@as(u32, 0xF00F_F00F), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0xF00F_F00F), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOAND.W: old AND rs2" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0x0000_FFFF);
     try dispatch(.{ .op = .amoand_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
-    try std.testing.expectEqual(@as(u32, 0x0000_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0x0000_FFFF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOOR.W: old OR rs2" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0x0000_00FF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0x0000_00FF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0xFF00_0000);
     try dispatch(.{ .op = .amoor_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0xFF00_00FF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0xFF00_00FF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOMIN.W signed: min(-1, 0) = -1" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF); // -1 as i32
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF); // -1 as i32
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amomin_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
-    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOMAX.W signed: max(-1, 0) = 0" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amomax_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOMINU.W unsigned: min(0xFFFFFFFF, 0) = 0" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amominu_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOMAXU.W unsigned: max(0xFFFFFFFF, 0) = 0xFFFFFFFF" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amomaxu_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "CSRRW swaps: rd gets old CSR, CSR gets rs1" {
@@ -1345,7 +1351,7 @@ test "halt-on-trap propagates FatalTrap from cpu.run" {
     defer rig.deinit();
     rig.cpu.halt_on_trap = true;
     rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
-    try rig.mem.storeWord(mem_mod.RAM_BASE, 0xFFFFFFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE, 0xFFFFFFFF);
     try std.testing.expectError(@import("cpu.zig").StepError.FatalTrap, rig.cpu.run());
     try std.testing.expectEqual(
         @intFromEnum(@import("trap.zig").Cause.illegal_instruction),

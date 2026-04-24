@@ -124,7 +124,17 @@ pub const Cpu = struct {
 
     pub fn step(self: *Cpu) StepError!void {
         const pre_pc = self.pc;
-        const word = self.memory.loadWord(pre_pc) catch |e| switch (e) {
+        // Instruction fetch: translate using the current privilege directly —
+        // MPRV is non-applicable to fetch per the spec, so we intentionally
+        // bypass `effectivePriv` and the translating `loadWord` wrapper.
+        const pa = self.memory.translate(pre_pc, .fetch, self.privilege, self) catch |e| switch (e) {
+            error.InstPageFault => {
+                trap.enter(.instr_page_fault, pre_pc, self);
+                return;
+            },
+            else => unreachable, // translate only returns TranslationError variants
+        };
+        const word = self.memory.loadWordPhysical(pa) catch |e| switch (e) {
             error.Halt => return StepError.Halt,
             error.MisalignedAccess => {
                 trap.enter(.instr_addr_misaligned, pre_pc, self);
@@ -198,8 +208,8 @@ test "Cpu.run halts cleanly when program writes to halt MMIO" {
     //   lui   t0, 0x100        ; t0 = 0x00100000 (halt MMIO)
     //   sb    zero, 0(t0)      ; *t0 = 0 → halt
     const RAM_BASE = @import("memory.zig").RAM_BASE;
-    try mem.storeWord(RAM_BASE, 0x001002B7); // lui t0, 0x100
-    try mem.storeWord(RAM_BASE + 4, 0x00028023); // sb zero, 0(t0)
+    try mem.storeWordPhysical(RAM_BASE, 0x001002B7); // lui t0, 0x100
+    try mem.storeWordPhysical(RAM_BASE + 4, 0x00028023); // sb zero, 0(t0)
 
     var cpu = Cpu.init(&mem, RAM_BASE);
     try cpu.run();

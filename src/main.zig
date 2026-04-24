@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
     var entry: u32 = 0;
     if (args.raw_addr) |addr| {
         for (file_data, 0..) |b, idx| {
-            mem.storeByte(addr + @as(u32, @intCast(idx)), b) catch |err| {
+            mem.storeBytePhysical(addr + @as(u32, @intCast(idx)), b) catch |err| {
                 stdout.flush() catch {};
                 stderr.print("failed to load byte {d} at 0x{X:0>8}: {s}\n", .{ idx, addr + @as(u32, @intCast(idx)), @errorName(err) }) catch {};
                 stderr.flush() catch {};

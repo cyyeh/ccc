@@ -100,7 +100,7 @@ pub const Memory = struct {
         return addr >= base and addr < base +% 8;
     }
 
-    pub fn loadByte(self: *Memory, addr: u32) MemoryError!u8 {
+    pub fn loadBytePhysical(self: *Memory, addr: u32) MemoryError!u8 {
         if (inRange(addr, uart_dev.UART_BASE, uart_dev.UART_SIZE)) {
             return self.uart.readByte(addr - uart_dev.UART_BASE) catch |e| switch (e) {
                 error.UnexpectedRegister => MemoryError.UnexpectedRegister,
@@ -119,14 +119,14 @@ pub const Memory = struct {
         return self.ram[off];
     }
 
-    pub fn loadHalfword(self: *Memory, addr: u32) MemoryError!u16 {
+    pub fn loadHalfwordPhysical(self: *Memory, addr: u32) MemoryError!u16 {
         if (addr & 1 != 0) return MemoryError.MisalignedAccess;
-        const lo = try self.loadByte(addr);
-        const hi = try self.loadByte(addr + 1);
+        const lo = try self.loadBytePhysical(addr);
+        const hi = try self.loadBytePhysical(addr + 1);
         return (@as(u16, hi) << 8) | @as(u16, lo);
     }
 
-    pub fn loadWord(self: *Memory, addr: u32) MemoryError!u32 {
+    pub fn loadWordPhysical(self: *Memory, addr: u32) MemoryError!u32 {
         if (addr & 3 != 0) return MemoryError.MisalignedAccess;
         // Fast path for RAM:
         if (addr >= RAM_BASE) {
@@ -135,15 +135,15 @@ pub const Memory = struct {
             return std.mem.readInt(u32, self.ram[off..][0..4], .little);
         }
         // Generic byte-by-byte path for MMIO:
-        const b0 = try self.loadByte(addr);
-        const b1 = try self.loadByte(addr + 1);
-        const b2 = try self.loadByte(addr + 2);
-        const b3 = try self.loadByte(addr + 3);
+        const b0 = try self.loadBytePhysical(addr);
+        const b1 = try self.loadBytePhysical(addr + 1);
+        const b2 = try self.loadBytePhysical(addr + 2);
+        const b3 = try self.loadBytePhysical(addr + 3);
         return (@as(u32, b3) << 24) | (@as(u32, b2) << 16) |
             (@as(u32, b1) << 8) | @as(u32, b0);
     }
 
-    pub fn storeByte(self: *Memory, addr: u32, value: u8) MemoryError!void {
+    pub fn storeBytePhysical(self: *Memory, addr: u32, value: u8) MemoryError!void {
         if (inRange(addr, uart_dev.UART_BASE, uart_dev.UART_SIZE)) {
             self.uart.writeByte(addr - uart_dev.UART_BASE, value) catch |e| switch (e) {
                 error.UnexpectedRegister => return MemoryError.UnexpectedRegister,
@@ -180,13 +180,13 @@ pub const Memory = struct {
         self.ram[off] = value;
     }
 
-    pub fn storeHalfword(self: *Memory, addr: u32, value: u16) MemoryError!void {
+    pub fn storeHalfwordPhysical(self: *Memory, addr: u32, value: u16) MemoryError!void {
         if (addr & 1 != 0) return MemoryError.MisalignedAccess;
-        try self.storeByte(addr, @truncate(value));
-        try self.storeByte(addr + 1, @truncate(value >> 8));
+        try self.storeBytePhysical(addr, @truncate(value));
+        try self.storeBytePhysical(addr + 1, @truncate(value >> 8));
     }
 
-    pub fn storeWord(self: *Memory, addr: u32, value: u32) MemoryError!void {
+    pub fn storeWordPhysical(self: *Memory, addr: u32, value: u32) MemoryError!void {
         if (addr & 3 != 0) return MemoryError.MisalignedAccess;
         if (addr >= RAM_BASE and !self.inTohost(addr)) {
             const off = try self.ramOffset(addr);
@@ -194,10 +194,48 @@ pub const Memory = struct {
             std.mem.writeInt(u32, self.ram[off..][0..4], value, .little);
             return;
         }
-        try self.storeByte(addr, @truncate(value));
-        try self.storeByte(addr + 1, @truncate(value >> 8));
-        try self.storeByte(addr + 2, @truncate(value >> 16));
-        try self.storeByte(addr + 3, @truncate(value >> 24));
+        try self.storeBytePhysical(addr, @truncate(value));
+        try self.storeBytePhysical(addr + 1, @truncate(value >> 8));
+        try self.storeBytePhysical(addr + 2, @truncate(value >> 16));
+        try self.storeBytePhysical(addr + 3, @truncate(value >> 24));
+    }
+
+    // ------------------------------------------------------------------
+    // Translation-aware accessors.
+    //
+    // These are the load/store APIs used by the execute pipeline: each
+    // first calls `translate` (which honors satp / effective privilege
+    // / MPRV) and then funnels through the physical-address bypass.
+    // ------------------------------------------------------------------
+
+    pub fn loadByte(self: *Memory, va: u32, cpu: *Cpu) (MemoryError || TranslationError)!u8 {
+        const pa = try self.translate(va, .load, effectivePriv(cpu, .load), cpu);
+        return self.loadBytePhysical(pa);
+    }
+
+    pub fn loadHalfword(self: *Memory, va: u32, cpu: *Cpu) (MemoryError || TranslationError)!u16 {
+        const pa = try self.translate(va, .load, effectivePriv(cpu, .load), cpu);
+        return self.loadHalfwordPhysical(pa);
+    }
+
+    pub fn loadWord(self: *Memory, va: u32, cpu: *Cpu) (MemoryError || TranslationError)!u32 {
+        const pa = try self.translate(va, .load, effectivePriv(cpu, .load), cpu);
+        return self.loadWordPhysical(pa);
+    }
+
+    pub fn storeByte(self: *Memory, va: u32, value: u8, cpu: *Cpu) (MemoryError || TranslationError)!void {
+        const pa = try self.translate(va, .store, effectivePriv(cpu, .store), cpu);
+        return self.storeBytePhysical(pa, value);
+    }
+
+    pub fn storeHalfword(self: *Memory, va: u32, value: u16, cpu: *Cpu) (MemoryError || TranslationError)!void {
+        const pa = try self.translate(va, .store, effectivePriv(cpu, .store), cpu);
+        return self.storeHalfwordPhysical(pa, value);
+    }
+
+    pub fn storeWord(self: *Memory, va: u32, value: u32, cpu: *Cpu) (MemoryError || TranslationError)!void {
+        const pa = try self.translate(va, .store, effectivePriv(cpu, .store), cpu);
+        return self.storeWordPhysical(pa, value);
     }
 
     /// Virtual-to-physical address translation.
@@ -224,12 +262,9 @@ pub const Memory = struct {
         if (mode == 0) return va;
 
         // Sv32 walk — 4KB leaves only, superpage (L1 leaf) rejected.
-        //
-        // NOTE: `self.loadWord` is currently a physical-address-keyed direct
-        // RAM read (no translation). Task 18 will fork this into
-        // `loadWordPhysical` (bypass) and a translation-aware `loadWord`.
-        // At that point these call sites must be updated to `loadWordPhysical`
-        // to avoid infinite recursion.
+        // PTE reads and A/D write-backs use the physical-address bypass
+        // (`*Physical`) — the translating variants would recurse through
+        // this very function.
         const vpn1: u32 = (va >> 22) & 0x3FF;
         const vpn0: u32 = (va >> 12) & 0x3FF;
         const off: u32 = va & 0xFFF;
@@ -237,7 +272,7 @@ pub const Memory = struct {
 
         // Level-1 PTE lookup.
         const l1_pte_pa = root_pa + vpn1 * 4;
-        const l1_pte = self.loadWord(l1_pte_pa) catch return pageFaultFor(access);
+        const l1_pte = self.loadWordPhysical(l1_pte_pa) catch return pageFaultFor(access);
         if ((l1_pte & PTE_V) == 0) return pageFaultFor(access);
         if ((l1_pte & (PTE_R | PTE_W | PTE_X)) != 0) {
             // Superpage leaf at L1 — Phase 2 rejects (not yet implemented).
@@ -247,7 +282,7 @@ pub const Memory = struct {
         // Level-0 PTE lookup.
         const l0_table_pa = ((l1_pte >> 10) & 0x003F_FFFF) << 12;
         const l0_pte_pa = l0_table_pa + vpn0 * 4;
-        const l0_pte = self.loadWord(l0_pte_pa) catch return pageFaultFor(access);
+        const l0_pte = self.loadWordPhysical(l0_pte_pa) catch return pageFaultFor(access);
         if ((l0_pte & PTE_V) == 0) return pageFaultFor(access);
         // A pointer PTE (R|W|X == 0) at leaf level is invalid per spec §4.3.2 step 5.
         if ((l0_pte & (PTE_R | PTE_W | PTE_X)) == 0) return pageFaultFor(access);
@@ -292,10 +327,10 @@ pub const Memory = struct {
             dirty = true;
         }
         if (dirty) {
-            // self.storeWord here is the existing physical-address-keyed path;
-            // Task 18 will rename it to storeWordPhysical and at that point this
-            // call site must be updated to match.
-            self.storeWord(l0_pte_pa, new_pte) catch return pageFaultFor(access);
+            // Physical-address bypass: this write targets the PTE itself,
+            // not a virtual address, so it MUST NOT recurse through
+            // `storeWord`.
+            self.storeWordPhysical(l0_pte_pa, new_pte) catch return pageFaultFor(access);
         }
 
         return leaf_pa | off;
@@ -309,6 +344,19 @@ fn pageFaultFor(access: Access) TranslationError {
         .load => error.LoadPageFault,
         .store => error.StorePageFault,
     };
+}
+
+/// Compute the effective privilege for a load/store/fetch.
+/// - Fetch: always `cpu.privilege` (MPRV never applies to fetch).
+/// - Load/store: `cpu.privilege` normally, but if `cpu.privilege == .M` and
+///   `mstatus_mprv` is set, use `mstatus_mpp` as the effective privilege.
+///   This lets M-mode execute loads/stores as if from U-mode, used by kernel
+///   page-fault handlers that access user memory. Task 19 tests this fully.
+pub fn effectivePriv(cpu: *const Cpu, access: Access) PrivilegeMode {
+    if (access != .fetch and cpu.privilege == .M and cpu.csr.mstatus_mprv) {
+        return @enumFromInt(cpu.csr.mstatus_mpp);
+    }
+    return cpu.privilege;
 }
 
 // Test fixture: the Uart embeds `*std.Io.Writer` pointing into the rig's
@@ -341,16 +389,16 @@ test "RAM byte round-trip via routed Memory" {
     var rig: TestRig = undefined;
     try rig.init(std.testing.allocator);
     defer rig.deinit();
-    try rig.mem.storeByte(RAM_BASE + 100, 0xAB);
-    try std.testing.expectEqual(@as(u8, 0xAB), try rig.mem.loadByte(RAM_BASE + 100));
+    try rig.mem.storeBytePhysical(RAM_BASE + 100, 0xAB);
+    try std.testing.expectEqual(@as(u8, 0xAB), try rig.mem.loadBytePhysical(RAM_BASE + 100));
 }
 
 test "store to UART THR forwards to writer" {
     var rig: TestRig = undefined;
     try rig.init(std.testing.allocator);
     defer rig.deinit();
-    try rig.mem.storeByte(uart_dev.UART_BASE, 'X');
-    try rig.mem.storeByte(uart_dev.UART_BASE, 'Y');
+    try rig.mem.storeBytePhysical(uart_dev.UART_BASE, 'X');
+    try rig.mem.storeBytePhysical(uart_dev.UART_BASE, 'Y');
     try std.testing.expectEqualStrings("XY", rig.aw.written());
 }
 
@@ -358,7 +406,7 @@ test "store to halt MMIO returns error.Halt" {
     var rig: TestRig = undefined;
     try rig.init(std.testing.allocator);
     defer rig.deinit();
-    try std.testing.expectError(MemoryError.Halt, rig.mem.storeByte(halt_dev.HALT_BASE, 7));
+    try std.testing.expectError(MemoryError.Halt, rig.mem.storeBytePhysical(halt_dev.HALT_BASE, 7));
     try std.testing.expectEqual(@as(?u8, 7), rig.halt.exit_code);
 }
 
@@ -366,23 +414,23 @@ test "word store/load is little-endian (in RAM)" {
     var rig: TestRig = undefined;
     try rig.init(std.testing.allocator);
     defer rig.deinit();
-    try rig.mem.storeWord(RAM_BASE, 0xDEAD_BEEF);
-    try std.testing.expectEqual(@as(u8, 0xEF), try rig.mem.loadByte(RAM_BASE));
-    try std.testing.expectEqual(@as(u32, 0xDEAD_BEEF), try rig.mem.loadWord(RAM_BASE));
+    try rig.mem.storeWordPhysical(RAM_BASE, 0xDEAD_BEEF);
+    try std.testing.expectEqual(@as(u8, 0xEF), try rig.mem.loadBytePhysical(RAM_BASE));
+    try std.testing.expectEqual(@as(u32, 0xDEAD_BEEF), try rig.mem.loadWordPhysical(RAM_BASE));
 }
 
 test "out-of-RAM access (and not in any device range) returns OutOfBounds" {
     var rig: TestRig = undefined;
     try rig.init(std.testing.allocator);
     defer rig.deinit();
-    try std.testing.expectError(MemoryError.OutOfBounds, rig.mem.loadByte(0x4000_0000));
+    try std.testing.expectError(MemoryError.OutOfBounds, rig.mem.loadBytePhysical(0x4000_0000));
 }
 
 test "misaligned word load returns MisalignedAccess" {
     var rig: TestRig = undefined;
     try rig.init(std.testing.allocator);
     defer rig.deinit();
-    try std.testing.expectError(MemoryError.MisalignedAccess, rig.mem.loadWord(RAM_BASE + 1));
+    try std.testing.expectError(MemoryError.MisalignedAccess, rig.mem.loadWordPhysical(RAM_BASE + 1));
 }
 
 test "word load from CLINT mtime returns nonzero after clock advances" {
@@ -392,7 +440,7 @@ test "word load from CLINT mtime returns nonzero after clock advances" {
     clint_dev.fixture_clock_ns = 0;
     rig.clint.epoch_ns = 0;
     clint_dev.fixture_clock_ns = 10_000; // 100 ticks
-    const v = try rig.mem.loadWord(clint_dev.CLINT_BASE + 0xBFF8);
+    const v = try rig.mem.loadWordPhysical(clint_dev.CLINT_BASE + 0xBFF8);
     try std.testing.expectEqual(@as(u32, 100), v);
 }
 
@@ -428,8 +476,8 @@ test "translate: Sv32 4K leaf, U-mode, matches VA→PA" {
     const leaf_pa: u32 = 0x8020_0000;
 
     // VA 0x00010000 → VPN[1]=0, VPN[0]=0x10, offset=0
-    try rig.mem.storeWord(root_pa + 0, makePointerPte(l0_table_pa));
-    try rig.mem.storeWord(l0_table_pa + 0x10 * 4, makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
+    try rig.mem.storeWordPhysical(root_pa + 0, makePointerPte(l0_table_pa));
+    try rig.mem.storeWordPhysical(l0_table_pa + 0x10 * 4, makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
 
     rig.cpu.privilege = .U;
     rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
@@ -447,8 +495,8 @@ test "translate: Sv32 4K leaf preserves offset" {
     const l0_table_pa: u32 = 0x8010_1000;
     const leaf_pa: u32 = 0x8020_0000;
 
-    try rig.mem.storeWord(root_pa + 0, makePointerPte(l0_table_pa));
-    try rig.mem.storeWord(l0_table_pa + 0x10 * 4, makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
+    try rig.mem.storeWordPhysical(root_pa + 0, makePointerPte(l0_table_pa));
+    try rig.mem.storeWordPhysical(l0_table_pa + 0x10 * 4, makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
 
     rig.cpu.privilege = .U;
     rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
@@ -464,8 +512,8 @@ test "translate: U-mode cannot access a page with U=0" {
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
-    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
         PTE_V | PTE_R | PTE_W));  // U=0
     rig.cpu.privilege = .U;
     rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
@@ -480,8 +528,8 @@ test "translate: S-mode without SUM cannot access U=1 page" {
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
-    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
         PTE_V | PTE_R | PTE_W | PTE_U));
     rig.cpu.privilege = .S;
     rig.cpu.csr.mstatus_sum = false;
@@ -497,8 +545,8 @@ test "translate: S-mode with SUM=1 may access U=1 page for load/store but never 
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
-    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
         PTE_V | PTE_R | PTE_W | PTE_X | PTE_U));
     rig.cpu.privilege = .S;
     rig.cpu.csr.mstatus_sum = true;
@@ -520,8 +568,8 @@ test "translate: write to page without W bit is a store page fault" {
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
-    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
         PTE_V | PTE_R | PTE_U));  // no W
     rig.cpu.privilege = .U;
     rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
@@ -536,15 +584,15 @@ test "translate: fetch from R-only page is a fault; fetch from X page succeeds" 
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
-    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
         PTE_V | PTE_R | PTE_U));  // R only
     rig.cpu.privilege = .U;
     rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
     try std.testing.expectError(error.InstPageFault,
         rig.mem.translate(0x0001_0000, .fetch, .U, &rig.cpu));
 
-    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
         PTE_V | PTE_X | PTE_U));  // X only
     _ = try rig.mem.translate(0x0001_0000, .fetch, .U, &rig.cpu);
 }
@@ -556,8 +604,8 @@ test "translate: MXR=1 allows load from X-only page" {
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
-    try rig.mem.storeWord(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4, makeLeafPte(leaf_pa,
         PTE_V | PTE_X | PTE_U));  // X only
     rig.cpu.privilege = .U;
     rig.cpu.csr.mstatus_mxr = false;
@@ -575,14 +623,14 @@ test "translate: PTE.A is set on successful load" {
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
     const initial_pte = makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_U);  // A=0
-    try rig.mem.storeWord(l0_pa + 0x10 * 4, initial_pte);
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4, initial_pte);
     rig.cpu.privilege = .U;
     rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
 
     _ = try rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu);
-    const pte_after = try rig.mem.loadWord(l0_pa + 0x10 * 4);
+    const pte_after = try rig.mem.loadWordPhysical(l0_pa + 0x10 * 4);
     try std.testing.expect((pte_after & PTE_A) != 0);
 }
 
@@ -593,15 +641,15 @@ test "translate: PTE.D is set on successful store; A also set" {
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
-    try rig.mem.storeWord(l0_pa + 0x10 * 4,
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4,
         makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
 
     rig.cpu.privilege = .U;
     rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
 
     _ = try rig.mem.translate(0x0001_0000, .store, .U, &rig.cpu);
-    const pte_after = try rig.mem.loadWord(l0_pa + 0x10 * 4);
+    const pte_after = try rig.mem.loadWordPhysical(l0_pa + 0x10 * 4);
     try std.testing.expect((pte_after & PTE_A) != 0);
     try std.testing.expect((pte_after & PTE_D) != 0);
 }
@@ -613,14 +661,33 @@ test "translate: PTE.D stays 0 after a load-only access" {
     const root_pa : u32 = 0x8010_0000;
     const l0_pa   : u32 = 0x8010_1000;
     const leaf_pa : u32 = 0x8020_0000;
-    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
-    try rig.mem.storeWord(l0_pa + 0x10 * 4,
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4,
         makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
     rig.cpu.privilege = .U;
     rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
 
     _ = try rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu);
-    const pte_after = try rig.mem.loadWord(l0_pa + 0x10 * 4);
+    const pte_after = try rig.mem.loadWordPhysical(l0_pa + 0x10 * 4);
     try std.testing.expect((pte_after & PTE_A) != 0);
     try std.testing.expect((pte_after & PTE_D) == 0);
+}
+
+test "loadWord from U-mode through Sv32 translates VA→PA" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4,
+        makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
+    try rig.mem.storeWordPhysical(leaf_pa, 0x1234_5678);
+
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    const v = try rig.mem.loadWord(0x0001_0000, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x1234_5678), v);
 }
