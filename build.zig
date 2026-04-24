@@ -183,6 +183,73 @@ pub fn build(b: *std.Build) void {
     const e2e_hello_elf_step = b.step("e2e-hello-elf", "Run the Phase 1 §Definition of done demo (ccc hello.elf)");
     e2e_hello_elf_step.dependOn(&e2e_hello_elf_run.step);
 
+    // === Kernel.elf (Plan 2.C) ===
+    //
+    // Two-piece build:
+    //   1. userprog.bin — a flat RV32 U-mode binary produced by objcopy
+    //      (added in Task 14). For now (Task 2), userprog.bin does not
+    //      exist yet and the kernel does not embed it.
+    //   2. kernel.elf — M-mode boot.S + mtimer.S + trampoline.S + kernel
+    //      Zig (kmain, vm, page_alloc, trap, syscall, uart, kprintf) all
+    //      linked per kernel/linker.ld, entry _M_start.
+    //
+    // Task 2 state: only boot.S + kmain.zig exist; the other .zig / .S
+    // files and the userprog embed arrive in later tasks.
+
+    const kernel_boot_obj = b.addObject(.{
+        .name = "kernel-boot",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_boot_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/boot.S"));
+
+    const kernel_kmain_obj = b.addObject(.{
+        .name = "kernel-kmain",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const kernel_elf = b.addExecutable(.{
+        .name = "kernel.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_elf.root_module.addObject(kernel_boot_obj);
+    kernel_elf.root_module.addObject(kernel_kmain_obj);
+    kernel_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_kernel_elf = b.addInstallArtifact(kernel_elf, .{});
+    const kernel_elf_step = b.step("kernel-elf", "Build the Plan 2.C kernel.elf");
+    kernel_elf_step.dependOn(&install_kernel_elf.step);
+
+    const kernel_step = b.step("kernel", "Alias for kernel-elf");
+    kernel_step.dependOn(&install_kernel_elf.step);
+
+    // End-to-end: run the Plan 2.C kernel.elf through the emulator and
+    // assert the observable stdout. The expected output grows across
+    // Tasks 2, 8, 17 before settling at "hello from u-mode\n" in Task 17.
+    const e2e_kernel_run = b.addRunArtifact(exe);
+    e2e_kernel_run.addFileArg(kernel_elf.getEmittedBin());
+    e2e_kernel_run.expectStdOutEqual("ok\n");
+    e2e_kernel_run.expectExitCode(0);
+
+    const e2e_kernel_step = b.step("e2e-kernel", "Run the Plan 2.C kernel e2e test");
+    e2e_kernel_step.dependOn(&e2e_kernel_run.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
