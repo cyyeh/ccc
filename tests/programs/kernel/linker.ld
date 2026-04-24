@@ -69,6 +69,7 @@ SECTIONS {
         *(.note.*)
         *(.comment)
         *(.eh_frame)
+        *(.eh_frame_hdr)
         *(.riscv.attributes)
     }
 }
