@@ -56,6 +56,11 @@ pub const CsrFile = struct {
     mtval: u32 = 0,
     mie: u32 = 0,
     mip: u32 = 0,
+    // Plan 2.B: trap delegation registers. Controlled by M; read by trap
+    // routing logic in trap.zig and the interrupt boundary check in
+    // cpu.check_interrupt. WARL-masked by csr.zig per the Phase 2 spec.
+    medeleg: u32 = 0,
+    mideleg: u32 = 0,
     // mscratch (0x340): M-mode scratch register. Software-writable, no side
     // effects, no hardware reads. Included in Plan 1.D so rv32mi-csr passes;
     // the spec's CSR list didn't call it out but the riscv-tests suite
@@ -126,6 +131,13 @@ pub const Cpu = struct {
     }
 
     pub fn step(self: *Cpu) StepError!void {
+        // Plan 2.B: check for deliverable async interrupts BEFORE fetching.
+        // If one is taken, the PC has been redirected to the trap vector
+        // and the instruction that would have been fetched this cycle is
+        // not executed — per RISC-V spec, interrupts are taken at the
+        // boundary between instructions.
+        if (check_interrupt(self)) return;
+
         const pre_pc = self.pc;
         const pre_priv = self.privilege; // captured before any fetch/execute may trap-switch privilege
         // Instruction fetch: translate using the current privilege directly —
@@ -174,6 +186,65 @@ pub const Cpu = struct {
         }
     }
 };
+
+/// Compute the effective `mip` for the interrupt-boundary check. This is
+/// cpu.csr.mip OR'd with CLINT's live MTIP bit. We never store MTIP in
+/// cpu.csr.mip — the bit is always derived here and inside csrRead.
+fn pendingInterrupts(cpu: *const Cpu) u32 {
+    var mip = cpu.csr.mip;
+    if (cpu.memory.clint.isMtipPending()) mip |= 1 << 7;
+    return mip;
+}
+
+/// Returns true if an interrupt would be deliverable at `target` given the
+/// current privilege level and the relevant global-enable bit.
+/// Spec §3.1.6.1 / §3.1.9 rule:
+///   current < target → always taken (lower privilege can't mask higher)
+///   current == target → consult global enable (MIE for M, SIE for S)
+///   current > target → never taken this cycle (pend until we drop down)
+fn interruptDeliverableAt(target: PrivilegeMode, cpu: *const Cpu) bool {
+    const target_rank = @intFromEnum(target);
+    const current_rank = @intFromEnum(cpu.privilege);
+    if (current_rank < target_rank) return true;
+    if (current_rank > target_rank) return false;
+    return switch (target) {
+        .M => cpu.csr.mstatus_mie,
+        .S => cpu.csr.mstatus_sie,
+        else => false,
+    };
+}
+
+/// Check for a deliverable async interrupt at the current instruction
+/// boundary. If one exists, enter the trap and return true; otherwise
+/// return false (caller proceeds with the fetch).
+///
+/// Priority uses the RISC-V spec order exposed in trap.INTERRUPT_PRIORITY_ORDER.
+/// For each cause code in that order, we consult the effective mip AND mie
+/// to see if it's pending+enabled, then route via mideleg to determine the
+/// target privilege (but never delegate when cpu.privilege == .M), then
+/// apply the deliverability rule above. The first cause passing all three
+/// gates wins.
+pub fn check_interrupt(cpu: *Cpu) bool {
+    const effective_mip = pendingInterrupts(cpu);
+    const pending_enabled = effective_mip & cpu.csr.mie;
+    if (pending_enabled == 0) return false;
+
+    for (trap.INTERRUPT_PRIORITY_ORDER) |cause_code| {
+        const bit = @as(u32, 1) << @intCast(cause_code);
+        if ((pending_enabled & bit) == 0) continue;
+
+        const delegated = (cpu.csr.mideleg & bit) != 0;
+        const target: PrivilegeMode =
+            if (cpu.privilege != .M and delegated) .S else .M;
+
+        if (!interruptDeliverableAt(target, cpu)) continue;
+
+        trap.enter_interrupt(cause_code, cpu);
+        return true;
+    }
+
+    return false;
+}
 
 test "x0 is hardwired to zero — write is a no-op" {
     var dummy_mem: Memory = undefined;
@@ -271,4 +342,279 @@ test "instruction page fault: step() from unmapped PC in U-mode updates mcause a
     try std.testing.expectEqual(@as(u32, faulting_pc), cpu.csr.mtval);
     try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
     try std.testing.expectEqual(@as(u32, 0x8000_1000), cpu.pc);
+}
+
+test "CsrFile default has zero medeleg and mideleg" {
+    var dummy_mem: Memory = undefined;
+    const cpu = Cpu.init(&dummy_mem, 0);
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.medeleg);
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.mideleg);
+}
+
+const trap_mod = @import("trap.zig");
+const halt_dev_t = @import("devices/halt.zig");
+const uart_dev_t = @import("devices/uart.zig");
+
+const CpuRig = struct {
+    halt: halt_dev_t.Halt,
+    aw: std.Io.Writer.Allocating,
+    uart: uart_dev_t.Uart,
+    clint: clint_dev.Clint,
+    mem: Memory,
+    cpu: Cpu,
+    fn deinit(self: *CpuRig) void {
+        self.mem.deinit();
+        self.aw.deinit();
+        std.testing.allocator.destroy(self);
+    }
+};
+
+/// Allocates a CpuRig on the heap so that internal pointers (mem→clint,
+/// mem→uart, cpu→mem, uart→writer) remain stable across the return. Callers
+/// must `defer rig.deinit()` which frees both the heap object and the RAM.
+fn cpuRig() !*CpuRig {
+    clint_dev.fixture_clock_ns = 0;
+    const rig = try std.testing.allocator.create(CpuRig);
+    rig.halt = halt_dev_t.Halt.init();
+    rig.aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    rig.uart = uart_dev_t.Uart.init(&rig.aw.writer);
+    rig.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    rig.mem = try Memory.init(
+        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, null,
+        mem_mod.RAM_SIZE_DEFAULT,
+    );
+    rig.cpu = Cpu.init(&rig.mem, mem_mod.RAM_BASE);
+    return rig;
+}
+
+test "check_interrupt: no pending → returns false, cpu state unchanged" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mie = 0xFFFF_FFFF & @import("csr.zig").MIE_MASK;
+    const taken = check_interrupt(&rig.cpu);
+    try std.testing.expect(!taken);
+    try std.testing.expectEqual(PrivilegeMode.U, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mcause);
+}
+
+test "check_interrupt: MTIP pending, MIE+MTIE set in M-mode → M-trap taken" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.mstatus_mie = true;
+    rig.cpu.csr.mie = 1 << 7;
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    const taken = check_interrupt(&rig.cpu);
+    try std.testing.expect(taken);
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0007), rig.cpu.csr.mcause);
+    try std.testing.expectEqual(@as(u32, 0x8000_0400), rig.cpu.pc);
+}
+
+test "check_interrupt: M-mode with MIE=0 → MTIP pending but not taken" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.mstatus_mie = false;
+    rig.cpu.csr.mie = 1 << 7;
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    try std.testing.expect(!check_interrupt(&rig.cpu));
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mcause);
+}
+
+test "check_interrupt: U-mode always allows M-interrupt regardless of MIE" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.mstatus_mie = false;
+    rig.cpu.csr.mie = 1 << 7;
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    try std.testing.expect(check_interrupt(&rig.cpu));
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+}
+
+test "check_interrupt: SSIP delegated, in U → trap taken at S" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.stvec = 0x8000_0600;
+    rig.cpu.csr.mideleg = 1 << 1;
+    rig.cpu.csr.mstatus_sie = false;
+    rig.cpu.csr.mie = 1 << 1;
+    rig.cpu.csr.mip = 1 << 1;
+
+    try std.testing.expect(check_interrupt(&rig.cpu));
+    try std.testing.expectEqual(PrivilegeMode.S, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0001), rig.cpu.csr.scause);
+    try std.testing.expectEqual(@as(u32, 0x8000_0600), rig.cpu.pc);
+}
+
+test "check_interrupt: priority order — MTI beats SSI when both pending at U" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.stvec = 0x8000_0600;
+    rig.cpu.csr.mideleg = 1 << 1;
+    rig.cpu.csr.mie = (1 << 7) | (1 << 1);
+    rig.cpu.csr.mip = 1 << 1;
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    try std.testing.expect(check_interrupt(&rig.cpu));
+    // MTI beats SSI in priority order.
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0007), rig.cpu.csr.mcause);
+}
+
+test "Cpu.step() takes pending MTI before fetching the next instruction" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.mie = 1 << 7;
+    rig.cpu.csr.mstatus_mie = false; // U-mode: MIE ignored, lower privilege always takes
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    const saved_pc = rig.cpu.pc;
+    try rig.cpu.step();
+
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0400), rig.cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0x8000_0007), rig.cpu.csr.mcause);
+    try std.testing.expectEqual(saved_pc, rig.cpu.csr.mepc);
+}
+
+test "Cpu.step() with no pending interrupts runs the fetched instruction" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE, 0x00000013); // nop
+    const saved_pc = rig.cpu.pc;
+
+    try rig.cpu.step();
+
+    try std.testing.expectEqual(saved_pc + 4, rig.cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mcause);
+}
+
+test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
+    clint_dev.fixture_clock_ns = 0;
+    var halt = @import("devices/halt.zig").Halt.init();
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
+    var clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    var mem = try Memory.init(
+        std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT,
+    );
+    defer mem.deinit();
+
+    // --- Program layout ---
+    // 0x80000000  reset: setup delegation, CSRs, drop to U at 0x80001000
+    // 0x80000400  M-mode MTI ISR
+    // 0x80000600  S-mode SSI ISR
+    // 0x80000800  sentinel word (starts 0, S ISR writes 1)
+    // 0x80001000  U-mode infinite loop
+
+    const RAM_BASE = mem_mod.RAM_BASE;
+
+    // --- Reset code @ 0x80000000 ---
+    // csrrwi zero, mideleg, 2      # mideleg = (1<<1) = SSIP
+    try mem.storeWordPhysical(RAM_BASE + 0x000, 0x30315073);
+    // lui t0, 0x80000; addi t0, t0, 0x400  (pre-compute mtvec target)
+    try mem.storeWordPhysical(RAM_BASE + 0x004, 0x800002B7); // lui t0, 0x80000
+    try mem.storeWordPhysical(RAM_BASE + 0x008, 0x40028293); // addi t0, t0, 0x400
+    // csrw mtvec, t0 (0x305)
+    try mem.storeWordPhysical(RAM_BASE + 0x00C, 0x30529073);
+    // lui t0, 0x80000; addi t0, t0, 0x600  → stvec
+    try mem.storeWordPhysical(RAM_BASE + 0x010, 0x800002B7);
+    try mem.storeWordPhysical(RAM_BASE + 0x014, 0x60028293);
+    // csrw stvec, t0 (0x105)
+    try mem.storeWordPhysical(RAM_BASE + 0x018, 0x10529073);
+    // li t0, (1<<7) | (1<<1)        # MTIE | SSIE
+    try mem.storeWordPhysical(RAM_BASE + 0x01C, 0x08200293); // addi t0, x0, 0x82
+    // csrw mie, t0
+    try mem.storeWordPhysical(RAM_BASE + 0x020, 0x30429073);
+    // csrrsi zero, mstatus, 0x8     # MIE = 1
+    try mem.storeWordPhysical(RAM_BASE + 0x024, 0x30046073);
+    // csrrsi zero, sstatus, 0x2     # SIE = 1
+    try mem.storeWordPhysical(RAM_BASE + 0x028, 0x10016073);
+    // li t1, 100; write mtimecmp = 100
+    //   CLINT_MTIMECMP = 0x02004000
+    try mem.storeWordPhysical(RAM_BASE + 0x02C, 0x06400313); // addi t1, x0, 100
+    try mem.storeWordPhysical(RAM_BASE + 0x030, 0x020043B7); // lui t2, 0x2004
+    try mem.storeWordPhysical(RAM_BASE + 0x034, 0x0063A023); // sw t1, 0(t2)
+    try mem.storeWordPhysical(RAM_BASE + 0x038, 0x0003A223); // sw zero, 4(t2)
+    // lui t0, 0x80001; csrw mepc, t0
+    try mem.storeWordPhysical(RAM_BASE + 0x03C, 0x800012B7);
+    try mem.storeWordPhysical(RAM_BASE + 0x040, 0x34129073);
+    // mret
+    try mem.storeWordPhysical(RAM_BASE + 0x044, 0x30200073);
+
+    // --- M-mode MTI ISR @ 0x80000400 ---
+    //   Ack by moving mtimecmp far into the future; forward to SSIP; mret.
+    //   li t0, -1; lui t2, 0x2004; sw t0, 0(t2); sw t0, 4(t2)
+    //   csrrsi zero, mip, 0x2       # set SSIP
+    //   mret
+    try mem.storeWordPhysical(RAM_BASE + 0x400, 0xFFF00293); // addi t0, x0, -1
+    try mem.storeWordPhysical(RAM_BASE + 0x404, 0x020043B7); // lui t2, 0x2004
+    try mem.storeWordPhysical(RAM_BASE + 0x408, 0x0053A023); // sw t0, 0(t2)
+    try mem.storeWordPhysical(RAM_BASE + 0x40C, 0x0053A223); // sw t0, 4(t2)
+    try mem.storeWordPhysical(RAM_BASE + 0x410, 0x34416073); // csrrsi zero, mip, 0x2
+    try mem.storeWordPhysical(RAM_BASE + 0x414, 0x30200073); // mret
+
+    // --- S-mode SSI ISR @ 0x80000600 ---
+    // Clear SSIP via sip; compute sentinel address via auipc+addi; write
+    // 1 to sentinel; loop forever.
+    //   csrrci zero, sip, 0x2     # clear SSIP
+    //   auipc  t0, 0x0             # t0 = 0x80000604
+    //   addi   t0, t0, 0x1FC       # t0 = 0x80000800 (sentinel VA)
+    //   addi   t1, x0, 1
+    //   sw     t1, 0(t0)
+    //   loop: j loop
+    try mem.storeWordPhysical(RAM_BASE + 0x600, 0x14417073); // csrrci zero, sip, 0x2
+    try mem.storeWordPhysical(RAM_BASE + 0x604, 0x00000297); // auipc t0, 0x0
+    try mem.storeWordPhysical(RAM_BASE + 0x608, 0x1FC28293); // addi t0, t0, 0x1FC
+    try mem.storeWordPhysical(RAM_BASE + 0x60C, 0x00100313); // addi t1, x0, 1
+    try mem.storeWordPhysical(RAM_BASE + 0x610, 0x0062A023); // sw t1, 0(t0)
+    try mem.storeWordPhysical(RAM_BASE + 0x614, 0x0000006F); // loop: j self
+
+    // --- U-mode loop @ 0x80001000 ---
+    //   j 0   (loop forever; MTI will interrupt us)
+    try mem.storeWordPhysical(RAM_BASE + 0x1000, 0x0000006F);
+
+    // Sentinel starts at zero.
+    try mem.storeWordPhysical(RAM_BASE + 0x800, 0);
+
+    var cpu = Cpu.init(&mem, RAM_BASE);
+
+    // Step through reset, then drop into U, then let CLINT fire.
+    var i: u32 = 0;
+    while (i < 30) : (i += 1) {
+        cpu.step() catch |e| switch (e) { error.Halt, error.FatalTrap => break };
+    }
+    // Now advance the wall clock so MTIP fires at the next boundary.
+    clint_dev.fixture_clock_ns = 20_000; // mtime = 200, mtimecmp = 100 → pending
+    i = 0;
+    while (i < 200) : (i += 1) {
+        cpu.step() catch |e| switch (e) { error.Halt, error.FatalTrap => break };
+        const sentinel = try mem.loadWordPhysical(RAM_BASE + 0x800);
+        if (sentinel == 1) break;
+    }
+    const sentinel = try mem.loadWordPhysical(RAM_BASE + 0x800);
+    try std.testing.expectEqual(@as(u32, 1), sentinel);
+    // Final privilege should be S (SSI ISR loops there).
+    try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
 }

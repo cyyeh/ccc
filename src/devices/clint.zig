@@ -53,6 +53,16 @@ pub const Clint = struct {
         return @truncate(ticks);
     }
 
+    /// Returns true when the CLINT's MTIP output line is asserted. Per Phase 2
+    /// spec §Devices: `mip.MTIP` is raised when `mtime >= mtimecmp` AND
+    /// `mtimecmp != 0`. The `mtimecmp != 0` guard avoids spurious MTIP before
+    /// any software programs the timer (both registers start at 0, so without
+    /// the guard `0 >= 0` would fire forever).
+    pub fn isMtipPending(self: *const Clint) bool {
+        if (self.mtimecmp == 0) return false;
+        return self.mtime() >= self.mtimecmp;
+    }
+
     pub fn readByte(self: *const Clint, offset: u32) ClintError!u8 {
         return switch (offset) {
             0x0000...0x0003 => blk: {
@@ -131,6 +141,46 @@ test "writing mtime is silently dropped (Phase 1)" {
     try c.writeByte(0xBFF8, 0xFF);
     fixture_clock_ns = 100;
     try std.testing.expectEqual(@as(u8, 1), try c.readByte(0xBFF8));
+}
+
+test "isMtipPending: returns false when mtimecmp is zero (Phase 2 guard)" {
+    fixture_clock_ns = 1_000_000; // mtime = 10_000 ticks
+    var c = Clint.init(&fixtureClock);
+    // Default mtimecmp = 0 → spec says MTIP stays clear.
+    try std.testing.expect(!c.isMtipPending());
+}
+
+test "isMtipPending: false when mtime < mtimecmp, true when mtime >= mtimecmp" {
+    fixture_clock_ns = 0;
+    var c = Clint.init(&fixtureClock);
+    // Set mtimecmp = 100 ticks.
+    try c.writeByte(0x4000, 100);
+    try c.writeByte(0x4001, 0);
+    try c.writeByte(0x4002, 0);
+    try c.writeByte(0x4003, 0);
+    try c.writeByte(0x4004, 0);
+    try c.writeByte(0x4005, 0);
+    try c.writeByte(0x4006, 0);
+    try c.writeByte(0x4007, 0);
+    // mtime = 0 → not pending.
+    try std.testing.expect(!c.isMtipPending());
+    // Advance clock: 100 ticks × 100 ns/tick = 10_000 ns → mtime = 100.
+    fixture_clock_ns = 10_000;
+    try std.testing.expect(c.isMtipPending());
+    // Advance further: strictly > mtimecmp also pending.
+    fixture_clock_ns = 20_000;
+    try std.testing.expect(c.isMtipPending());
+}
+
+test "isMtipPending: becomes false again after mtimecmp is moved past mtime" {
+    fixture_clock_ns = 0;
+    var c = Clint.init(&fixtureClock);
+    try c.writeByte(0x4000, 50);
+    fixture_clock_ns = 10_000;   // mtime = 100 ticks > mtimecmp = 50
+    try std.testing.expect(c.isMtipPending());
+    // Reprogram mtimecmp to 200 — the standard "ack timer" move.
+    try c.writeByte(0x4000, 200);
+    try std.testing.expect(!c.isMtipPending());
 }
 
 // --- test fixtures (must be `pub` so other tests can use them) ---

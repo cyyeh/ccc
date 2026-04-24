@@ -1,6 +1,7 @@
 const std = @import("std");
 const cpu_mod = @import("cpu.zig");
 const csr = @import("csr.zig");
+const trace = @import("trace.zig");
 const Cpu = cpu_mod.Cpu;
 const PrivilegeMode = cpu_mod.PrivilegeMode;
 
@@ -24,30 +25,117 @@ pub const Cause = enum(u32) {
     store_page_fault = 15,
 };
 
-/// Take a synchronous trap. Implements spec §Trap entry:
-///   1. mepc  ← cpu.pc (the trapping instruction's address)
-///   2. mcause ← cause
-///   3. mtval  ← tval (faulting address for memory traps; 0 otherwise;
-///               the raw 32-bit instruction word for illegal-instruction)
-///   4. mstatus.MPP  ← current privilege mode
-///   5. mstatus.MPIE ← mstatus.MIE; mstatus.MIE ← 0
-///   6. privilege ← M; pc ← mtvec.BASE (direct mode only in Phase 1)
-/// Always clears cpu.reservation (trap handlers may run arbitrary code
-/// that makes the LR/SC reservation meaningless).
+/// Spec-mandated interrupt priority order (RISC-V privileged spec §3.1.9).
+/// Index 0 is highest priority; higher index means lower priority. Used
+/// by cpu.check_interrupt to pick which pending+enabled+deliverable bit
+/// wins. Cause codes: MEI=11, MSI=3, MTI=7, SEI=9, SSI=1, STI=5.
+pub const INTERRUPT_PRIORITY_ORDER = [_]u32{ 11, 3, 7, 9, 1, 5 };
+
+/// Interrupt-cause bit 31 marker per RISC-V spec: scause/mcause have the
+/// high bit set to 1 for async interrupts, 0 for synchronous exceptions.
+/// Internal — callers should use enter_interrupt, which applies the flag.
+const INTERRUPT_CAUSE_FLAG: u32 = 1 << 31;
+
+/// Take a synchronous trap. Implements spec §Trap entry and §Exception
+/// delegation (§3.1.8).
+///
+/// Routing:
+///   if cpu.privilege != .M AND (medeleg >> cause_code) & 1 == 1
+///     → target = S; write S-CSRs; privilege ← S; pc ← stvec.BASE
+///   else
+///     → target = M; write M-CSRs; privilege ← M; pc ← mtvec.BASE
+///
+/// Both paths:
+///   - capture the trapping PC (mepc/sepc ← cpu.pc, 4-byte aligned)
+///   - store cause and tval
+///   - save previous interrupt-enable and previous privilege into the
+///     target privilege's mstatus fields (MPP/MPIE/MIE for M,
+///     SPP/SPIE/SIE for S)
+///   - clear the target privilege's IE bit
+///   - clear cpu.reservation (LR/SC invariant; trap handlers may run
+///     arbitrary code)
+///   - set cpu.trap_taken = true for the halt-on-trap check
 pub fn enter(cause: Cause, tval: u32, cpu: *Cpu) void {
-    cpu.csr.mepc = cpu.pc & csr.MEPC_ALIGN_MASK;
-    cpu.csr.mcause = @intFromEnum(cause);
-    cpu.csr.mtval = tval;
+    const cause_code: u32 = @intFromEnum(cause);
+    const delegated = (cpu.csr.medeleg >> @intCast(cause_code)) & 1 == 1;
+    const target: PrivilegeMode = if (cpu.privilege != .M and delegated) .S else .M;
 
-    // mstatus updates using flat split fields.
-    // MPP ← current privilege mode.
-    cpu.csr.mstatus_mpp = @intFromEnum(cpu.privilege);
-    // MPIE ← MIE, then MIE ← 0.
-    cpu.csr.mstatus_mpie = cpu.csr.mstatus_mie;
-    cpu.csr.mstatus_mie = false;
+    switch (target) {
+        .M => {
+            cpu.csr.mepc = cpu.pc & csr.MEPC_ALIGN_MASK;
+            cpu.csr.mcause = cause_code;
+            cpu.csr.mtval = tval;
+            cpu.csr.mstatus_mpp = @intFromEnum(cpu.privilege);
+            cpu.csr.mstatus_mpie = cpu.csr.mstatus_mie;
+            cpu.csr.mstatus_mie = false;
+            cpu.privilege = .M;
+            cpu.pc = cpu.csr.mtvec & csr.MTVEC_BASE_MASK;
+        },
+        .S => {
+            cpu.csr.sepc = cpu.pc & csr.MEPC_ALIGN_MASK;
+            cpu.csr.scause = cause_code;
+            cpu.csr.stval = tval;
+            // SPP is a 1-bit field: 1 = S, 0 = U. M cannot reach here
+            // (target == .S requires cpu.privilege != .M).
+            cpu.csr.mstatus_spp = if (cpu.privilege == .S) 1 else 0;
+            cpu.csr.mstatus_spie = cpu.csr.mstatus_sie;
+            cpu.csr.mstatus_sie = false;
+            cpu.privilege = .S;
+            cpu.pc = cpu.csr.stvec & csr.MTVEC_BASE_MASK;
+        },
+        else => unreachable, // U cannot be a trap target; reserved_h is CSR-clamped out
+    }
+    cpu.reservation = null;
+    cpu.trap_taken = true;
+}
 
-    cpu.privilege = .M;
-    cpu.pc = cpu.csr.mtvec & csr.MTVEC_BASE_MASK;
+/// Take an asynchronous interrupt. Mirrors `enter` but:
+///   - `cause_code` is the bare interrupt cause (0..15); bit 31 is set
+///     in the scause/mcause write.
+///   - consults `mideleg` instead of `medeleg`.
+///   - `mtval` / `stval` are always written 0 (interrupts have no fault
+///     value in the RV32 privileged spec).
+///   - emits a trace marker if `cpu.trace_writer` is set, BEFORE the
+///     privilege switch so the marker reflects the pre-interrupt state.
+///
+/// The caller (cpu.check_interrupt) is expected to have already gated
+/// on mstatus.MIE / mstatus.SIE per the current privilege mode; this
+/// function does not re-check those bits.
+pub fn enter_interrupt(cause_code: u32, cpu: *Cpu) void {
+    const delegated = (cpu.csr.mideleg >> @intCast(cause_code)) & 1 == 1;
+    const target: PrivilegeMode = if (cpu.privilege != .M and delegated) .S else .M;
+    const cause_reg = INTERRUPT_CAUSE_FLAG | cause_code;
+    const from_priv = cpu.privilege;
+
+    if (cpu.trace_writer) |tw| {
+        // Trace errors are non-fatal: a failed write must not block trap entry.
+        // Matches the formatInstr convention in cpu.step().
+        trace.formatInterruptMarker(tw, cause_code, from_priv, target) catch {};
+    }
+
+    switch (target) {
+        .M => {
+            cpu.csr.mepc = cpu.pc & csr.MEPC_ALIGN_MASK;
+            cpu.csr.mcause = cause_reg;
+            cpu.csr.mtval = 0;
+            cpu.csr.mstatus_mpp = @intFromEnum(cpu.privilege);
+            cpu.csr.mstatus_mpie = cpu.csr.mstatus_mie;
+            cpu.csr.mstatus_mie = false;
+            cpu.privilege = .M;
+            cpu.pc = cpu.csr.mtvec & csr.MTVEC_BASE_MASK;
+        },
+        .S => {
+            cpu.csr.sepc = cpu.pc & csr.MEPC_ALIGN_MASK;
+            cpu.csr.scause = cause_reg;
+            cpu.csr.stval = 0;
+            cpu.csr.mstatus_spp = if (cpu.privilege == .S) 1 else 0;
+            cpu.csr.mstatus_spie = cpu.csr.mstatus_sie;
+            cpu.csr.mstatus_sie = false;
+            cpu.privilege = .S;
+            cpu.pc = cpu.csr.stvec & csr.MTVEC_BASE_MASK;
+        },
+        else => unreachable,
+    }
     cpu.reservation = null;
     cpu.trap_taken = true;
 }
@@ -207,4 +295,159 @@ test "trap.enter sets mcause and mtval for a load page fault" {
     try std.testing.expectEqual(true, cpu.csr.mstatus_mpie);
     try std.testing.expectEqual(false, cpu.csr.mstatus_mie);
     try std.testing.expectEqual(@as(u32, 0x8000_1000), cpu.pc);
+}
+
+test "enter from U with delegated cause routes to S (sepc, scause, stval, stvec)" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8000_0100);
+    cpu.privilege = .U;
+    cpu.csr.mtvec = 0x8000_0400;
+    cpu.csr.stvec = 0x8000_0500;
+    cpu.csr.mstatus_sie = true;
+    cpu.csr.medeleg = 1 << @intFromEnum(Cause.ecall_from_u); // bit 8
+
+    enter(.ecall_from_u, 0, &cpu);
+
+    // S-mode entry CSRs got written.
+    try std.testing.expectEqual(@as(u32, 0x8000_0100), cpu.csr.sepc);
+    try std.testing.expectEqual(@intFromEnum(Cause.ecall_from_u), cpu.csr.scause);
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.stval);
+    // Privilege ← S, PC ← stvec.BASE (direct mode only).
+    try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0500), cpu.pc);
+    // sstatus transition: SPP ← U (0), SPIE ← old SIE (true), SIE ← 0.
+    try std.testing.expectEqual(@as(u1, 0), cpu.csr.mstatus_spp);
+    try std.testing.expect(cpu.csr.mstatus_spie);
+    try std.testing.expect(!cpu.csr.mstatus_sie);
+    // M-mode CSRs untouched.
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.mepc);
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.mcause);
+}
+
+test "enter from S with delegated cause routes to S, SPP=S" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8000_0200);
+    cpu.privilege = .S;
+    cpu.csr.stvec = 0x8000_0600;
+    cpu.csr.medeleg = 1 << @intFromEnum(Cause.breakpoint); // bit 3
+    cpu.csr.mstatus_sie = true;
+
+    enter(.breakpoint, 0, &cpu);
+
+    try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0600), cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0x8000_0200), cpu.csr.sepc);
+    // SPP ← S (coming from S).
+    try std.testing.expectEqual(@as(u1, 1), cpu.csr.mstatus_spp);
+    // sstatus side-effects on S-from-S entry mirror the U-from-U case:
+    // SPIE ← old SIE (true), SIE cleared.
+    try std.testing.expect(cpu.csr.mstatus_spie);
+    try std.testing.expect(!cpu.csr.mstatus_sie);
+    // scause carries the cause code (no bit 31 for sync traps).
+    try std.testing.expectEqual(@intFromEnum(Cause.breakpoint), cpu.csr.scause);
+}
+
+test "enter from U without delegation routes to M (baseline)" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8000_0100);
+    cpu.privilege = .U;
+    cpu.csr.mtvec = 0x8000_0400;
+    cpu.csr.medeleg = 0; // nothing delegated
+
+    enter(.ecall_from_u, 0, &cpu);
+
+    try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0400), cpu.pc);
+    try std.testing.expectEqual(@intFromEnum(Cause.ecall_from_u), cpu.csr.mcause);
+    // S-mode CSRs untouched.
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.scause);
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.sepc);
+}
+
+test "enter from M never delegates even if medeleg bit is set" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8000_0300);
+    cpu.privilege = .M;
+    cpu.csr.mtvec = 0x8000_0700;
+    cpu.csr.stvec = 0x8000_0800;
+    cpu.csr.medeleg = 0xFFFF_FFFF;
+
+    enter(.illegal_instruction, 0xDEAD_BEEF, &cpu);
+
+    try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0700), cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0xDEAD_BEEF), cpu.csr.mtval);
+}
+
+test "enter with delegation clears reservation and sets trap_taken" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8000_0100);
+    cpu.privilege = .U;
+    cpu.reservation = 0x8000_0500;
+    cpu.csr.medeleg = 1 << 8;
+
+    enter(.ecall_from_u, 0, &cpu);
+
+    try std.testing.expect(cpu.reservation == null);
+    try std.testing.expect(cpu.trap_taken);
+}
+
+test "enter_interrupt from U, SSIP delegated, routes to S with interrupt flag" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8000_0100);
+    cpu.privilege = .U;
+    cpu.csr.stvec = 0x8000_0500;
+    cpu.csr.mideleg = 1 << 1; // delegate SSIP
+
+    cpu.reservation = 0x8000_0700; // seed reservation so post-entry null-check is meaningful
+    enter_interrupt(1, &cpu); // cause code 1 = supervisor software
+
+    try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0500), cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0x8000_0100), cpu.csr.sepc);
+    try std.testing.expectEqual(@as(u32, 0x8000_0001), cpu.csr.scause); // bit 31 | 1
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.stval);
+    // Common side effects for every interrupt trap entry.
+    try std.testing.expect(cpu.reservation == null);
+    try std.testing.expect(cpu.trap_taken);
+}
+
+test "enter_interrupt from S, MTIP not delegated, routes to M" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8000_0300);
+    cpu.privilege = .S;
+    cpu.csr.mtvec = 0x8000_0700;
+    cpu.csr.mideleg = 0; // MTIP cannot be delegated anyway, but set to zero explicitly
+
+    enter_interrupt(7, &cpu); // cause code 7 = machine timer
+
+    try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0700), cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0x8000_0007), cpu.csr.mcause); // bit 31 | 7
+    try std.testing.expectEqual(@as(u32, 0), cpu.csr.mtval);
+    try std.testing.expectEqual(@as(u2, @intFromEnum(PrivilegeMode.S)), cpu.csr.mstatus_mpp);
+}
+
+test "enter_interrupt from M stays in M regardless of mideleg" {
+    var dummy_mem: Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0x8000_0400);
+    cpu.privilege = .M;
+    cpu.csr.mtvec = 0x8000_0800;
+    cpu.csr.mideleg = (1 << 1) | (1 << 5) | (1 << 9); // all S-int delegated
+
+    enter_interrupt(1, &cpu); // even though mideleg[1]=1, M never delegates
+
+    try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0800), cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0x8000_0001), cpu.csr.mcause);
+}
+
+test "INTERRUPT_PRIORITY_ORDER spans MEI MSI MTI SEI SSI STI in spec order" {
+    try std.testing.expectEqual(@as(usize, 6), INTERRUPT_PRIORITY_ORDER.len);
+    try std.testing.expectEqual(@as(u32, 11), INTERRUPT_PRIORITY_ORDER[0]); // MEI
+    try std.testing.expectEqual(@as(u32, 3),  INTERRUPT_PRIORITY_ORDER[1]); // MSI
+    try std.testing.expectEqual(@as(u32, 7),  INTERRUPT_PRIORITY_ORDER[2]); // MTI
+    try std.testing.expectEqual(@as(u32, 9),  INTERRUPT_PRIORITY_ORDER[3]); // SEI
+    try std.testing.expectEqual(@as(u32, 1),  INTERRUPT_PRIORITY_ORDER[4]); // SSI
+    try std.testing.expectEqual(@as(u32, 5),  INTERRUPT_PRIORITY_ORDER[5]); // STI
 }
