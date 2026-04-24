@@ -27,9 +27,27 @@
       padding: 96px 120px;
       display: flex;
       flex-direction: column;
-      justify-content: center;
+      /* `safe center` falls back to flex-start when content is taller than
+         the slide — prevents the top from being clipped and unreachable when
+         the section starts scrolling. */
+      justify-content: safe center;
       box-sizing: border-box;
       letter-spacing: 0.005em;
+      /* The shadow DOM's `::slotted(*) { overflow: hidden }` has no
+         !important, so this author rule wins. Allow a vertical scrollbar
+         when a slide's content exceeds the 1080px design height. */
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    /* Minimal scrollbar styling so it blends with the deck palette. */
+    deck-stage section::-webkit-scrollbar { width: 10px; }
+    deck-stage section::-webkit-scrollbar-track { background: transparent; }
+    deck-stage section::-webkit-scrollbar-thumb {
+      background: rgba(217, 119, 87, 0.25);
+      border-radius: 999px;
+    }
+    deck-stage section::-webkit-scrollbar-thumb:hover {
+      background: rgba(217, 119, 87, 0.5);
     }
 
     section.title {
@@ -298,8 +316,8 @@
       <div class="toc-row">
         <div class="toc-num">2</div>
         <div class="toc-body">
-          <div class="toc-head">Bare-metal kernel <span class="toc-status active">⟳ in progress</span></div>
-          <div class="toc-sub">S-mode + Sv32 paging · trap delegation · M↔S↔U transitions · first user-mode syscalls.</div>
+          <div class="toc-head">Bare-metal kernel <span class="toc-status done">✓ complete</span></div>
+          <div class="toc-sub">S-mode + Sv32 paging · trap delegation · async timers · process + scheduler + <code class="inline">yield</code> + ticks.</div>
         </div>
       </div>
       <div class="toc-row">
@@ -324,7 +342,7 @@
         </div>
       </div>
     </div>
-    <div class="caption">This deck walks <strong>Phase 1</strong> in full, then the first three plans of <strong>Phase 2</strong>.</div>
+    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full.</div>
   </section>
 
   <!-- 3: Prologue · the demo -->
@@ -703,11 +721,61 @@ S   sys_exit → halt      └──► emulator exit 0</pre>
     <div class="caption"><strong>e2e-kernel:</strong> <code class="inline">ccc kernel.elf</code> prints exactly <code>hello from u-mode\n</code> and exits 0. No <code class="inline">Process</code> struct, no scheduler, no <code class="inline">yield</code> — those arrive in Plan 2.D.</div>
   </section>
 
-  <!-- 16: Epilogue · where we are -->
+  <!-- 16: Chapter 2.D · processes + scheduler + ticks -->
+  <section data-label="Ch 2.D · processes + ticks">
+    <div class="slide-label">chapter 2.d · processes + scheduler + ticks</div>
+    <h2 class="slide-title">One process, <span class="accent">counting ticks</span></h2>
+    <p class="plain">Plan 2.D finishes Phase 2. A <code class="inline">Process</code> struct owns per-process state; a two-function scheduler stub is wired into the timer ISR and a new <code class="inline">yield</code> syscall; every forwarded timer tick bumps a counter the user program eventually prints. The Phase 2 §Definition of done: <code>hello from u-mode\nticks observed: N\n</code> with N &gt; 0.</p>
+    <div class="two-col">
+      <div class="panel">
+        <h4>proc.zig + sched.zig</h4>
+        <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="k">pub const</span> Process = <span class="k">extern struct</span> {
+    tf: trap.TrapFrame,  <span class="c">// offset 0</span>
+    satp: u32,
+    kstack_top: u32,
+    state: State,        <span class="c">// Runnable/Running/Exited</span>
+    ticks_observed: u32,
+    exit_code: u32,
+};
+<span class="k">pub export var</span> the_process: Process = <span class="k">undefined</span>;
+
+<span class="k">pub fn</span> schedule() *Process {
+    <span class="k">return</span> &amp;proc.the_process;  <span class="c">// singleton</span>
+}
+
+<span class="k">pub fn</span> context_switch_to(p: *Process) <span class="k">void</span> {
+    <span class="c">// csrw satp, p.satp; sfence.vma zero, zero</span>
+}</pre>
+      </div>
+      <div class="panel">
+        <h4>Timer tick · end to end</h4>
+        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">M   CLINT: mtime ≥ mtimecmp
+M   mip.MTIP = 1   <span class="dim">(async)</span>
+M   timer ISR: clear MTIP
+M                bump mtimecmp
+M                set sip.SSIP
+M   mret ─────────────► S
+S   s_trap_dispatch
+S     cause = 1 <span class="dim">(SSI, interrupt)</span>
+S     clear sip.SSIP
+S     <span class="arrow">the_process.ticks_observed += 1</span>
+S     sched.schedule()
+S   sret ─────────────► U
+U   write ... yield ... busy-loop
+U   li a7, <span class="n">93</span> ; ecall    <span class="dim">(exit)</span>
+S   sys_exit:
+      kprintf <span class="s">"ticks observed: 19\n"</span>
+      halt MMIO ← <span class="n">0</span></pre>
+      </div>
+    </div>
+    <div class="caption"><strong>verify_e2e.zig</strong> — host tool asserts stdout matches <code class="inline">hello from u-mode\nticks observed: (\d+)\n</code> with N &gt; 0 and exit 0. <strong>TIMESLICE</strong> tuned from 1 M → 10 K CLINT cycles (≈ 1 ms) so ticks accumulate during the user program's ~300 K-cycle busy-loop. <strong>Phase 2 §Definition of done: met.</strong></div>
+  </section>
+
+  <!-- 17: Epilogue · where we are -->
   <section data-label="Where we are">
     <div class="slide-label">epilogue · where we are</div>
-    <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">building</span>.</h2>
-    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asks: can we host a real OS kernel? S-mode, paging, delegation, async interrupts, and now a kernel that boots three privileges into a user program. Plan 2.D — process scheduling + <code class="inline">yield</code> — is next.</p>
+    <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">complete</span>.</h2>
+    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell.</p>
     <div class="two-col" style="grid-template-columns: 1.25fr 1fr; gap: 64px;">
       <div class="check-list">
         <div class="row">
@@ -738,12 +806,16 @@ S   sys_exit → halt      └──► emulator exit 0</pre>
           <div class="head">✓ 2.C · kernel skeleton</div>
           <div class="sub">M-mode boot shim · Sv32 paging · trap dispatcher · write + exit</div>
         </div>
+        <div class="row">
+          <div class="head">✓ 2.D · process + scheduler + ticks</div>
+          <div class="sub"><code class="inline">Process</code> struct · sched stub · <code class="inline">yield</code> · timer tick counter · <code class="inline">qemu-diff-kernel</code></div>
+        </div>
       </div>
       <div class="panel" style="align-self: center;">
-        <h4>Next · plan 2.d</h4>
+        <h4>Next · phase 3</h4>
         <p style="font-size: 28px; line-height: 1.5;">
-          Process scaffolding.<br><br>
-          <code class="inline">Process</code> struct, scheduler stub, <code class="inline">sys_yield</code>, tick counter, and the QEMU-diff harness — hitting Phase 2's Definition of Done.
+          Multi-process OS + FS + shell.<br><br>
+          A real process table, fork/exec, block device, a tiny filesystem, and a shell with <code class="inline">ls</code>/<code class="inline">cat</code> and an editor.
         </p>
       </div>
     </div>

@@ -22,7 +22,7 @@
 .equ CLINT_MTIMECMP_HI, 0x02004004
 .equ CLINT_MTIME_LO,    0x0200BFF8
 .equ CLINT_MTIME_HI,    0x0200BFFC
-.equ TIMESLICE,         1000000
+.equ TIMESLICE,         10000
 
 .section .bss, "aw", @nobits
 .balign 4
