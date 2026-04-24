@@ -188,3 +188,41 @@ pub fn mapKernelAndMmio(root_pa: u32) void {
     // UART is one page.
     mapPage(root_pa, 0x1000_0000, 0x1000_0000, KERNEL_MMIO);
 }
+
+pub const USER_TEXT_VA: u32 = 0x0001_0000;
+pub const USER_STACK_TOP: u32 = 0x0003_2000;
+pub const USER_STACK_BOTTOM: u32 = 0x0003_0000;
+pub const USER_STACK_PAGES: u32 = 2;
+
+/// Map the user program: copy each 4 KB chunk of `blob` into a fresh
+/// physical frame, install a U+R+W+X leaf PTE at VA 0x0001_0000 + k*4K.
+/// Then allocate 2 stack pages mapped at VA 0x0003_0000 + {0, 4K}
+/// with U+R+W (no X). The user's sp is initialized to USER_STACK_TOP
+/// by kmain before sret.
+pub fn mapUser(root_pa: u32, blob_ptr: [*]const u8, blob_len: u32) void {
+    // Round up blob length to PAGE_SIZE for allocation purposes.
+    const page_count: u32 = (blob_len + (PAGE_SIZE - 1)) >> PAGE_SHIFT;
+    var i: u32 = 0;
+    while (i < page_count) : (i += 1) {
+        const user_pa = page_alloc.allocZeroPage();
+        // Copy up to PAGE_SIZE bytes from blob[i*PAGE_SIZE..] into this frame.
+        const src_off = i * PAGE_SIZE;
+        const remaining = if (blob_len > src_off) blob_len - src_off else 0;
+        const copy_len = @min(remaining, PAGE_SIZE);
+        const dst: [*]volatile u8 = @ptrFromInt(user_pa);
+        var j: u32 = 0;
+        while (j < copy_len) : (j += 1) dst[j] = blob_ptr[src_off + j];
+
+        const va = USER_TEXT_VA + i * PAGE_SIZE;
+        mapPage(root_pa, va, user_pa, USER_RWX);
+    }
+
+    // User stack: 2 pages, U+R+W, zero-initialized (already zero from
+    // allocZeroPage).
+    var s: u32 = 0;
+    while (s < USER_STACK_PAGES) : (s += 1) {
+        const stack_pa = page_alloc.allocZeroPage();
+        const va = USER_STACK_BOTTOM + s * PAGE_SIZE;
+        mapPage(root_pa, va, stack_pa, USER_RW);
+    }
+}
