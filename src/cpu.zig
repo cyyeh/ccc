@@ -131,6 +131,13 @@ pub const Cpu = struct {
     }
 
     pub fn step(self: *Cpu) StepError!void {
+        // Plan 2.B: check for deliverable async interrupts BEFORE fetching.
+        // If one is taken, the PC has been redirected to the trap vector
+        // and the instruction that would have been fetched this cycle is
+        // not executed — per RISC-V spec, interrupts are taken at the
+        // boundary between instructions.
+        if (check_interrupt(self)) return;
+
         const pre_pc = self.pc;
         const pre_priv = self.privilege; // captured before any fetch/execute may trap-switch privilege
         // Instruction fetch: translate using the current privilege directly —
@@ -469,4 +476,35 @@ test "check_interrupt: priority order — MTI beats SSI when both pending at U" 
     // MTI beats SSI in priority order.
     try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
     try std.testing.expectEqual(@as(u32, 0x8000_0007), rig.cpu.csr.mcause);
+}
+
+test "Cpu.step() takes pending MTI before fetching the next instruction" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = 0x8000_0400;
+    rig.cpu.csr.mie = 1 << 7;
+    rig.cpu.csr.mstatus_mie = false; // U-mode: MIE ignored, lower privilege always takes
+    rig.clint.mtimecmp = 50;
+    clint_dev.fixture_clock_ns = 10_000;
+
+    const saved_pc = rig.cpu.pc;
+    try rig.cpu.step();
+
+    try std.testing.expectEqual(PrivilegeMode.M, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0400), rig.cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0x8000_0007), rig.cpu.csr.mcause);
+    try std.testing.expectEqual(saved_pc, rig.cpu.csr.mepc);
+}
+
+test "Cpu.step() with no pending interrupts runs the fetched instruction" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE, 0x00000013); // nop
+    const saved_pc = rig.cpu.pc;
+
+    try rig.cpu.step();
+
+    try std.testing.expectEqual(saved_pc + 4, rig.cpu.pc);
+    try std.testing.expectEqual(@as(u32, 0), rig.cpu.csr.mcause);
 }
