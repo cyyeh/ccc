@@ -64,10 +64,10 @@ pub fn parseAndLoad(data: []const u8, memory: *Memory) ElfError!LoadResult {
 
         var j: u32 = 0;
         while (j < p_filesz) : (j += 1) {
-            memory.storeByte(p_paddr + j, data[p_offset + j]) catch return ElfError.SegmentOutOfRange;
+            memory.storeBytePhysical(p_paddr + j, data[p_offset + j]) catch return ElfError.SegmentOutOfRange;
         }
         while (j < p_memsz) : (j += 1) {
-            memory.storeByte(p_paddr + j, 0) catch return ElfError.SegmentOutOfRange;
+            memory.storeBytePhysical(p_paddr + j, 0) catch return ElfError.SegmentOutOfRange;
         }
     }
 
@@ -159,5 +159,5 @@ test "load minimal.elf fixture, extract entry and tohost" {
     try std.testing.expectEqual(mem_mod.RAM_BASE, result.entry);
     try std.testing.expect(result.tohost_addr != null);
     try std.testing.expectEqual(@as(u32, 0x8000_1000), result.tohost_addr.?);
-    try std.testing.expectEqual(@as(u8, 0x73), try mem.loadByte(mem_mod.RAM_BASE));
+    try std.testing.expectEqual(@as(u8, 0x73), try mem.loadBytePhysical(mem_mod.RAM_BASE));
 }

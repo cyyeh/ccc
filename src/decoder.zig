@@ -75,6 +75,10 @@ pub const Op = enum {
     // Machine-mode privileged (Plan 1.C, Task 9)
     mret,
     wfi,
+    // Supervisor-mode privileged (Plan 2.A, Task 9)
+    sret,
+    // Supervisor-mode TLB flush (Plan 2.A, Task 10)
+    sfence_vma,
     // (more added in later plans)
     illegal,
 };
@@ -296,12 +300,24 @@ pub fn decode(word: u32) Instruction {
             const f3 = funct3(word);
             const imm12: u32 = (word >> 20) & 0xFFF;
             if (f3 == 0b000) {
-                // ecall / ebreak / mret / wfi — distinguished by the full 12-bit imm field.
+                // sfence.vma: top7 = 0b0001001, rs1 = VA reg, rs2 = ASID reg.
+                // Must be checked before the imm12 dispatch because top7 != 0.
+                const top7: u7 = @truncate((word >> 25) & 0x7F);
+                if (top7 == 0b0001001) {
+                    return .{
+                        .op = .sfence_vma,
+                        .rs1 = rs1(word),
+                        .rs2 = rs2(word),
+                        .raw = word,
+                    };
+                }
+                // ecall / ebreak / sret / mret / wfi — distinguished by the full 12-bit imm field.
                 // rd and rs1 are required to be zero for these; if they're not, the
                 // instruction is still a valid encoding per spec, so we don't check.
                 const op: Op = switch (imm12) {
                     0x000 => .ecall,
                     0x001 => .ebreak,
+                    0x102 => .sret,
                     0x302 => .mret,
                     0x105 => .wfi,
                     else => .illegal,
@@ -759,4 +775,25 @@ test "SYSTEM with funct3=100 decodes to illegal (reserved in Zicsr)" {
     //   = 0x30004_2F3
     const i = decode(0x300042F3);
     try std.testing.expectEqual(Op.illegal, i.op);
+}
+
+test "decode: sret" {
+    const ins = decode(0x10200073);
+    try std.testing.expectEqual(Op.sret, ins.op);
+}
+
+test "decode: sfence.vma zero, zero" {
+    const ins = decode(0x12000073);
+    try std.testing.expectEqual(Op.sfence_vma, ins.op);
+    try std.testing.expectEqual(@as(u5, 0), ins.rs1);
+    try std.testing.expectEqual(@as(u5, 0), ins.rs2);
+}
+
+test "decode: sfence.vma t0, t1 captures rs1 and rs2" {
+    // rs1=5 (t0), rs2=6 (t1), top7=0b0001001
+    const word: u32 = (0b0001001 << 25) | (6 << 20) | (5 << 15) | (0 << 12) | (0 << 7) | 0b1110011;
+    const ins = decode(word);
+    try std.testing.expectEqual(Op.sfence_vma, ins.op);
+    try std.testing.expectEqual(@as(u5, 5), ins.rs1);
+    try std.testing.expectEqual(@as(u5, 6), ins.rs2);
 }

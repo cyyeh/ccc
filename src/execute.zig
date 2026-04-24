@@ -3,24 +3,31 @@ const cpu_mod = @import("cpu.zig");
 const decoder = @import("decoder.zig");
 const csr_mod = @import("csr.zig");
 const trap = @import("trap.zig");
-const MemoryError = @import("memory.zig").MemoryError;
+const mem_mod = @import("memory.zig");
+const MemoryError = mem_mod.MemoryError;
+const TranslationError = mem_mod.TranslationError;
+const LoadOrTransError = MemoryError || TranslationError;
 
 /// Map a memory error at a load site to the appropriate trap cause.
 /// A Halt error is not a trap — it's the halt-MMIO signal and we
 /// re-raise it so it propagates out of cpu.step to terminate the run.
-fn loadTrapCause(e: MemoryError) !trap.Cause {
+fn loadTrapCause(e: LoadOrTransError) !trap.Cause {
     return switch (e) {
         error.MisalignedAccess => trap.Cause.load_addr_misaligned,
         error.OutOfBounds, error.UnexpectedRegister, error.WriteFailed => trap.Cause.load_access_fault,
         error.Halt => error.Halt,
+        error.LoadPageFault => trap.Cause.load_page_fault,
+        error.InstPageFault, error.StorePageFault => unreachable, // load path can't produce these
     };
 }
 
-fn storeTrapCause(e: MemoryError) !trap.Cause {
+fn storeTrapCause(e: LoadOrTransError) !trap.Cause {
     return switch (e) {
         error.MisalignedAccess => trap.Cause.store_addr_misaligned,
         error.OutOfBounds, error.UnexpectedRegister, error.WriteFailed => trap.Cause.store_access_fault,
         error.Halt => error.Halt,
+        error.StorePageFault => trap.Cause.store_page_fault,
+        error.InstPageFault, error.LoadPageFault => unreachable, // store path can't produce these
     };
 }
 
@@ -91,7 +98,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u32 = switch (instr.op) {
                 .lb => blk: {
-                    const byte = cpu.memory.loadByte(addr) catch |e| {
+                    const byte = cpu.memory.loadByte(addr, cpu) catch |e| {
                         const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                         trap.enter(cause, addr, cpu);
                         return;
@@ -99,7 +106,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     break :blk @bitCast(@as(i32, @as(i8, @bitCast(byte))));
                 },
                 .lbu => blk: {
-                    const byte = cpu.memory.loadByte(addr) catch |e| {
+                    const byte = cpu.memory.loadByte(addr, cpu) catch |e| {
                         const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                         trap.enter(cause, addr, cpu);
                         return;
@@ -107,7 +114,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     break :blk @as(u32, byte);
                 },
                 .lh => blk: {
-                    const half = cpu.memory.loadHalfword(addr) catch |e| {
+                    const half = cpu.memory.loadHalfword(addr, cpu) catch |e| {
                         const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                         trap.enter(cause, addr, cpu);
                         return;
@@ -115,14 +122,14 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                     break :blk @bitCast(@as(i32, @as(i16, @bitCast(half))));
                 },
                 .lhu => blk: {
-                    const half = cpu.memory.loadHalfword(addr) catch |e| {
+                    const half = cpu.memory.loadHalfword(addr, cpu) catch |e| {
                         const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                         trap.enter(cause, addr, cpu);
                         return;
                     };
                     break :blk @as(u32, half);
                 },
-                .lw => cpu.memory.loadWord(addr) catch |e| {
+                .lw => cpu.memory.loadWord(addr, cpu) catch |e| {
                     const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                     trap.enter(cause, addr, cpu);
                     return;
@@ -135,7 +142,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .sb => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u8 = @truncate(cpu.readReg(instr.rs2));
-            cpu.memory.storeByte(addr, value) catch |e| {
+            cpu.memory.storeByte(addr, value, cpu) catch |e| {
                 const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -145,7 +152,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .sh => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
             const value: u16 = @truncate(cpu.readReg(instr.rs2));
-            cpu.memory.storeHalfword(addr, value) catch |e| {
+            cpu.memory.storeHalfword(addr, value, cpu) catch |e| {
                 const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -154,7 +161,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         },
         .sw => {
             const addr = cpu.readReg(instr.rs1) +% @as(u32, @bitCast(instr.imm));
-            cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| {
+            cpu.memory.storeWord(addr, cpu.readReg(instr.rs2), cpu) catch |e| {
                 const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -265,8 +272,9 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
         .ecall => {
             const cause: trap.Cause = switch (cpu.privilege) {
                 .M => .ecall_from_m,
+                .S => .ecall_from_s,
                 .U => .ecall_from_u,
-                else => .ecall_from_u, // reserved modes treated as U (shouldn't happen)
+                else => .ecall_from_u, // reserved_h — shouldn't happen, defensive
             };
             trap.enter(cause, 0, cpu);
         },
@@ -281,11 +289,38 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             trap.exit_mret(cpu);
         },
         .wfi => {
-            if (cpu.privilege != .M) {
+            // wfi is legal in M-mode unconditionally. In S-mode it is legal
+            // when mstatus.TW=0 — Plan 2.A does not model TW, so S-mode wfi
+            // is treated as permitted. U-mode wfi always traps as illegal.
+            // Spec §3.1.6.5 / §9.2.3.
+            if (cpu.privilege == .U) {
                 trap.enter(.illegal_instruction, instr.raw, cpu);
                 return;
             }
-            // Phase 1 has no interrupt sources; wfi is a no-op (advance PC).
+            // Phase 1/2 has no interrupt sources; wfi is a no-op (advance PC).
+            cpu.pc +%= 4;
+        },
+        .sret => {
+            if (cpu.privilege == .U) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            if (cpu.privilege == .S and cpu.csr.mstatus_tsr) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            trap.exit_sret(cpu);
+        },
+        .sfence_vma => {
+            if (cpu.privilege == .U) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            if (cpu.privilege == .S and cpu.csr.mstatus_tvm) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            // No TLB modeled — nothing to invalidate. PC advances as for any other insn.
             cpu.pc +%= 4;
         },
         .mul, .mulh, .mulhsu, .mulhu => {
@@ -351,7 +386,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 trap.enter(.load_addr_misaligned, addr, cpu);
                 return;
             }
-            const val = cpu.memory.loadWord(addr) catch |e| {
+            const val = cpu.memory.loadWord(addr, cpu) catch |e| {
                 const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -368,7 +403,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             }
             const holds = (cpu.reservation != null and cpu.reservation.? == addr);
             if (holds) {
-                cpu.memory.storeWord(addr, cpu.readReg(instr.rs2)) catch |e| {
+                cpu.memory.storeWord(addr, cpu.readReg(instr.rs2), cpu) catch |e| {
                     cpu.reservation = null;
                     const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                     trap.enter(cause, addr, cpu);
@@ -386,7 +421,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 trap.enter(.store_addr_misaligned, addr, cpu);
                 return;
             }
-            const old = cpu.memory.loadWord(addr) catch |e| {
+            const old = cpu.memory.loadWord(addr, cpu) catch |e| {
                 const cause = loadTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -404,7 +439,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 .amomaxu_w => if (old > rs2_val) old else rs2_val,
                 else => unreachable,
             };
-            cpu.memory.storeWord(addr, new) catch |e| {
+            cpu.memory.storeWord(addr, new, cpu) catch |e| {
                 const cause = storeTrapCause(e) catch return ExecuteError.Halt;
                 trap.enter(cause, addr, cpu);
                 return;
@@ -421,7 +456,6 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
-const mem_mod = @import("memory.zig");
 
 // Test fixture: Uart holds `*std.Io.Writer` pointing into the rig's `aw`,
 // so the rig MUST NOT be moved/copied after init. Fill-in-place pattern
@@ -540,7 +574,7 @@ test "LB sign-extends a negative byte" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeByte(mem_mod.RAM_BASE + 0x40, 0xFF); // -1 as i8
+    try rig.mem.storeBytePhysical(mem_mod.RAM_BASE + 0x40, 0xFF); // -1 as i8
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     try dispatch(.{ .op = .lb, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(2));
@@ -550,7 +584,7 @@ test "LBU zero-extends" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeByte(mem_mod.RAM_BASE + 0x40, 0xFF);
+    try rig.mem.storeBytePhysical(mem_mod.RAM_BASE + 0x40, 0xFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     try dispatch(.{ .op = .lbu, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x0000_00FF), rig.cpu.readReg(2));
@@ -560,7 +594,7 @@ test "LH sign-extends a negative halfword" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeHalfword(mem_mod.RAM_BASE + 0x40, 0x8000);
+    try rig.mem.storeHalfwordPhysical(mem_mod.RAM_BASE + 0x40, 0x8000);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     try dispatch(.{ .op = .lh, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_8000), rig.cpu.readReg(2));
@@ -570,7 +604,7 @@ test "LW round-trip" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xDEAD_BEEF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xDEAD_BEEF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     try dispatch(.{ .op = .lw, .rd = 2, .rs1 = 1, .imm = 0x40 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xDEAD_BEEF), rig.cpu.readReg(2));
@@ -583,7 +617,7 @@ test "SB stores low byte of rs2" {
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     rig.cpu.writeReg(2, 0xDEAD_BE12);
     try dispatch(.{ .op = .sb, .rs1 = 1, .rs2 = 2, .imm = 8 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u8, 0x12), try rig.mem.loadByte(mem_mod.RAM_BASE + 8));
+    try std.testing.expectEqual(@as(u8, 0x12), try rig.mem.loadBytePhysical(mem_mod.RAM_BASE + 8));
 }
 
 test "SW stores full word" {
@@ -593,7 +627,7 @@ test "SW stores full word" {
     rig.cpu.writeReg(1, mem_mod.RAM_BASE);
     rig.cpu.writeReg(2, 0xCAFE_BABE);
     try dispatch(.{ .op = .sw, .rs1 = 1, .rs2 = 2, .imm = 0x10 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0xCAFE_BABE), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x10));
+    try std.testing.expectEqual(@as(u32, 0xCAFE_BABE), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x10));
 }
 
 test "SB to UART address forwards to writer" {
@@ -740,6 +774,18 @@ test "ECALL from M-mode traps with mcause=11" {
     rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
     try dispatch(.{ .op = .ecall, .raw = 0x73 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 11), rig.cpu.csr.mcause);
+}
+
+test "ECALL from S-mode traps with mcause=9" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .ecall, .raw = 0x73 }, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 9), rig.cpu.csr.mcause);
+    // S-mode ecall traps to M by default (no delegation in Plan 2.A).
+    try std.testing.expectEqual(@import("cpu.zig").PrivilegeMode.M, rig.cpu.privilege);
 }
 
 test "EBREAK traps with mcause=3 (breakpoint)" {
@@ -942,7 +988,7 @@ test "LR.W loads a word and records a reservation" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x80, 0xCAFEBABE);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x80, 0xCAFEBABE);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x80);
     try dispatch(.{ .op = .lr_w, .rd = 2, .rs1 = 1 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xCAFEBABE), rig.cpu.readReg(2));
@@ -958,7 +1004,7 @@ test "SC.W succeeds when reservation matches, writes 0 to rd" {
     rig.cpu.writeReg(2, 0xDEADBEEF);
     try dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0), rig.cpu.readReg(3)); // 0 = success
-    try std.testing.expectEqual(@as(u32, 0xDEADBEEF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x80));
+    try std.testing.expectEqual(@as(u32, 0xDEADBEEF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x80));
     try std.testing.expect(rig.cpu.reservation == null); // cleared after SC.W
 }
 
@@ -972,7 +1018,7 @@ test "SC.W fails when no reservation is held, writes nonzero to rd" {
     try dispatch(.{ .op = .sc_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expect(rig.cpu.readReg(3) != 0); // nonzero = failure
     // Memory must NOT be updated on SC.W failure.
-    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x80));
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x80));
 }
 
 test "SC.W fails when reservation address doesn't match" {
@@ -1022,104 +1068,104 @@ test "AMOSWAP.W returns old value, stores rs2" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xAAAA);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xAAAA);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0xBBBB);
     try dispatch(.{ .op = .amoswap_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xAAAA), rig.cpu.readReg(3));       // old
-    try std.testing.expectEqual(@as(u32, 0xBBBB), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40)); // new
+    try std.testing.expectEqual(@as(u32, 0xBBBB), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40)); // new
 }
 
 test "AMOADD.W returns old value, stores (old + rs2) with wrap" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 10);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 10);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 32);
     try dispatch(.{ .op = .amoadd_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 10), rig.cpu.readReg(3));
-    try std.testing.expectEqual(@as(u32, 42), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 42), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOXOR.W: old XOR rs2" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0x0F0F_0F0F);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0x0F0F_0F0F);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0xFF00_FF00);
     try dispatch(.{ .op = .amoxor_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x0F0F_0F0F), rig.cpu.readReg(3));
-    try std.testing.expectEqual(@as(u32, 0xF00F_F00F), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0xF00F_F00F), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOAND.W: old AND rs2" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0x0000_FFFF);
     try dispatch(.{ .op = .amoand_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
-    try std.testing.expectEqual(@as(u32, 0x0000_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0x0000_FFFF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOOR.W: old OR rs2" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0x0000_00FF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0x0000_00FF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0xFF00_0000);
     try dispatch(.{ .op = .amoor_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0xFF00_00FF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0xFF00_00FF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOMIN.W signed: min(-1, 0) = -1" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF); // -1 as i32
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF); // -1 as i32
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amomin_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), rig.cpu.readReg(3));
-    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOMAX.W signed: max(-1, 0) = 0" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amomax_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOMINU.W unsigned: min(0xFFFFFFFF, 0) = 0" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amominu_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "AMOMAXU.W unsigned: max(0xFFFFFFFF, 0) = 0xFFFFFFFF" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    try rig.mem.storeWord(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 0x40, 0xFFFF_FFFF);
     rig.cpu.writeReg(1, mem_mod.RAM_BASE + 0x40);
     rig.cpu.writeReg(2, 0);
     try dispatch(.{ .op = .amomaxu_w, .rd = 3, .rs1 = 1, .rs2 = 2 }, &rig.cpu);
-    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWord(mem_mod.RAM_BASE + 0x40));
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), try rig.mem.loadWordPhysical(mem_mod.RAM_BASE + 0x40));
 }
 
 test "CSRRW swaps: rd gets old CSR, CSR gets rs1" {
@@ -1192,10 +1238,14 @@ test "CSRRSI with uimm=0 suppresses CSR write" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    rig.cpu.csr.mstatus = 0x0000_1880;
+    // 0x0000_1880 = MPIE(bit7)=1, MPP(bits12:11)=0b11(M). SPP=0.
+    rig.cpu.csr.mstatus_mpie = true;
+    rig.cpu.csr.mstatus_mpp = 0b11;
     try dispatch(.{ .op = .csrrsi, .rd = 2, .rs1 = 0, .csr = 0x300, .raw = 0 }, &rig.cpu);
+    // csrrsi with uimm=0 is a read-only CSR access — no write, rd gets old value.
     try std.testing.expectEqual(@as(u32, 0x0000_1880), rig.cpu.readReg(2));
-    try std.testing.expectEqual(@as(u32, 0x0000_1880), rig.cpu.csr.mstatus);
+    // mstatus unchanged after a no-write access.
+    try std.testing.expectEqual(@as(u32, 0x0000_1880), try csr_mod.csrRead(&rig.cpu, csr_mod.CSR_MSTATUS));
 }
 
 test "CSRRCI with nonzero uimm clears bits" {
@@ -1262,14 +1312,17 @@ test "MRET in M-mode: PC←mepc, privilege←MPP, MIE←MPIE, MPIE←1, MPP←U"
     defer rig.deinit();
     rig.cpu.privilege = .M;
     rig.cpu.csr.mepc = mem_mod.RAM_BASE + 0x108;
-    rig.cpu.csr.mstatus = csr_mod.MSTATUS_MPIE;
+    // Set up: MPP=U(0b00), MPIE=true, MIE=false.
+    rig.cpu.csr.mstatus_mpp = @intFromEnum(cpu_mod.PrivilegeMode.U);
+    rig.cpu.csr.mstatus_mpie = true;
+    rig.cpu.csr.mstatus_mie = false;
     try dispatch(.{ .op = .mret, .raw = 0x30200073 }, &rig.cpu);
     try std.testing.expectEqual(mem_mod.RAM_BASE + 0x108, rig.cpu.pc);
     try std.testing.expectEqual(cpu_mod.PrivilegeMode.U, rig.cpu.privilege);
-    const ms = rig.cpu.csr.mstatus;
-    try std.testing.expect((ms & csr_mod.MSTATUS_MIE) != 0);
-    try std.testing.expect((ms & csr_mod.MSTATUS_MPIE) != 0);
-    try std.testing.expectEqual(@as(u32, 0), ms & csr_mod.MSTATUS_MPP_MASK);
+    // After mret: MIE ← MPIE (was true), MPIE ← 1, MPP ← U.
+    try std.testing.expect(rig.cpu.csr.mstatus_mie);
+    try std.testing.expect(rig.cpu.csr.mstatus_mpie);
+    try std.testing.expectEqual(@as(u2, 0b00), rig.cpu.csr.mstatus_mpp);
 }
 
 test "MRET in U-mode traps as illegal-instruction" {
@@ -1309,16 +1362,161 @@ test "WFI in U-mode traps as illegal-instruction" {
     );
 }
 
+test "WFI in S-mode is a no-op (advances PC by 4)" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    try dispatch(.{ .op = .wfi, .raw = 0x10500073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
 test "halt-on-trap propagates FatalTrap from cpu.run" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
     rig.cpu.halt_on_trap = true;
     rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
-    try rig.mem.storeWord(mem_mod.RAM_BASE, 0xFFFFFFFF);
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE, 0xFFFFFFFF);
     try std.testing.expectError(@import("cpu.zig").StepError.FatalTrap, rig.cpu.run());
     try std.testing.expectEqual(
         @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
         rig.cpu.csr.mcause,
     );
+}
+
+test "SRET from S-mode returns to U-mode per sstatus.SPP=U, SIE←SPIE" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE + 0x400);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_spp = 0; // SPP = U
+    rig.cpu.csr.mstatus_spie = true; // SPIE = 1 → SIE after sret
+    rig.cpu.csr.sepc = 0x8001_0000;
+    try dispatch(.{ .op = .sret, .raw = 0x10200073 }, &rig.cpu);
+    try std.testing.expectEqual(cpu_mod.PrivilegeMode.U, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8001_0000), rig.cpu.pc);
+    try std.testing.expectEqual(true, rig.cpu.csr.mstatus_sie);
+    try std.testing.expectEqual(true, rig.cpu.csr.mstatus_spie);
+    try std.testing.expectEqual(@as(u1, 0), rig.cpu.csr.mstatus_spp);
+}
+
+test "SRET from U-mode traps as illegal-instruction" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .sret, .raw = 0x10200073 }, &rig.cpu);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(cpu_mod.PrivilegeMode.M, rig.cpu.privilege);
+}
+
+test "SRET from S-mode with mstatus.TSR=1 traps as illegal-instruction" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_tsr = true;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .sret, .raw = 0x10200073 }, &rig.cpu);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(cpu_mod.PrivilegeMode.M, rig.cpu.privilege);
+}
+
+test "sfence.vma from U-mode is illegal" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(trap.Cause.illegal_instruction)),
+        rig.cpu.csr.mcause,
+    );
+}
+
+test "sfence.vma from S with TVM=1 is illegal" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_tvm = true;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(trap.Cause.illegal_instruction)),
+        rig.cpu.csr.mcause,
+    );
+}
+
+test "sfence.vma from M-mode is a PC-advancing no-op" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .M;
+    try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "sfence.vma from S with TVM=0 is a PC-advancing no-op" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_tvm = false;
+    try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "load page fault: LW from unmapped VA in U-mode updates mcause and mtval" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+
+    // Point satp at an empty root page (all zero RAM at root_pa → L1 PTE.V=0 → fault).
+    const root_pa: u32 = 0x8010_0000;
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    rig.cpu.csr.mtvec = 0x8000_1000;
+
+    // lw x5, 0(x6)  with x6 = 0x0001_0000 (the faulting VA)
+    rig.cpu.writeReg(6, 0x0001_0000);
+    try dispatch(.{ .op = .lw, .rd = 5, .rs1 = 6, .rs2 = 0, .imm = 0 }, &rig.cpu);
+
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(@import("trap.zig").Cause.load_page_fault)),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(@as(u32, 0x0001_0000), rig.cpu.csr.mtval);
+}
+
+test "store page fault: SW to unmapped VA in U-mode updates mcause and mtval" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+
+    // Point satp at an empty root page (all zero RAM at root_pa → L1 PTE.V=0 → fault).
+    const root_pa: u32 = 0x8010_0000;
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    rig.cpu.csr.mtvec = 0x8000_1000;
+
+    // sw x7, 0(x6)  with x6 = 0x0001_0000 (the faulting VA), x7 = value to store
+    rig.cpu.writeReg(6, 0x0001_0000);
+    rig.cpu.writeReg(7, 0xDEAD_BEEF);
+    try dispatch(.{ .op = .sw, .rd = 0, .rs1 = 6, .rs2 = 7, .imm = 0 }, &rig.cpu);
+
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(@import("trap.zig").Cause.store_page_fault)),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(@as(u32, 0x0001_0000), rig.cpu.csr.mtval);
 }

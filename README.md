@@ -31,7 +31,8 @@ Total scope: roughly 12–20 months of focused part-time work.
 
 - **Language:** Zig (version pinned per-phase).
 - **ISA:** RV32I + M + A + Zicsr + Zifencei. Single hart. No F/D, no C.
-- **Privilege (Phase 1):** M-mode + U-mode only; S-mode and Sv32 land in Phase 2.
+- **Privilege:** M-mode + S-mode + U-mode. Sv32 paging (4 KB pages, no
+  superpages, no TLB model).
 - **Devices (Phase 1):** NS16550A UART + CLINT timer. 128 MB RAM at `0x80000000`.
 - **Host platform:** macOS. Phase 4 may move to a Linux VM for TAP/TUN.
 - **Decomposition rule:** one phase's spec at a time — brainstorm → spec →
@@ -56,7 +57,7 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build hello-elf` | Build the Zig-compiled `hello.elf` (M-mode monitor + U-mode Zig payload) |
 | `zig build e2e-hello-elf` | Run `ccc hello.elf` and assert stdout equals `hello world\n` (Phase 1 §Definition of done) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
-| `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi-p-*` conformance suite (65 tests) |
+| `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
 
 ## Running programs
 
@@ -76,8 +77,9 @@ Extra flags:
     --halt-on-trap       Stop on first unhandled trap; dump regs/CSRs.
     --memory <MB>        Override RAM size (default: 128).
 
-ISA coverage: RV32I + M + A + Zicsr + Zifencei, M-mode + U-mode
-privilege, synchronous traps.
+ISA coverage: RV32I + M + A + Zicsr + Zifencei, M/S/U privilege,
+synchronous traps, Sv32 paging. `--trace` renders a `[M]`/`[S]`/`[U]`
+privilege column.
 
 ## Status
 
@@ -95,8 +97,24 @@ The Phase 1 §Definition of done demo:
     $ zig build hello-elf && zig build run -- zig-out/bin/hello.elf
     hello world
 
-Next: **Phase 2 — Bare-metal kernel** (S-mode, Sv32 page tables,
-M↔S↔U privilege transitions, timer interrupt delivery).
+**Plan 2.A (emulator S-mode + Sv32) merged.**
+
+The emulator now supports:
+
+- S-mode privilege + full S-CSR file (`sstatus`, `stvec`, `sepc`,
+  `scause`, `stval`, `sscratch`, `sie`, `sip`, `satp`).
+- `sret`, `sfence.vma`.
+- Sv32 two-level paging (4 KB pages; no superpages; no TLB model).
+- `misa` advertises `'S'`.
+- `--trace` includes a privilege column: `[M]` / `[S]` / `[U]`.
+- `rv32si-p-*` conformance tests for `csr`, `scall`, `wfi`. The `dirty`,
+  `sbreak`, and `ma_fetch` upstream tests are excluded with rationale in
+  `build.zig`: they depend on trap delegation or Sv32 superpages, both
+  of which are explicit Plan 2.B / beyond-2.A features.
+
+Trap delegation and async interrupt delivery arrive in Plan 2.B.
+
+Next: **Plan 2.B — emulator trap delegation + async interrupts**.
 
 ## Layout
 
@@ -123,6 +141,7 @@ tests/
   fixtures/         # tiny hand-crafted ELF used only by elf.zig tests
   riscv-tests/      # upstream submodule: riscv-software-src/riscv-tests
   riscv-tests-p.ld  # linker script for the 'p' (physical/M-mode) environment
+  riscv-tests-s.ld  # linker script for the rv32si-p-* family (S-mode test body)
 docs/
   superpowers/
     specs/          # design docs per phase (brainstormed + approved)

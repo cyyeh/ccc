@@ -12,15 +12,17 @@ pub const StepError = error{
     FatalTrap,
 };
 
-/// Two-level RISC-V privilege, spec §Privilege & trap model.
-/// Encoding matches the `mstatus.MPP` field: 0b00 = U, 0b11 = M.
-/// The two reserved middle values (0b01 = S, 0b10 = H) never appear in
-/// Phase 1 but we keep them in the enum so bit-level round-trips through
-/// mstatus are total; `trap.exit_mret` normalizes them to U (spec: WARL
-/// unsupported modes read back as the least-privileged supported mode).
+/// RISC-V privilege levels, spec §Privilege & trap model.
+/// Encoding matches the `mstatus.MPP` / `sstatus.SPP` field encoding:
+///   0b00 = U, 0b01 = S, 0b11 = M.
+/// The reserved H-mode value (0b10) is kept so `@enumFromInt(mstatus_mpp)`
+/// is total for any u2 value. csrWrite clamps 0b10 to 0b00 (U) before it
+/// reaches storage, so this variant normally cannot arise, but the variant
+/// exists as a type-level safety net for defensive reads.
+/// Phase 1 implemented U and M only. Phase 2 adds S.
 pub const PrivilegeMode = enum(u2) {
     U = 0b00,
-    reserved_s = 0b01,
+    S = 0b01,
     reserved_h = 0b10,
     M = 0b11,
 };
@@ -29,8 +31,25 @@ pub const PrivilegeMode = enum(u2) {
 /// marchid, mimpid) live as constants in csr.zig — they have no storage.
 /// Field semantics live in csr.zig's mask constants and its csrRead /
 /// csrWrite functions; this struct is just the bytes.
+///
+/// mstatus is split into per-field storage because the fields are scattered
+/// across bit positions and may need to be accessed independently by the
+/// trap and S-mode subsystems. The flat mstatus_XYZ naming lets trap.zig
+/// read fields directly without helper functions.
 pub const CsrFile = struct {
-    mstatus: u32 = 0,
+    // mstatus — split into per-field storage (Plan 2.A Task 2)
+    mstatus_sie: bool = false, // bit 1  — S Interrupt Enable
+    mstatus_mie: bool = false, // bit 3  — M Interrupt Enable
+    mstatus_spie: bool = false, // bit 5  — Previous SIE (saved on S-trap entry)
+    mstatus_mpie: bool = false, // bit 7  — Previous MIE (saved on M-trap entry)
+    mstatus_spp: u1 = 0, // bit 8  — Previous S-mode privilege (0=U, 1=S)
+    mstatus_mpp: u2 = 0, // bits 12:11 — Previous M-mode privilege
+    mstatus_mprv: bool = false, // bit 17 — Modify PRiVilege
+    mstatus_sum: bool = false, // bit 18 — Supervisor User Memory access
+    mstatus_mxr: bool = false, // bit 19 — Make eXecutable Readable
+    mstatus_tvm: bool = false, // bit 20 — Trap Virtual Memory
+    mstatus_tsr: bool = false, // bit 22 — Trap SRET
+    // M-mode trap/interrupt CSRs
     mtvec: u32 = 0,
     mepc: u32 = 0,
     mcause: u32 = 0,
@@ -47,6 +66,16 @@ pub const CsrFile = struct {
     // software-visible state only — writes stored, reads returned. Added
     // for rv32mi-csr conformance.
     mcounteren: u32 = 0,
+    // scounteren (0x106): S-mode analog of mcounteren. Same rationale —
+    // counters aren't implemented, register is software-visible only.
+    scounteren: u32 = 0,
+    // S-mode CSRs (placeholders for Tasks 4, 5, 6, 7, etc.)
+    stvec: u32 = 0,
+    sscratch: u32 = 0,
+    sepc: u32 = 0,
+    scause: u32 = 0,
+    stval: u32 = 0,
+    satp: u32 = 0,
 };
 
 pub const Cpu = struct {
@@ -58,8 +87,8 @@ pub const Cpu = struct {
     // will additionally clear this on trap entry; Plan 1.B has no traps.
     reservation: ?u32,
     // Current privilege level. Starts in M; a monitor drops to U via mret,
-    // and synchronous traps return control to M. Phase 1 never uses the
-    // reserved_s/reserved_h variants; they exist only to round-trip the
+    // and synchronous traps return control to M. Phase 1 used only U and M;
+    // Phase 2 adds S. The reserved_h variant exists only to round-trip the
     // mstatus.MPP bit field losslessly (see trap.zig).
     privilege: PrivilegeMode,
     csr: CsrFile,
@@ -98,7 +127,18 @@ pub const Cpu = struct {
 
     pub fn step(self: *Cpu) StepError!void {
         const pre_pc = self.pc;
-        const word = self.memory.loadWord(pre_pc) catch |e| switch (e) {
+        const pre_priv = self.privilege; // captured before any fetch/execute may trap-switch privilege
+        // Instruction fetch: translate using the current privilege directly —
+        // MPRV is non-applicable to fetch per the spec, so we intentionally
+        // bypass `effectivePriv` and the translating `loadWord` wrapper.
+        const pa = self.memory.translate(pre_pc, .fetch, self.privilege, self) catch |e| switch (e) {
+            error.InstPageFault => {
+                trap.enter(.instr_page_fault, pre_pc, self);
+                return;
+            },
+            else => unreachable, // translate only returns TranslationError variants
+        };
+        const word = self.memory.loadWordPhysical(pa) catch |e| switch (e) {
             error.Halt => return StepError.Halt,
             error.MisalignedAccess => {
                 trap.enter(.instr_addr_misaligned, pre_pc, self);
@@ -117,7 +157,7 @@ pub const Cpu = struct {
         };
         if (self.trace_writer) |tw| {
             const post_rd = self.regs[instr.rd];
-            @import("trace.zig").formatInstr(tw, pre_pc, instr, pre_rd, post_rd, self.pc) catch {};
+            @import("trace.zig").formatInstr(tw, pre_priv, pre_pc, instr, pre_rd, post_rd, self.pc) catch {};
         }
     }
 
@@ -172,8 +212,8 @@ test "Cpu.run halts cleanly when program writes to halt MMIO" {
     //   lui   t0, 0x100        ; t0 = 0x00100000 (halt MMIO)
     //   sb    zero, 0(t0)      ; *t0 = 0 → halt
     const RAM_BASE = @import("memory.zig").RAM_BASE;
-    try mem.storeWord(RAM_BASE, 0x001002B7); // lui t0, 0x100
-    try mem.storeWord(RAM_BASE + 4, 0x00028023); // sb zero, 0(t0)
+    try mem.storeWordPhysical(RAM_BASE, 0x001002B7); // lui t0, 0x100
+    try mem.storeWordPhysical(RAM_BASE + 4, 0x00028023); // sb zero, 0(t0)
 
     var cpu = Cpu.init(&mem, RAM_BASE);
     try cpu.run();
@@ -190,4 +230,45 @@ test "Cpu.init starts in M-mode" {
     var dummy_mem: Memory = undefined;
     const cpu = Cpu.init(&dummy_mem, 0);
     try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+}
+
+test "PrivilegeMode has M, S, and U" {
+    const m = PrivilegeMode.M;
+    const s = PrivilegeMode.S;
+    const u = PrivilegeMode.U;
+    try std.testing.expect(m != s);
+    try std.testing.expect(s != u);
+    try std.testing.expect(u != m);
+}
+
+test "instruction page fault: step() from unmapped PC in U-mode updates mcause and mtval" {
+    var halt = @import("devices/halt.zig").Halt.init();
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
+    var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
+    defer mem.deinit();
+
+    // Point satp at an empty root page (all zero RAM → L1 PTE.V=0 → fetch fault).
+    const root_pa: u32 = 0x8010_0000;
+    const faulting_pc: u32 = 0x0001_0000; // unmapped virtual address
+
+    // CPU starts in M-mode; switch to U-mode and set up Sv32 with empty root.
+    var cpu = Cpu.init(&mem, faulting_pc);
+    cpu.privilege = .U;
+    cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+    cpu.csr.mtvec = 0x8000_1000;
+
+    // step() will attempt to fetch from faulting_pc, translation will fault,
+    // trap.enter sets mcause/mtval/mepc, and step() returns normally.
+    try cpu.step();
+
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(trap.Cause.instr_page_fault)),
+        cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(@as(u32, faulting_pc), cpu.csr.mtval);
+    try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_1000), cpu.pc);
 }

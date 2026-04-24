@@ -205,8 +205,6 @@ pub fn build(b: *std.Build) void {
         name: []const u8,
     };
 
-    const rv_link_script = b.path("tests/riscv-tests-p.ld");
-
     const riscvTestStep = struct {
         fn call(
             bb: *std.Build,
@@ -293,19 +291,39 @@ pub fn build(b: *std.Build) void {
     //     tdata1/2). Phase 1 has no trigger hardware; the test's escape
     //     hatches (csrr tselect → bne → pass) require tselect to exist.
     const rv32mi_tests = [_][]const u8{ "csr", "illegal", "ma_addr", "ma_fetch", "mcsr", "sbreak", "scall", "shamt" };
+    // rv32si-p: S-mode CSRs, Sv32 page walks, A/D bits, S-mode WFI.
+    // NOTE: no illegal.S exists in the upstream submodule for this family;
+    // illegal-instruction coverage lives in rv32mi.
+    //
+    // Excluded from Plan 2.A (behaviors not modeled — all pushed to Plan 2.B):
+    //   - sbreak, ma_fetch: these tests run the test body in S-mode and
+    //     rely on trap delegation (medeleg) so BREAKPOINT and MISALIGNED_FETCH
+    //     exceptions vector to the test's `stvec_handler` instead of trap_vector.
+    //     Plan 2.A explicitly defers medeleg/mideleg to Plan 2.B, so these tests
+    //     fall through to `other_exception` and fail.
+    //   - dirty: exercises a root-level (L1) leaf PTE — a 4 MiB Sv32 superpage.
+    //     Plan 2.A supports 4 KiB leaves only; the walker deliberately rejects
+    //     L1 leaf PTEs. Superpage support is deferred to Plan 2.B.
+    const rv32si_tests = [_][]const u8{ "csr", "scall", "wfi" };
 
-    const rv_step = b.step("riscv-tests", "Run the riscv-tests suite (rv32ui/um/ua/mi)");
+    const rv_step = b.step("riscv-tests", "Run the riscv-tests suite (rv32ui/um/ua/mi/si)");
 
-    const all_families = [_]struct { family: []const u8, list: []const []const u8 }{
-        .{ .family = "rv32ui", .list = &rv32ui_tests },
-        .{ .family = "rv32um", .list = &rv32um_tests },
-        .{ .family = "rv32ua", .list = &rv32ua_tests },
-        .{ .family = "rv32mi", .list = &rv32mi_tests },
+    const all_families = [_]struct {
+        family: []const u8,
+        list: []const []const u8,
+        ld: []const u8,
+    }{
+        .{ .family = "rv32ui", .list = &rv32ui_tests, .ld = "tests/riscv-tests-p.ld" },
+        .{ .family = "rv32um", .list = &rv32um_tests, .ld = "tests/riscv-tests-p.ld" },
+        .{ .family = "rv32ua", .list = &rv32ua_tests, .ld = "tests/riscv-tests-p.ld" },
+        .{ .family = "rv32mi", .list = &rv32mi_tests, .ld = "tests/riscv-tests-p.ld" },
+        .{ .family = "rv32si", .list = &rv32si_tests, .ld = "tests/riscv-tests-s.ld" },
     };
 
     for (all_families) |fam| {
+        const ld_path = b.path(fam.ld);
         for (fam.list) |name| {
-            const elf_path = riscvTestStep(b, rv_target, rv_link_script, .{
+            const elf_path = riscvTestStep(b, rv_target, ld_path, .{
                 .family = fam.family,
                 .name = name,
             });
