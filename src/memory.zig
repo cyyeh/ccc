@@ -2,6 +2,9 @@ const std = @import("std");
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
+const cpu_mod = @import("cpu.zig");
+pub const PrivilegeMode = cpu_mod.PrivilegeMode;
+const Cpu = cpu_mod.Cpu;
 
 pub const RAM_BASE: u32 = 0x8000_0000;
 pub const RAM_SIZE_DEFAULT: usize = 128 * 1024 * 1024;
@@ -175,9 +178,10 @@ pub const Memory = struct {
 
     /// Virtual-to-physical address translation.
     ///
-    /// `privilege` is the effective privilege level encoded as a raw u2
-    /// (matching cpu.PrivilegeMode: U=0b00, S=0b01, M=0b11).
-    /// `satp` is the satp CSR value (same encoding as the hardware register).
+    /// `effective_priv` is the effective privilege level (may differ from
+    /// `cpu.privilege` when MPRV is set — Task 19 will compute it).
+    /// `cpu` provides read access to satp and all mstatus fields needed by
+    /// Tasks 15-19 (mstatus_mxr, mstatus_sum, mstatus_mprv, mstatus_mpp).
     ///
     /// M-mode always produces an identity mapping regardless of satp.
     /// Non-M-mode with satp.MODE == Bare (bit 31 == 0) also returns identity.
@@ -186,15 +190,15 @@ pub const Memory = struct {
         self: *Memory,
         va: u32,
         access: Access,
-        privilege: u2,
-        satp: u32,
+        effective_priv: PrivilegeMode,
+        cpu: *const Cpu,
     ) TranslationError!u32 {
         _ = self;
         _ = access;
-        // M-mode (0b11) always identity, regardless of satp.
-        if (privilege == 0b11) return va;
+        // M-mode always identity, regardless of satp.
+        if (effective_priv == .M) return va;
         // Non-M + MODE == Bare (satp bit 31 == 0) → identity.
-        const mode = (satp >> 31) & 1;
+        const mode = (cpu.csr.satp >> 31) & 1;
         if (mode == 0) return va;
         // Sv32 walk — stubbed; Task 15 implements.
         return va;
@@ -210,6 +214,7 @@ const TestRig = struct {
     clint: clint_dev.Clint,
     aw: std.Io.Writer.Allocating,
     mem: Memory,
+    cpu: Cpu,
 
     fn init(self: *TestRig, allocator: std.mem.Allocator) !void {
         self.halt = halt_dev.Halt.init();
@@ -217,6 +222,7 @@ const TestRig = struct {
         self.uart = uart_dev.Uart.init(&self.aw.writer);
         self.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
         self.mem = try Memory.init(allocator, &self.halt, &self.uart, &self.clint, null, RAM_SIZE_DEFAULT);
+        self.cpu = Cpu.init(&self.mem, RAM_BASE);
     }
 
     fn deinit(self: *TestRig) void {
@@ -288,8 +294,10 @@ test "translate: Bare mode returns identity from U-mode" {
     var rig: TestRig = undefined;
     try rig.init(std.testing.allocator);
     defer rig.deinit();
-    // U-mode = 0b00, satp = 0 means MODE = Bare
-    const pa = try rig.mem.translate(0x8000_0000, .load, 0b00, 0);
+    // U-mode, satp = 0 means MODE = Bare
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = 0;
+    const pa = try rig.mem.translate(0x8000_0000, .load, .U, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x8000_0000), pa);
 }
 
@@ -297,8 +305,9 @@ test "translate: M-mode always identity even with Sv32 MODE" {
     var rig: TestRig = undefined;
     try rig.init(std.testing.allocator);
     defer rig.deinit();
-    // M-mode = 0b11, satp has bit 31 set (Sv32) with bogus PPN
-    const sv32_satp = (1 << 31) | 0x1234;
-    const pa = try rig.mem.translate(0x8000_0000, .load, 0b11, sv32_satp);
+    // M-mode, satp has bit 31 set (Sv32) with bogus PPN
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.satp = (1 << 31) | 0x1234;
+    const pa = try rig.mem.translate(0x8000_0000, .load, .M, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x8000_0000), pa);
 }
