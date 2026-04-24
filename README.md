@@ -17,15 +17,13 @@ our own terminal browser, with every layer written ourselves:
 
 ## Phases
 
-| # | Phase | Rough effort | Demo |
-|---|-------|--------------|------|
-| 1 | RISC-V CPU emulator | 2–4 months | `ccc hello.elf` prints `hello world` |
-| 2 | Bare-metal kernel | 2–3 months | user program calls `write()`, kernel prints it |
-| 3 | Multi-process OS + FS + shell | 3–4 months | boot to a shell, run our own programs |
-| 4 | Network stack | 3–6 months | `ping 1.1.1.1` from inside our OS |
-| 5 | HTTP/1.0 client + text browser | 1–3 months | browse plain-HTTP pages by link number |
-
-Total scope: roughly 12–20 months of focused part-time work.
+| # | Phase | Demo |
+|---|-------|------|
+| 1 | RISC-V CPU emulator | `ccc hello.elf` prints `hello world` |
+| 2 | Bare-metal kernel | user program calls `write()`, kernel prints it |
+| 3 | Multi-process OS + FS + shell | boot to a shell, run our own programs |
+| 4 | Network stack | `ping 1.1.1.1` from inside our OS |
+| 5 | HTTP/1.0 client + text browser | browse plain-HTTP pages by link number |
 
 ## Design choices
 

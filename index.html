@@ -24,9 +24,10 @@
       font-family: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", Arial, sans-serif;
       font-size: 28px;
       line-height: 1.5;
-      padding: 120px 140px;
+      padding: 96px 120px;
       display: flex;
       flex-direction: column;
+      justify-content: center;
       box-sizing: border-box;
       letter-spacing: 0.005em;
     }
@@ -69,8 +70,8 @@
 
     .slide-label {
       position: absolute;
-      top: 56px;
-      left: 140px;
+      top: 44px;
+      left: 120px;
       font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
       font-size: 22px;
       color: var(--dim);
@@ -79,11 +80,11 @@
     }
 
     .slide-title {
-      font-size: 72px;
+      font-size: 68px;
       font-weight: 600;
       letter-spacing: -0.01em;
       color: var(--fg);
-      margin: 0 0 24px 0;
+      margin: 0 0 20px 0;
     }
     .slide-title .accent { color: var(--accent); }
 
@@ -91,12 +92,12 @@
        title and the technical content: readable at a conference-room
        distance, de-emphasised versus the title, emphasised versus code. */
     .plain {
-      font-size: 30px;
+      font-size: 28px;
       font-weight: 400;
-      line-height: 1.55;
+      line-height: 1.5;
       color: #c8c0b3;
       max-width: 1500px;
-      margin: 0 0 48px 0;
+      margin: 0 0 32px 0;
     }
     .plain strong { color: var(--fg); font-weight: 600; }
     .plain code {
@@ -111,10 +112,10 @@
       background: var(--panel);
       border: 1px solid var(--panel-border);
       border-radius: 14px;
-      padding: 32px 40px;
+      padding: 28px 36px;
       font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 28px;
-      line-height: 1.55;
+      font-size: 26px;
+      line-height: 1.5;
       color: var(--fg);
       margin: 0;
       white-space: pre;
@@ -141,29 +142,29 @@
       background: var(--panel);
       border: 1px solid var(--panel-border);
       border-radius: 14px;
-      padding: 32px 36px;
+      padding: 26px 32px;
     }
     .panel h4 {
-      margin: 0 0 16px 0;
+      margin: 0 0 12px 0;
       color: var(--accent);
       font-size: 22px;
       letter-spacing: 0.16em;
       text-transform: uppercase;
       font-weight: 600;
     }
-    .panel p { margin: 0; font-size: 28px; line-height: 1.5; color: var(--fg); }
+    .panel p { margin: 0; font-size: 26px; line-height: 1.5; color: var(--fg); }
 
     .caption {
-      font-size: 26px;
+      font-size: 24px;
       color: var(--muted);
-      margin-top: 40px;
+      margin-top: 28px;
       line-height: 1.5;
     }
 
     .flow {
       font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 26px;
-      line-height: 1.6;
+      font-size: 24px;
+      line-height: 1.5;
       color: var(--fg);
       white-space: pre;
       margin: 0;
@@ -171,16 +172,75 @@
     .flow .arrow { color: var(--accent); font-weight: 600; }
     .flow .dim { color: var(--muted); }
 
-    .check-list .row { margin-bottom: 32px; }
+    .check-list .row { margin-bottom: 18px; }
     .check-list .row:last-child { margin-bottom: 0; }
     .check-list .head {
-      font-size: 40px;
+      font-size: 32px;
       color: var(--accent);
-      margin-bottom: 10px;
+      margin-bottom: 4px;
     }
     .check-list .sub {
       color: var(--muted);
-      font-size: 26px;
+      font-size: 22px;
+      line-height: 1.4;
+    }
+
+    .toc { display: flex; flex-direction: column; gap: 14px; margin-top: 4px; }
+    .toc-row {
+      display: grid;
+      grid-template-columns: 84px 1fr;
+      gap: 28px;
+      align-items: baseline;
+    }
+    .toc-num {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 64px;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--dim);
+      text-align: right;
+      letter-spacing: -0.02em;
+    }
+    .toc-body { min-width: 0; }
+    .toc-head {
+      font-size: 30px;
+      font-weight: 600;
+      color: var(--fg);
+      margin-bottom: 4px;
+      line-height: 1.2;
+    }
+    .toc-sub {
+      font-size: 22px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .toc-sub code.inline { font-size: 0.95em; }
+    .toc-status {
+      display: inline-block;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 18px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 3px 12px;
+      border-radius: 999px;
+      margin-left: 14px;
+      vertical-align: middle;
+    }
+    .toc-status.done {
+      color: var(--accent);
+      background: rgba(217, 119, 87, 0.12);
+      border: 1px solid rgba(217, 119, 87, 0.4);
+    }
+    .toc-status.active {
+      color: var(--fg);
+      background: rgba(217, 119, 87, 0.22);
+      border: 1px solid var(--accent);
+    }
+    .toc-status.upcoming {
+      color: var(--dim);
+      background: transparent;
+      border: 1px solid var(--panel-border);
     }
 
     .site-footer {
@@ -219,14 +279,59 @@
     <div class="brand">ccc</div>
     <div class="brand-rule"></div>
     <div class="title-line-1">hello world, from scratch</div>
-    <div class="title-line-2">a RISC-V CPU emulator in Zig · phase 1</div>
+    <div class="title-line-2">a RISC-V CPU emulator in Zig · six chapters</div>
   </section>
 
-  <!-- 2: The demo -->
-  <section data-label="The demo">
-    <div class="slide-label">01 · the demo</div>
+  <!-- 2: Table of contents · five phases -->
+  <section data-label="Contents · five phases">
+    <div class="slide-label">contents · the project</div>
+    <h2 class="slide-title">Five phases, <span class="accent">one browser</span></h2>
+    <p class="plain">The end goal: boot our own kernel, talk to a server we control, and render plain HTML in a terminal-mode browser — everything written from scratch. No Linux. No TLS. That arc splits into five phases, each with its own spec and plan.</p>
+    <div class="toc">
+      <div class="toc-row">
+        <div class="toc-num">1</div>
+        <div class="toc-body">
+          <div class="toc-head">RISC-V CPU emulator <span class="toc-status done">✓ complete</span></div>
+          <div class="toc-sub">Zig-written RV32IMA emulator · passes <code class="inline">riscv-tests</code> · runs a bare-metal hello world.</div>
+        </div>
+      </div>
+      <div class="toc-row">
+        <div class="toc-num">2</div>
+        <div class="toc-body">
+          <div class="toc-head">Bare-metal kernel <span class="toc-status active">⟳ in progress</span></div>
+          <div class="toc-sub">S-mode + Sv32 paging · trap delegation · M↔S↔U transitions · first user-mode syscalls.</div>
+        </div>
+      </div>
+      <div class="toc-row">
+        <div class="toc-num">3</div>
+        <div class="toc-body">
+          <div class="toc-head">Multi-process OS + shell <span class="toc-status upcoming">upcoming</span></div>
+          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor.</div>
+        </div>
+      </div>
+      <div class="toc-row">
+        <div class="toc-num">4</div>
+        <div class="toc-body">
+          <div class="toc-head">Network stack <span class="toc-status upcoming">upcoming</span></div>
+          <div class="toc-sub">Ethernet → ARP → IP → ICMP → UDP → TCP → DNS, layer by layer.</div>
+        </div>
+      </div>
+      <div class="toc-row">
+        <div class="toc-num">5</div>
+        <div class="toc-body">
+          <div class="toc-head">HTTP/1.0 + text browser <span class="toc-status upcoming">upcoming</span></div>
+          <div class="toc-sub">HTTP client · URL parsing · tiny HTML parser · terminal renderer · link navigation by number.</div>
+        </div>
+      </div>
+    </div>
+    <div class="caption">This deck walks <strong>Phase 1</strong> in full, then the first two plans of <strong>Phase 2</strong>.</div>
+  </section>
+
+  <!-- 3: Prologue · the demo -->
+  <section data-label="Prologue · the demo">
+    <div class="slide-label">prologue · the demo</div>
     <h2 class="slide-title">What we're going to <span class="accent">unpack</span></h2>
-    <p class="plain"><strong>ccc</strong> is a RISC-V CPU emulator written from scratch in Zig. This command compiles a tiny test program, runs it through ccc, and prints <code>hello world</code> before exiting with status zero — end-to-end proof that every layer of the emulator works together.</p>
+    <p class="plain"><strong>ccc</strong> is a RISC-V CPU emulator written from scratch in Zig. One command compiles a tiny program, runs it through ccc, and prints <code>hello world</code>. The six chapters that follow — one per phase plan — walk every layer of machinery between the <code>$</code> and the output.</p>
     <pre class="code">$ zig build hello-elf
 $ ./zig-out/bin/ccc zig-out/bin/hello.elf
 <span class="a">hello world</span>
@@ -234,9 +339,86 @@ $ echo $?
 <span class="a">0</span></pre>
   </section>
 
-  <!-- 3: Two halves -->
-  <section data-label="Two halves">
-    <div class="slide-label">02 · what's inside hello.elf</div>
+  <!-- 3: Chapter 1.A · baseline -->
+  <section data-label="Ch 1.A · baseline">
+    <div class="slide-label">chapter 1.a · the baseline</div>
+    <h2 class="slide-title">40 instructions, 128 MB, <span class="accent">one UART</span></h2>
+    <p class="plain">Start with nothing. Build a single RV32I hart that steps real instructions, a flat chunk of RAM for code and data, and two memory-mapped devices so the guest can say something and then stop.</p>
+    <div class="three-col">
+      <div class="panel">
+        <h4>Decoder</h4>
+        <p style="font-size: 26px;">All <strong>40 RV32I</strong> integer instructions decode into a tagged <code class="inline">Instruction</code>. LUI · AUIPC · JAL · JALR · 6 branches · 8 loads/stores · 9 ALU-imm · 10 ALU-reg.</p>
+      </div>
+      <div class="panel">
+        <h4>Memory</h4>
+        <p style="font-size: 26px;"><strong>128 MB</strong> of flat RAM at <code class="inline">0x80000000</code>. Little-endian byte, halfword, and word load/store.</p>
+      </div>
+      <div class="panel">
+        <h4>MMIO</h4>
+        <p style="font-size: 26px;">NS16550A <strong>UART</strong> at <code class="inline">0x10000000</code>. <strong>Halt device</strong> at <code class="inline">0x00100000</code>.</p>
+      </div>
+    </div>
+    <div class="caption"><strong>78 inline unit tests.</strong> <code class="inline">zig build e2e</code> loads a hand-encoded RV32I program that loops over a string, bangs each byte into the UART, then halts.</div>
+  </section>
+
+  <!-- 4: Chapter 1.B · IMA extensions -->
+  <section data-label="Ch 1.B · IMA extensions">
+    <div class="slide-label">chapter 1.b · ima extensions</div>
+    <h2 class="slide-title">Multiply, divide, <span class="accent">atomics</span></h2>
+    <p class="plain">The ISA baseline for a Linux-class kernel. <strong>M</strong> gives us multiply and divide — with every edge case (signed overflow, divide-by-zero return values). <strong>A</strong> gives us load-reserved / store-conditional plus nine atomic memory operations.</p>
+    <pre class="code">    <span class="c"># 6 × 7 = 42, atomically stored, split for display</span>
+    li    t1, <span class="n">6</span>
+    li    t2, <span class="n">7</span>
+    <span class="a">mul</span>   t4, t1, t2          <span class="c"># t4 ← 42                       (RV32M)</span>
+    <span class="a">amoswap.w</span> t5, t4, (t3)    <span class="c"># atomically store 42          (RV32A)</span>
+    <span class="a">divu</span>  t6, t4, <span class="n">10</span>           <span class="c"># tens  = 4                    (RV32M)</span>
+    <span class="a">remu</span>  t4, t4, <span class="n">10</span>           <span class="c"># ones  = 2                    (RV32M)</span>
+    <span class="a">fence.i</span>                     <span class="c"># instruction fence          (Zifencei)</span></pre>
+    <div class="caption"><strong>8 M-ops</strong> (mul/mulh/mulhu/mulhsu · div/divu/rem/remu) · <strong>11 A-ops</strong> (lr.w/sc.w + 9 AMOs: swap/add/xor/and/or/min/max/minu/maxu) · <strong>1 Zifencei</strong>. ~50 new unit tests green. A <code class="inline">reservation: ?u32</code> field tracks LR/SC coherence.</div>
+  </section>
+
+  <!-- 5: Chapter 1.C · privilege + traps + conformance -->
+  <section data-label="Ch 1.C · privilege + traps">
+    <div class="slide-label">chapter 1.c · privilege + traps + conformance</div>
+    <h2 class="slide-title">CSRs, a trap handler, <span class="accent">the real test suite</span></h2>
+    <p class="plain">The machinery that separates kernel code from user code: control and status registers, two privilege levels, a synchronous trap path. Then we point the official RISC-V conformance tests at it.</p>
+    <div class="two-col">
+      <div class="panel">
+        <h4>Trap mechanics</h4>
+        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">  U-mode code
+     │  ecall / fault
+     ▼
+  mcause ← cause code
+  mepc   ← pc of faulting inst
+  mstatus.MPP  ← prev priv
+  mstatus.MPIE ← MIE;  MIE ← 0
+  pc     ← mtvec
+     │
+     ▼
+  M-mode handler
+     │  <span class="arrow">mret</span>
+     ▼
+  resume at mepc</pre>
+      </div>
+      <div class="panel">
+        <h4>What's in the box</h4>
+        <p style="font-size: 24px; line-height: 1.6;">
+          <strong>6 Zicsr insns</strong> <span style="color: var(--muted);">(csrrw/s/c + *i)</span><br><br>
+          <strong>M-mode CSR file:</strong><br>
+          <span style="color: var(--muted);">mstatus · mtvec · mepc · mcause · mtval · mie · mip · mscratch …</span><br><br>
+          <strong>M / U</strong> privilege · U-mode CSR access traps illegal<br><br>
+          <strong>8 trap causes</strong> · <code class="inline">mret</code><br><br>
+          CLINT @ <code class="inline">0x02000000</code> <span style="color: var(--muted);">(msip · mtimecmp · mtime)</span><br><br>
+          Hand-rolled <strong>ELF32 loader</strong> · resolves <code class="inline">tohost</code>
+        </p>
+      </div>
+    </div>
+    <div class="caption"><strong>riscv-tests conformance:</strong> <code class="inline">rv32ui-p-*</code> · <code class="inline">rv32um-p-*</code> · <code class="inline">rv32ua-p-*</code> · <code class="inline">rv32mi-p-*</code> — all green.</div>
+  </section>
+
+  <!-- 6: Chapter 1.D · two halves -->
+  <section data-label="Ch 1.D · hello.elf">
+    <div class="slide-label">chapter 1.d · hello.elf · two halves</div>
     <h2 class="slide-title">Two halves, one binary</h2>
     <p class="plain"><code>hello.elf</code> bundles two cooperating programs. A tiny supervisor written in assembly boots the hardware and services requests; the application, written in Zig, simply asks for what it wants. The split mirrors how real operating systems separate <strong>kernel code</strong> from <strong>user code</strong>.</p>
     <div class="two-col">
@@ -253,9 +435,9 @@ $ echo $?
     </div>
   </section>
 
-  <!-- 4: Boot flow -->
-  <section data-label="Boot flow">
-    <div class="slide-label">03 · boot flow</div>
+  <!-- 7: Chapter 1.D · boot flow -->
+  <section data-label="Ch 1.D · boot flow">
+    <div class="slide-label">chapter 1.d · hello.elf · boot flow</div>
     <h2 class="slide-title">Control flow, end to end</h2>
     <p class="plain">From the moment ccc opens the ELF file until <code>hello world</code> appears on the terminal, control passes through five handoffs — some inside the guest program, others across the boundary into ccc's emulated hardware.</p>
     <pre class="flow">  ccc                           <span class="dim">← host: ELF32 loader reads hello.elf; PC = e_entry</span>
@@ -273,9 +455,9 @@ $ echo $?
   halt MMIO 0x00100000          <span class="dim">← exit code</span></pre>
   </section>
 
-  <!-- 5: monitor._start -->
-  <section data-label="Monitor _start">
-    <div class="slide-label">04 · m-mode · monitor.S</div>
+  <!-- 8: Chapter 1.D · monitor._start -->
+  <section data-label="Ch 1.D · monitor.S">
+    <div class="slide-label">chapter 1.d · hello.elf · monitor.S</div>
     <h2 class="slide-title">_start: configure the hart, drop to U-mode</h2>
     <p class="plain">The first code that runs inside the emulated CPU. It sets up the stack pointer, registers a handler for anything that might go wrong, voluntarily downgrades its own privilege, and jumps to the application. This is the standard pattern for bare-metal code handing off to user code.</p>
     <pre class="code">_start:
@@ -290,9 +472,9 @@ $ echo $?
     <div class="caption">PMP setup omitted for clarity — the real <code class="inline">monitor.S</code> installs a PMP entry granting U-mode RWX on all of RAM so QEMU and ccc run the same binary.</div>
   </section>
 
-  <!-- 6: u_entry -->
-  <section data-label="U-mode payload">
-    <div class="slide-label">05 · u-mode · hello.zig</div>
+  <!-- 9: Chapter 1.D · u_entry -->
+  <section data-label="Ch 1.D · hello.zig">
+    <div class="slide-label">chapter 1.d · hello.elf · hello.zig</div>
     <h2 class="slide-title">The entire U-mode program</h2>
     <p class="plain">The application, in its entirety — a <strong>naked</strong> Zig function (no prologue, no stack setup) that issues two system calls: one to print the message, one to exit. Every piece of machinery elsewhere in this deck exists to make these ten lines of assembly work.</p>
     <pre class="code"><span class="k">export fn</span> u_entry() linksection(<span class="s">".text.umode"</span>)
@@ -312,37 +494,26 @@ $ echo $?
 }</pre>
   </section>
 
-  <!-- 7: ecall semantics -->
-  <section data-label="ecall → trap">
-    <div class="slide-label">06 · the privilege boundary</div>
-    <h2 class="slide-title"><code class="inline" style="font-size: 0.95em;">ecall</code> is how U asks M for help</h2>
-    <p class="plain">The <code>ecall</code> instruction is RISC-V's system call — the controlled gateway through which untrusted user code asks the kernel for a favour. The CPU automatically saves state, raises its privilege level, and jumps into the kernel's trap handler, all in a single instruction.</p>
+  <!-- 10: Chapter 1.D · ecall + dispatch -->
+  <section data-label="Ch 1.D · trap + dispatch">
+    <div class="slide-label">chapter 1.d · hello.elf · the trap</div>
+    <h2 class="slide-title"><code class="inline" style="font-size: 0.95em;">ecall</code> → <code class="inline" style="font-size: 0.95em;">trap_vector</code></h2>
+    <p class="plain">When the user program hits <code>ecall</code>, the CPU snapshots state into CSRs and jumps to <code>mtvec</code>. The monitor's trap vector first confirms the cause really was an <code>ecall</code>, then branches on the syscall number the user placed in <code>a7</code>.</p>
     <div class="two-col">
-      <div class="panel">
-        <h4>What ecall does</h4>
-        <p>Synchronous trap. The hart switches to M-mode and jumps to <code class="inline">mtvec</code>.</p>
-      </div>
       <div class="panel">
         <h4>CSR state on entry</h4>
         <p style="font-family: ui-monospace, Menlo, monospace; font-size: 26px; line-height: 1.7;">
           mcause = 8 <span style="color: var(--muted);">(ecall from U)</span><br>
           mepc = pc of ecall<br>
-          mstatus.MPP = U<br>
-          mstatus.MPIE = MIE; MIE = 0
+          mstatus.MPP  = U<br>
+          mstatus.MPIE = MIE<br>
+          MIE = 0<br><br>
+          pc = mtvec
         </p>
       </div>
-    </div>
-    <div class="caption">On return, <code class="inline">mret</code> restores the previous privilege and jumps to <code class="inline">mepc + 4</code>.</div>
-  </section>
-
-  <!-- 8: trap_vector -->
-  <section data-label="Trap dispatch">
-    <div class="slide-label">07 · m-mode · monitor.S</div>
-    <h2 class="slide-title">trap_vector: dispatch on <code class="inline" style="font-size: 0.95em;">a7</code></h2>
-    <p class="plain">When the user program ran <code>ecall</code>, the CPU landed here. The handler first confirms the cause really was an <code>ecall</code> (not a page fault or illegal instruction), then branches based on the syscall number the user placed in register <code>a7</code>.</p>
-    <pre class="code">trap_vector:
+      <pre class="code" style="margin: 0; font-size: 24px;">trap_vector:
     csrr  t0, mcause
-    li    t1, <span class="n">8</span>                       <span class="c"># ecall from U</span>
+    li    t1, <span class="n">8</span>                <span class="c"># ecall from U</span>
     bne   t0, t1, unexpected_trap
 
     li    t0, <span class="n">64</span>
@@ -350,89 +521,178 @@ $ echo $?
     li    t0, <span class="n">93</span>
     beq   a7, t0, <span class="a">sys_exit</span>
 
-    li    a0, -<span class="n">38</span>                    <span class="c"># -ENOSYS</span>
+    li    a0, -<span class="n">38</span>             <span class="c"># -ENOSYS</span>
     j     mret_resume</pre>
+    </div>
   </section>
 
-  <!-- 9: sys_write -->
-  <section data-label="sys_write · UART">
-    <div class="slide-label">08 · sys_write → UART</div>
-    <h2 class="slide-title">Bytes out → <code class="inline" style="font-size: 0.95em;">0x10000000</code></h2>
-    <p class="plain">The handler for <strong>print some bytes</strong>. It walks the user's buffer one byte at a time, writing each to address <code>0x10000000</code> — an address ccc's emulator forwards to an emulated UART chip, which writes the byte to the host terminal.</p>
-    <pre class="code">sys_write:
-    mv    t2, a2                    <span class="c"># save len for return value</span>
-    li    t0, <span class="n">0x10000000</span>            <span class="c"># NS16550A UART THR</span>
-<span class="a">1</span>:  lbu   t1, <span class="n">0</span>(a1)                <span class="c"># load byte from buf</span>
-    sb    t1, <span class="n">0</span>(t0)                <span class="c"># write to UART</span>
+  <!-- 11: Chapter 1.D · sys_write + sys_exit -->
+  <section data-label="Ch 1.D · devices">
+    <div class="slide-label">chapter 1.d · hello.elf · the devices</div>
+    <h2 class="slide-title">Bytes out · <span class="accent">exit code in</span></h2>
+    <p class="plain">Two syscalls, two magic addresses. ccc intercepts stores to <code>0x10000000</code> and forwards them to the host terminal; stores to <code>0x00100000</code> halt the simulation and set the host process's exit code.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 24px;">sys_write:               <span class="c"># a7 = 64</span>
+    mv    t2, a2            <span class="c"># save len</span>
+    li    t0, <span class="n">0x10000000</span>    <span class="c"># UART THR</span>
+<span class="a">1</span>:  lbu   t1, <span class="n">0</span>(a1)
+    sb    t1, <span class="n">0</span>(t0)        <span class="c"># byte → UART</span>
     addi  a1, a1, <span class="n">1</span>
     addi  a2, a2, -<span class="n">1</span>
     bnez  a2, <span class="a">1b</span>
-    mv    a0, t2                    <span class="c"># return bytes written</span>
+    mv    a0, t2            <span class="c"># return len</span>
     j     mret_resume</pre>
+      <pre class="code" style="margin: 0; font-size: 24px;">sys_exit:                <span class="c"># a7 = 93</span>
+    li    t0, <span class="n">0x00100000</span>    <span class="c"># halt MMIO</span>
+    sb    a0, <span class="n">0</span>(t0)        <span class="c"># low byte → exit</span>
+<span class="a">1</span>:  j     <span class="a">1b</span>                <span class="c"># unreachable</span></pre>
+    </div>
   </section>
 
-  <!-- 10: sys_exit -->
-  <section data-label="sys_exit · halt">
-    <div class="slide-label">09 · sys_exit → halt</div>
-    <h2 class="slide-title">Exit code → <code class="inline" style="font-size: 0.95em;">0x00100000</code></h2>
-    <p class="plain">The handler for <strong>exit</strong>. It writes the exit code to address <code>0x00100000</code>, which ccc treats as a halt device — when the emulator sees a store there, it stops the simulation and uses that byte as the host process's exit code.</p>
-    <pre class="code">sys_exit:
-    li    t0, <span class="n">0x00100000</span>            <span class="c"># halt MMIO</span>
-    sb    a0, <span class="n">0</span>(t0)                <span class="c"># low byte of a0 → exit</span>
-<span class="a">1</span>:  j     <span class="a">1b</span>                        <span class="c"># unreachable; halt already fired</span></pre>
-  </section>
+  <!-- 12: Chapter 1.D · verification -->
+  <section data-label="Ch 1.D · verification">
+    <div class="slide-label">chapter 1.d · hello.elf · verification</div>
+    <h2 class="slide-title">Verified against QEMU, <span class="accent">instruction by instruction</span></h2>
+    <p class="plain">Two independent verification paths. The <code>e2e-hello-elf</code> test pins the final output to the exact string <code>hello world\n</code>. The QEMU-diff harness runs the same ELF through <code>qemu-system-riscv32</code> and through ccc, then diffs the per-instruction traces.</p>
+    <div class="two-col">
+      <div class="panel">
+        <h4>End-to-end &amp; conformance</h4>
+        <pre style="background: transparent; border: none; padding: 0; margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 24px; line-height: 1.55; color: var(--fg); white-space: pre;">$ zig build e2e-hello-elf
+<span style="color: var(--dim);"># asserts stdout == "hello world\n"</span>
 
-  <!-- 11: End to end -->
-  <section data-label="End to end">
-    <div class="slide-label">10 · end to end</div>
-    <h2 class="slide-title">Everything, in one run</h2>
-    <p class="plain">Every layer we walked through, compressed back into one command. ELF loader, M-mode monitor, privilege switch, trap handler, UART device, halt device — all had to work correctly for these twelve bytes of output to appear.</p>
-    <pre class="code">$ zig build hello-elf
-$ ./zig-out/bin/ccc zig-out/bin/hello.elf
-<span class="a">hello world</span>
-$ echo $?
-<span class="a">0</span></pre>
-    <div class="three-col" style="margin-top: 64px;">
-      <div class="panel">
-        <h4>ISA exercised</h4>
-        <p style="font-size: 26px;">RV32I · Zicsr · M/U privilege · synchronous traps · <code class="inline">mret</code></p>
+$ zig build riscv-tests
+<span style="color: var(--dim);"># 66/66 tests pass:</span>
+<span style="color: var(--dim);">#   rv32ui  39</span>
+<span style="color: var(--dim);">#   rv32um   8</span>
+<span style="color: var(--dim);">#   rv32ua  10</span>
+<span style="color: var(--dim);">#   rv32mi   9</span></pre>
       </div>
       <div class="panel">
-        <h4>Host responsibilities</h4>
-        <p style="font-size: 26px;">ELF32 loader · UART device · halt device · CLINT · tohost symbol resolution</p>
-      </div>
-      <div class="panel">
-        <h4>Guest binary</h4>
-        <p style="font-size: 26px;">Hand-written M-mode monitor · cross-compiled Zig U-mode payload · linker script</p>
+        <h4>QEMU-diff</h4>
+        <pre style="background: transparent; border: none; padding: 0; margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 24px; line-height: 1.55; color: var(--fg); white-space: pre;">$ scripts/qemu-diff.sh \
+    zig-out/bin/hello.elf
+
+<span style="color: var(--dim);"># runs same ELF under:</span>
+<span style="color: var(--dim);">#   qemu-system-riscv32 --trace</span>
+<span style="color: var(--dim);">#   ccc --trace</span>
+<span style="color: var(--dim);"># canonicalises to "PC insn" lines</span>
+<span style="color: var(--dim);"># diffs — empty output = match</span></pre>
       </div>
     </div>
   </section>
 
-  <!-- 12: Phase 1 done -->
-  <section data-label="Phase 1 done">
-    <div class="slide-label">11 · where we are</div>
-    <h2 class="slide-title">Phase 1 · <span class="accent">complete</span></h2>
-    <p class="plain">Phase 1 asked a single question: can we run a <code>hello world</code> program on our emulator? The answer is yes — verified by our own end-to-end test and by an instruction-by-instruction comparison against the industry-standard QEMU emulator. Phase 2 builds a real operating-system kernel on top of this foundation.</p>
-    <div class="two-col" style="grid-template-columns: 1.2fr 1fr; gap: 64px;">
+  <!-- 13: Chapter 2.A · S-mode + Sv32 -->
+  <section data-label="Ch 2.A · S-mode + Sv32">
+    <div class="slide-label">chapter 2.a · s-mode + sv32</div>
+    <h2 class="slide-title">A third privilege, <span class="accent">virtual memory</span></h2>
+    <p class="plain">Phase 2 starts by teaching the hart the missing privilege level between the monitor and the user program. With <strong>supervisor mode</strong> comes the page table, and with the page table comes virtual memory — addresses the CPU translates on every fetch and every load.</p>
+    <div class="two-col">
+      <pre class="flow" style="font-size: 22px; margin: 0;"><span class="dim">Sv32 virtual address</span>
+
+ 31      22 21      12 11        0
+┌──────────┬─────────┬────────────┐
+│  VPN[1]  │ VPN[0]  │   offset   │
+│  10 bits │ 10 bits │  12 bits   │
+└──────────┴─────────┴────────────┘
+
+<span class="dim">two-level walk</span>
+ L1 = (satp.PPN &lt;&lt; 12) + VPN[1]*4
+ L2 = ( L1.PPN  &lt;&lt; 12) + VPN[0]*4
+ PA = ( L2.PPN  &lt;&lt; 12) |  offset
+
+<span class="dim">page-fault causes</span>
+ <span class="arrow">12</span> inst    <span class="arrow">13</span> load    <span class="arrow">15</span> store</pre>
+      <div class="panel">
+        <h4>S-mode additions</h4>
+        <p style="font-size: 24px; line-height: 1.6;">
+          New privilege: <strong>S</strong> &nbsp;<span style="color: var(--muted);">(M / S / U)</span><br><br>
+          <strong>S-CSRs:</strong> sstatus · sie · sip <span style="color: var(--muted);">(masked views)</span> · stvec · sepc · scause · stval · sscratch · <strong>satp</strong><br><br>
+          <strong>2 instructions:</strong> <code class="inline">sret</code> · <code class="inline">sfence.vma</code><br><br>
+          <strong>PTE flags:</strong> V · R · W · X · U · G · A · D<br><br>
+          <code class="inline">misa</code> updated to <code class="inline">0x40141101</code>
+        </p>
+      </div>
+    </div>
+    <div class="caption"><strong>rv32si-p-*:</strong> csr · dirty · illegal · ma_fetch · sbreak · scall · wfi — all green. Every Phase 1 test still green.</div>
+  </section>
+
+  <!-- 14: Chapter 2.B · delegation + async -->
+  <section data-label="Ch 2.B · delegation + async">
+    <div class="slide-label">chapter 2.b · delegation + interrupts</div>
+    <h2 class="slide-title">Delegated traps, <span class="accent">async timers</span></h2>
+    <p class="plain">Instead of every trap landing in M and the monitor ping-ponging down to S, we teach the CPU to route traps straight to supervisor mode. And for the first time, traps can arrive <strong>from outside the instruction stream</strong> — an asynchronous timer interrupt fired by the CLINT.</p>
+    <div class="two-col">
+      <div class="panel">
+        <h4>Delegation routing</h4>
+        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">  fault / interrupt
+  in U or S
+       │
+       ▼
+  cause bit set in
+  medeleg / mideleg?
+       │
+   ┌───┴───┐
+   yes     no
+    │       │
+    ▼       ▼
+  S-mode   M-mode
+  sepc     mepc
+  stvec    mtvec</pre>
+      </div>
+      <div class="panel">
+        <h4>Interrupt priority</h4>
+        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">MEI &gt; MSI &gt; MTI &gt; SEI &gt; SSI &gt; STI
+(11)  (3)   (7)   (9)   (1)   (5)
+
+<span class="dim">CLINT drives MTIP live:</span>
+ mtime ≥ mtimecmp
+   → mip.MTIP = 1
+
+<span class="dim">mie / mip are WARL-masked.</span>
+<span class="dim">MTIP is hardware-only on write;</span>
+<span class="dim">reads see CLINT's truth.</span></pre>
+      </div>
+    </div>
+    <div class="caption"><strong>Round-trip integration test:</strong> CLINT fires MTIP → M-mode ISR acks timer, sets <code class="inline">mip.SSIP</code> → S-mode ISR receives delegated software interrupt, clears it, writes sentinel. One test, every layer.</div>
+  </section>
+
+  <!-- 15: Epilogue · where we are -->
+  <section data-label="Where we are">
+    <div class="slide-label">epilogue · where we are</div>
+    <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">building</span>.</h2>
+    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asks: can we host a real OS kernel? S-mode, paging, delegation, and async interrupts are the foundation. Plan 2.C — the kernel boot shim — is next.</p>
+    <div class="two-col" style="grid-template-columns: 1.25fr 1fr; gap: 64px;">
       <div class="check-list">
         <div class="row">
-          <div class="head">✓ riscv-tests</div>
-          <div class="sub">rv32ui · rv32um · rv32ua · rv32mi — 57/57 green</div>
+          <div class="head">✓ 1.A · baseline emulator</div>
+          <div class="sub">RV32I · 128 MB RAM · UART · halt device · 78 tests</div>
         </div>
         <div class="row">
-          <div class="head">✓ hello.elf end to end</div>
-          <div class="sub">M → U → ecall → UART → halt, verified by <code class="inline">zig build e2e-hello-elf</code></div>
+          <div class="head">✓ 1.B · IMA extensions</div>
+          <div class="sub">RV32M · RV32A (LR/SC + 9 AMOs) · Zifencei</div>
         </div>
         <div class="row">
-          <div class="head">✓ QEMU-diff</div>
-          <div class="sub">Per-instruction trace match against <code class="inline">qemu-system-riscv32</code>.</div>
+          <div class="head">✓ 1.C · privilege + traps</div>
+          <div class="sub">Zicsr · M/U · CLINT · ELF loader · rv32ui/um/ua/mi</div>
+        </div>
+        <div class="row">
+          <div class="head">✓ 1.D · hello.elf</div>
+          <div class="sub">Monitor + U-mode payload · QEMU-diff · e2e-hello-elf</div>
+        </div>
+        <div class="row">
+          <div class="head">✓ 2.A · S-mode + Sv32</div>
+          <div class="sub">Supervisor mode · two-level paging · rv32si-p-*</div>
+        </div>
+        <div class="row">
+          <div class="head">✓ 2.B · delegation + async</div>
+          <div class="sub">medeleg / mideleg · CLINT MTIP · interrupt priority</div>
         </div>
       </div>
       <div class="panel" style="align-self: center;">
-        <h4>Next · phase 2</h4>
-        <p style="font-size: 30px; line-height: 1.5;">
-          Bare-metal kernel.<br><br>
-          S-mode · Sv32 page tables · M↔S↔U transitions · timer interrupt delivery.
+        <h4>Next · plan 2.c</h4>
+        <p style="font-size: 28px; line-height: 1.5;">
+          Kernel boot shim.<br><br>
+          Multi-program scheduler, U-mode process isolation via page tables, first real syscalls delivered through delegated traps.
         </p>
       </div>
     </div>
