@@ -1,6 +1,7 @@
 const std = @import("std");
 const cpu_mod = @import("cpu.zig");
 const csr = @import("csr.zig");
+const trace = @import("trace.zig");
 const Cpu = cpu_mod.Cpu;
 const PrivilegeMode = cpu_mod.PrivilegeMode;
 
@@ -25,9 +26,9 @@ pub const Cause = enum(u32) {
 };
 
 /// Spec-mandated interrupt priority order (RISC-V privileged spec §3.1.9).
-/// Higher indices earlier in the array lose to lower indices. Used by
-/// cpu.check_interrupt to pick which pending+enabled+deliverable bit wins.
-/// Cause codes: MEI=11, MSI=3, MTI=7, SEI=9, SSI=1, STI=5.
+/// Index 0 is highest priority; higher index means lower priority. Used
+/// by cpu.check_interrupt to pick which pending+enabled+deliverable bit
+/// wins. Cause codes: MEI=11, MSI=3, MTI=7, SEI=9, SSI=1, STI=5.
 pub const INTERRUPT_PRIORITY_ORDER = [_]u32{ 11, 3, 7, 9, 1, 5 };
 
 /// Interrupt-cause bit 31 marker per RISC-V spec: scause/mcause have the
@@ -106,7 +107,9 @@ pub fn enter_interrupt(cause_code: u32, cpu: *Cpu) void {
     const from_priv = cpu.privilege;
 
     if (cpu.trace_writer) |tw| {
-        @import("trace.zig").formatInterruptMarker(tw, cause_code, from_priv, target) catch {};
+        // Trace errors are non-fatal: a failed write must not block trap entry.
+        // Matches the formatInstr convention in cpu.step().
+        trace.formatInterruptMarker(tw, cause_code, from_priv, target) catch {};
     }
 
     switch (target) {
@@ -395,6 +398,7 @@ test "enter_interrupt from U, SSIP delegated, routes to S with interrupt flag" {
     cpu.csr.stvec = 0x8000_0500;
     cpu.csr.mideleg = 1 << 1; // delegate SSIP
 
+    cpu.reservation = 0x8000_0700; // seed reservation so post-entry null-check is meaningful
     enter_interrupt(1, &cpu); // cause code 1 = supervisor software
 
     try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
@@ -402,6 +406,9 @@ test "enter_interrupt from U, SSIP delegated, routes to S with interrupt flag" {
     try std.testing.expectEqual(@as(u32, 0x8000_0100), cpu.csr.sepc);
     try std.testing.expectEqual(@as(u32, 0x8000_0001), cpu.csr.scause); // bit 31 | 1
     try std.testing.expectEqual(@as(u32, 0), cpu.csr.stval);
+    // Common side effects for every interrupt trap entry.
+    try std.testing.expect(cpu.reservation == null);
+    try std.testing.expect(cpu.trap_taken);
 }
 
 test "enter_interrupt from S, MTIP not delegated, routes to M" {
