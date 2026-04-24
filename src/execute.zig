@@ -294,6 +294,12 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             // accidental use is visible as a trap rather than a silent hang.
             trap.enter(.illegal_instruction, instr.raw, cpu);
         },
+        .sfence_vma => {
+            // Real sfence.vma behavior (TLB flush) is Task 12 (Plan 2.A).
+            // Until then, trap illegal so the variant is covered in the
+            // exhaustive switch and any accidental use is visible.
+            trap.enter(.illegal_instruction, instr.raw, cpu);
+        },
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
             const b = cpu.readReg(instr.rs2);
