@@ -300,10 +300,16 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             trap.exit_sret(cpu);
         },
         .sfence_vma => {
-            // Real sfence.vma behavior (TLB flush) is Task 12 (Plan 2.A).
-            // Until then, trap illegal so the variant is covered in the
-            // exhaustive switch and any accidental use is visible.
-            trap.enter(.illegal_instruction, instr.raw, cpu);
+            if (cpu.privilege == .U) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            if (cpu.privilege == .S and cpu.csr.mstatus_tvm) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            // No TLB modeled — nothing to invalidate. PC advances as for any other insn.
+            cpu.pc +%= 4;
         },
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
@@ -1390,4 +1396,50 @@ test "SRET from S-mode with mstatus.TSR=1 traps as illegal-instruction" {
         rig.cpu.csr.mcause,
     );
     try std.testing.expectEqual(cpu_mod.PrivilegeMode.M, rig.cpu.privilege);
+}
+
+test "sfence.vma from U-mode is illegal" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(trap.Cause.illegal_instruction)),
+        rig.cpu.csr.mcause,
+    );
+}
+
+test "sfence.vma from S with TVM=1 is illegal" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_tvm = true;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(trap.Cause.illegal_instruction)),
+        rig.cpu.csr.mcause,
+    );
+}
+
+test "sfence.vma from M-mode is a PC-advancing no-op" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .M;
+    try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
+}
+
+test "sfence.vma from S with TVM=0 is a PC-advancing no-op" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_tvm = false;
+    try dispatch(.{ .op = .sfence_vma, .raw = 0x12000073 }, &rig.cpu);
+    try std.testing.expectEqual(mem_mod.RAM_BASE + 4, rig.cpu.pc);
 }
