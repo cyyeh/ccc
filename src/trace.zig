@@ -36,6 +36,14 @@ pub fn formatInstr(
     try writer.flush();
 }
 
+/// Plan 2.B Task 10 replaces this with the real formatter.
+pub fn formatInterruptMarker(
+    _: *std.Io.Writer,
+    _: u32,
+    _: PrivilegeMode,
+    _: PrivilegeMode,
+) !void {}
+
 test "format an addi with rd write" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
