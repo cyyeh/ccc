@@ -59,13 +59,15 @@ pub const MTVEC_BASE_MASK: u32 = ~MTVEC_MODE_MASK;
 // The low two bits read-as-zero per spec.
 pub const MEPC_ALIGN_MASK: u32 = ~@as(u32, 0b11);
 
-// misa value: MXL=01 (RV32), extensions I+M+A+U.
+// misa value: MXL=01 (RV32), extensions A+I+M+S+U.
 // Bit positions (from RISC-V spec misa chapter):
-//   'A' = bit 0, 'I' = bit 8, 'M' = bit 12, 'U' = bit 20
+//   'A' = bit 0, 'I' = bit 8, 'M' = bit 12, 'S' = bit 18, 'U' = bit 20
 //   MXL lives in the top 2 bits: 31:30.
+// Numeric value: 0x40141101
 pub const MISA_VALUE: u32 =
     (@as(u32, 0b01) << 30) | // MXL = RV32
     (@as(u32, 1) << 20) | // U
+    (@as(u32, 1) << 18) | // S
     (@as(u32, 1) << 12) | // M
     (@as(u32, 1) << 8) | // I
     (@as(u32, 1) << 0); // A
@@ -159,7 +161,7 @@ test "mstatus round-trips through writable mask" {
     try std.testing.expectEqual(MSTATUS_WRITABLE, try csrRead(&cpu, CSR_MSTATUS));
 }
 
-test "misa reads back constant RV32IMAU value" {
+test "misa reads back constant RV32IMASU value" {
     var dummy_mem: @import("memory.zig").Memory = undefined;
     var cpu = Cpu.init(&dummy_mem, 0);
     try std.testing.expectEqual(MISA_VALUE, try csrRead(&cpu, CSR_MISA));
@@ -313,4 +315,18 @@ test "mstatus UIE and TW remain zero (WARL)" {
     const v = try csrRead(&cpu, CSR_MSTATUS);
     try std.testing.expectEqual(@as(u32, 0), v & (1 << 0)); // UIE
     try std.testing.expectEqual(@as(u32, 0), v & (1 << 21)); // TW
+}
+
+test "misa encodes RV32 I+M+A+S+U" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    const v = try csrRead(&cpu, CSR_MISA);
+    // MXL = 01 (RV32) in bits 31:30
+    try std.testing.expectEqual(@as(u32, 0b01), (v >> 30) & 0x3);
+    // extensions: I (bit 8), M (bit 12), A (bit 0), S (bit 18), U (bit 20)
+    try std.testing.expect((v & (1 << 8))  != 0);   // I
+    try std.testing.expect((v & (1 << 12)) != 0);   // M
+    try std.testing.expect((v & (1 << 0))  != 0);   // A
+    try std.testing.expect((v & (1 << 18)) != 0);   // S
+    try std.testing.expect((v & (1 << 20)) != 0);   // U
 }
