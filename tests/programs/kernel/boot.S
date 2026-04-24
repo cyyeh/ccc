@@ -1,19 +1,34 @@
 # tests/programs/kernel/boot.S — Phase 2 Plan 2.C kernel M-mode boot shim.
 #
-# Task 2 state: minimum machinery to drop into S-mode at `kmain`. No
-# delegation, no timer, no trap vector — anything unexpected hangs.
-# Task 18 adds the rest.
+# Task 16 state: M->S drop (Task 2) + delegation (this task). CLINT and
+# mtvec arrive in Task 18.
+#
+# Delegation: route delegatable synchronous exceptions to S-mode, and
+# delegate SSIP (the software-software interrupt we use to forward
+# timer ticks from M to S).
+
+# medeleg bit layout (spec §Delegation). We mirror the Phase 2 spec
+# exactly; Plan 2.B already implemented the CSR.
+.equ MEDELEG_INST_MISALIGN,  (1 <<  0)
+.equ MEDELEG_ILLEGAL,        (1 <<  2)
+.equ MEDELEG_BREAKPOINT,     (1 <<  3)
+.equ MEDELEG_LOAD_MISALIGN,  (1 <<  4)
+.equ MEDELEG_STORE_MISALIGN, (1 <<  6)
+.equ MEDELEG_ECALL_U,        (1 <<  8)
+.equ MEDELEG_INST_PF,        (1 << 12)
+.equ MEDELEG_LOAD_PF,        (1 << 13)
+.equ MEDELEG_STORE_PF,       (1 << 15)
+
+.equ MIDELEG_SSIP, (1 << 1)
 
 .section .text.init, "ax", @progbits
 .balign 4
 .globl _M_start
 _M_start:
-    # Initialise stack pointer (we run on the shared kernel stack in both
-    # M and S — M only uses it briefly during boot).
+    # Stack.
     la      sp, _kstack_top
 
-    # Zero BSS. Both _bss_start and _bss_end are 4-byte aligned per the
-    # linker script (everything is 4KB-aligned).
+    # Zero BSS.
     la      t0, _bss_start
     la      t1, _bss_end
 1:  beq     t0, t1, 2f
@@ -22,17 +37,25 @@ _M_start:
     j       1b
 2:
 
-    # Configure mstatus for the mret drop: MPP=01 (S), MPIE=0, MIE=0.
-    # The 2.A Phase-2 CPU honours these on mret: privilege <- MPP, SIE <-
-    # SPIE implicitly (we're not using S-mode interrupts yet).
+    # medeleg: delegate the exceptions U-mode can raise.
+    li      t0, (MEDELEG_INST_MISALIGN | MEDELEG_ILLEGAL | MEDELEG_BREAKPOINT | \
+                 MEDELEG_LOAD_MISALIGN  | MEDELEG_STORE_MISALIGN | MEDELEG_ECALL_U | \
+                 MEDELEG_INST_PF        | MEDELEG_LOAD_PF        | MEDELEG_STORE_PF)
+    csrw    medeleg, t0
+
+    # mideleg: delegate SSIP (supervisor software interrupt). MTIP is
+    # NOT delegable (hardwired 0 per Plan 2.B's MIDELEG_WRITABLE mask).
+    li      t0, MIDELEG_SSIP
+    csrw    mideleg, t0
+
+    # mstatus.MPP = S (01).
     li      t0, 0x1800           # MPP_MASK = bits 12:11
-    csrc    mstatus, t0          # clear MPP (currently =11/M from reset)
-    li      t0, 0x0800           # MPP = 01 (S) in bits 12:11
+    csrc    mstatus, t0
+    li      t0, 0x0800           # MPP = 01 (S)
     csrs    mstatus, t0
 
-    # mepc <- kmain (the Zig entry point).
+    # mepc <- kmain.
     la      t0, kmain
     csrw    mepc, t0
 
-    # Drop to S-mode.
     mret
