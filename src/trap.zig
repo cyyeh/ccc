@@ -18,7 +18,7 @@ pub const Cause = enum(u32) {
     store_access_fault = 7,
     ecall_from_u = 8,
     ecall_from_m = 11,
-    inst_page_fault = 12,
+    instr_page_fault = 12,
     load_page_fault = 13,
     store_page_fault = 15,
 };
@@ -180,7 +180,7 @@ test "exit_mret MPP=S (0b01) restores S-mode privilege" {
 }
 
 test "page-fault Cause enum values match spec" {
-    try std.testing.expectEqual(@as(u32, 12), @intFromEnum(Cause.inst_page_fault));
+    try std.testing.expectEqual(@as(u32, 12), @intFromEnum(Cause.instr_page_fault));
     try std.testing.expectEqual(@as(u32, 13), @intFromEnum(Cause.load_page_fault));
     try std.testing.expectEqual(@as(u32, 15), @intFromEnum(Cause.store_page_fault));
 }
