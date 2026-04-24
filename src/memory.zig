@@ -275,6 +275,29 @@ pub const Memory = struct {
             .store => if (!pte_w) return pageFaultFor(access),
         }
 
+        // A/D bit update-in-place.
+        //
+        // RISC-V privileged spec §4.3.1 specifies two allowed implementations for
+        // A/D: (a) raise a page fault when A=0 (or D=0 on store), letting the OS
+        // set them; (b) update them in place as part of the hardware walk. We use
+        // (b) — simpler for the emulator and avoids needing an OS A/D handler.
+        var new_pte = l0_pte;
+        var dirty = false;
+        if ((l0_pte & PTE_A) == 0) {
+            new_pte |= PTE_A;
+            dirty = true;
+        }
+        if (access == .store and (l0_pte & PTE_D) == 0) {
+            new_pte |= PTE_D;
+            dirty = true;
+        }
+        if (dirty) {
+            // self.storeWord here is the existing physical-address-keyed path;
+            // Task 18 will rename it to storeWordPhysical and at that point this
+            // call site must be updated to match.
+            self.storeWord(l0_pte_pa, new_pte) catch return pageFaultFor(access);
+        }
+
         return leaf_pa | off;
     }
 };
@@ -543,4 +566,61 @@ test "translate: MXR=1 allows load from X-only page" {
         rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu));
     rig.cpu.csr.mstatus_mxr = true;
     _ = try rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu);
+}
+
+test "translate: PTE.A is set on successful load" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    const initial_pte = makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_U);  // A=0
+    try rig.mem.storeWord(l0_pa + 0x10 * 4, initial_pte);
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    _ = try rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu);
+    const pte_after = try rig.mem.loadWord(l0_pa + 0x10 * 4);
+    try std.testing.expect((pte_after & PTE_A) != 0);
+}
+
+test "translate: PTE.D is set on successful store; A also set" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWord(l0_pa + 0x10 * 4,
+        makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
+
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    _ = try rig.mem.translate(0x0001_0000, .store, .U, &rig.cpu);
+    const pte_after = try rig.mem.loadWord(l0_pa + 0x10 * 4);
+    try std.testing.expect((pte_after & PTE_A) != 0);
+    try std.testing.expect((pte_after & PTE_D) != 0);
+}
+
+test "translate: PTE.D stays 0 after a load-only access" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWord(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWord(l0_pa + 0x10 * 4,
+        makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    _ = try rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu);
+    const pte_after = try rig.mem.loadWord(l0_pa + 0x10 * 4);
+    try std.testing.expect((pte_after & PTE_A) != 0);
+    try std.testing.expect((pte_after & PTE_D) == 0);
 }
