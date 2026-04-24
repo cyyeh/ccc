@@ -3,6 +3,13 @@ const cpu_mod = @import("cpu.zig");
 const Cpu = cpu_mod.Cpu;
 const PrivilegeMode = cpu_mod.PrivilegeMode;
 
+// S-mode CSR addresses (Phase 2.A).
+pub const CSR_STVEC    : u12 = 0x105;
+pub const CSR_SSCRATCH : u12 = 0x140;
+pub const CSR_SEPC     : u12 = 0x141;
+pub const CSR_SCAUSE   : u12 = 0x142;
+pub const CSR_STVAL    : u12 = 0x143;
+
 // Writable (software-visible) CSR addresses we implement in Phase 1.
 pub const CSR_MSTATUS: u12 = 0x300;
 pub const CSR_MISA: u12 = 0x301;
@@ -98,6 +105,11 @@ pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
         CSR_MISA => MISA_VALUE,
         CSR_MEDELEG, CSR_MIDELEG => 0,
         CSR_MIE => cpu.csr.mie,
+        CSR_STVEC    => cpu.csr.stvec,
+        CSR_SSCRATCH => cpu.csr.sscratch,
+        CSR_SEPC     => cpu.csr.sepc,
+        CSR_SCAUSE   => cpu.csr.scause,
+        CSR_STVAL    => cpu.csr.stval,
         CSR_MTVEC => cpu.csr.mtvec,
         CSR_MCOUNTEREN => cpu.csr.mcounteren,
         CSR_MSCRATCH => cpu.csr.mscratch,
@@ -135,6 +147,11 @@ pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
         // delegation has no effect). Reads return 0.
         CSR_MEDELEG, CSR_MIDELEG => {},
         CSR_MIE => cpu.csr.mie = value,
+        CSR_STVEC    => cpu.csr.stvec    = value,
+        CSR_SSCRATCH => cpu.csr.sscratch = value,
+        CSR_SEPC     => cpu.csr.sepc     = value,
+        CSR_SCAUSE   => cpu.csr.scause   = value,
+        CSR_STVAL    => cpu.csr.stval    = value,
         // mtvec.MODE is WARL; Phase 1 only supports direct (MODE=00). Force
         // the low two bits to 0 on write — the rv32mi-illegal test probes the
         // MODE bit to decide whether to busy-wait for a vectored interrupt,
@@ -329,4 +346,39 @@ test "misa encodes RV32 I+M+A+S+U" {
     try std.testing.expect((v & (1 << 0))  != 0);   // A
     try std.testing.expect((v & (1 << 18)) != 0);   // S
     try std.testing.expect((v & (1 << 20)) != 0);   // U
+}
+
+test "stvec round-trip" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_STVEC, 0x8000_1000);
+    try std.testing.expectEqual(@as(u32, 0x8000_1000), try csrRead(&cpu, CSR_STVEC));
+}
+
+test "sscratch round-trip" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_SSCRATCH, 0xdead_beef);
+    try std.testing.expectEqual(@as(u32, 0xdead_beef), try csrRead(&cpu, CSR_SSCRATCH));
+}
+
+test "sepc round-trip" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_SEPC, 0x1234_5678);
+    try std.testing.expectEqual(@as(u32, 0x1234_5678), try csrRead(&cpu, CSR_SEPC));
+}
+
+test "scause round-trip" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_SCAUSE, 0x8000_0005);
+    try std.testing.expectEqual(@as(u32, 0x8000_0005), try csrRead(&cpu, CSR_SCAUSE));
+}
+
+test "stval round-trip" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_STVAL, 0x0001_0000);
+    try std.testing.expectEqual(@as(u32, 0x0001_0000), try csrRead(&cpu, CSR_STVAL));
 }
