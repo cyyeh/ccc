@@ -75,6 +75,8 @@ pub const Op = enum {
     // Machine-mode privileged (Plan 1.C, Task 9)
     mret,
     wfi,
+    // Supervisor-mode privileged (Plan 2.A, Task 9)
+    sret,
     // (more added in later plans)
     illegal,
 };
@@ -296,12 +298,13 @@ pub fn decode(word: u32) Instruction {
             const f3 = funct3(word);
             const imm12: u32 = (word >> 20) & 0xFFF;
             if (f3 == 0b000) {
-                // ecall / ebreak / mret / wfi — distinguished by the full 12-bit imm field.
+                // ecall / ebreak / sret / mret / wfi — distinguished by the full 12-bit imm field.
                 // rd and rs1 are required to be zero for these; if they're not, the
                 // instruction is still a valid encoding per spec, so we don't check.
                 const op: Op = switch (imm12) {
                     0x000 => .ecall,
                     0x001 => .ebreak,
+                    0x102 => .sret,
                     0x302 => .mret,
                     0x105 => .wfi,
                     else => .illegal,
@@ -759,4 +762,9 @@ test "SYSTEM with funct3=100 decodes to illegal (reserved in Zicsr)" {
     //   = 0x30004_2F3
     const i = decode(0x300042F3);
     try std.testing.expectEqual(Op.illegal, i.op);
+}
+
+test "decode: sret" {
+    const ins = decode(0x10200073);
+    try std.testing.expectEqual(Op.sret, ins.op);
 }

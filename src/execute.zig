@@ -288,6 +288,12 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             // Phase 1 has no interrupt sources; wfi is a no-op (advance PC).
             cpu.pc +%= 4;
         },
+        .sret => {
+            // Full sret execution is Task 11 (Plan 2.A). Until then, treat as
+            // illegal so the opcode is covered in the exhaustive switch and any
+            // accidental use is visible as a trap rather than a silent hang.
+            trap.enter(.illegal_instruction, instr.raw, cpu);
+        },
         .mul, .mulh, .mulhsu, .mulhu => {
             const a = cpu.readReg(instr.rs1);
             const b = cpu.readReg(instr.rs2);
