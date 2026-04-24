@@ -691,3 +691,50 @@ test "loadWord from U-mode through Sv32 translates VA→PA" {
     const v = try rig.mem.loadWord(0x0001_0000, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x1234_5678), v);
 }
+
+test "MPRV=1 in M-mode: loads use MPP privilege for translation" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    // Build a U-mode accessible page: VA 0x0001_0000 → PA 0x8020_0000.
+    const root_pa : u32 = 0x8010_0000;
+    const l0_pa   : u32 = 0x8010_1000;
+    const leaf_pa : u32 = 0x8020_0000;
+    try rig.mem.storeWordPhysical(root_pa, makePointerPte(l0_pa));
+    try rig.mem.storeWordPhysical(l0_pa + 0x10 * 4,
+        makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
+    try rig.mem.storeWordPhysical(leaf_pa, 0xCAFE_BABE);
+
+    // Running in M-mode, but MPRV=1 and MPP=U and Sv32 enabled.
+    // A raw M-mode load would be identity-mapped; MPRV must downgrade the
+    // effective privilege to U so the load actually walks the page tables.
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.mstatus_mprv = true;
+    rig.cpu.csr.mstatus_mpp = @intFromEnum(PrivilegeMode.U);
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    const v = try rig.mem.loadWord(0x0001_0000, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0xCAFE_BABE), v);
+}
+
+test "MPRV has no effect on instruction fetch" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    // Empty root — any walk would fault. If MPRV affected fetch, the .fetch
+    // translate call would walk this empty root and return InstPageFault.
+    // It must NOT — fetch always uses cpu.privilege regardless of MPRV.
+    const root_pa : u32 = 0x8010_0000;
+    try rig.mem.storeWordPhysical(root_pa, 0);
+
+    rig.cpu.privilege = .M;
+    rig.cpu.csr.mstatus_mprv = true;
+    rig.cpu.csr.mstatus_mpp = @intFromEnum(PrivilegeMode.U);
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    // M-mode fetch: should NOT translate even with MPRV. Expect identity pass-through.
+    const pa = try rig.mem.translate(0x8000_0000, .fetch, .M, &rig.cpu);
+    try std.testing.expectEqual(@as(u32, 0x8000_0000), pa);
+}
