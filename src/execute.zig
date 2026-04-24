@@ -289,10 +289,15 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
             cpu.pc +%= 4;
         },
         .sret => {
-            // Full sret execution is Task 11 (Plan 2.A). Until then, treat as
-            // illegal so the opcode is covered in the exhaustive switch and any
-            // accidental use is visible as a trap rather than a silent hang.
-            trap.enter(.illegal_instruction, instr.raw, cpu);
+            if (cpu.privilege == .U) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            if (cpu.privilege == .S and cpu.csr.mstatus_tsr) {
+                trap.enter(.illegal_instruction, instr.raw, cpu);
+                return;
+            }
+            trap.exit_sret(cpu);
         },
         .sfence_vma => {
             // Real sfence.vma behavior (TLB flush) is Task 12 (Plan 2.A).
@@ -1340,4 +1345,49 @@ test "halt-on-trap propagates FatalTrap from cpu.run" {
         @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
         rig.cpu.csr.mcause,
     );
+}
+
+test "SRET from S-mode returns to U-mode per sstatus.SPP=U, SIE←SPIE" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE + 0x400);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_spp = 0; // SPP = U
+    rig.cpu.csr.mstatus_spie = true; // SPIE = 1 → SIE after sret
+    rig.cpu.csr.sepc = 0x8001_0000;
+    try dispatch(.{ .op = .sret, .raw = 0x10200073 }, &rig.cpu);
+    try std.testing.expectEqual(cpu_mod.PrivilegeMode.U, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8001_0000), rig.cpu.pc);
+    try std.testing.expectEqual(true, rig.cpu.csr.mstatus_sie);
+    try std.testing.expectEqual(true, rig.cpu.csr.mstatus_spie);
+    try std.testing.expectEqual(@as(u1, 0), rig.cpu.csr.mstatus_spp);
+}
+
+test "SRET from U-mode traps as illegal-instruction" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .sret, .raw = 0x10200073 }, &rig.cpu);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(cpu_mod.PrivilegeMode.M, rig.cpu.privilege);
+}
+
+test "SRET from S-mode with mstatus.TSR=1 traps as illegal-instruction" {
+    var rig: Rig = undefined;
+    try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
+    defer rig.deinit();
+    rig.cpu.privilege = .S;
+    rig.cpu.csr.mstatus_tsr = true;
+    rig.cpu.csr.mtvec = mem_mod.RAM_BASE + 0x200;
+    try dispatch(.{ .op = .sret, .raw = 0x10200073 }, &rig.cpu);
+    try std.testing.expectEqual(
+        @intFromEnum(@import("trap.zig").Cause.illegal_instruction),
+        rig.cpu.csr.mcause,
+    );
+    try std.testing.expectEqual(cpu_mod.PrivilegeMode.M, rig.cpu.privilege);
 }

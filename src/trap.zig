@@ -70,6 +70,20 @@ pub fn exit_mret(cpu: *Cpu) void {
     cpu.csr.mstatus_mpp = @intFromEnum(PrivilegeMode.U);
 }
 
+/// Return from trap via sret. Implements spec §Supervisor Trap Return:
+///   1. pc       ← sepc
+///   2. privilege ← if SPP==1 then S else U
+///   3. mstatus.SIE  ← mstatus.SPIE
+///      mstatus.SPIE ← 1
+///      mstatus.SPP  ← 0 (U)
+pub fn exit_sret(cpu: *Cpu) void {
+    cpu.pc = cpu.csr.sepc;
+    cpu.privilege = if (cpu.csr.mstatus_spp == 1) .S else .U;
+    cpu.csr.mstatus_sie = cpu.csr.mstatus_spie;
+    cpu.csr.mstatus_spie = true;
+    cpu.csr.mstatus_spp = 0;
+}
+
 // --- tests ---
 
 const Memory = @import("memory.zig").Memory;
