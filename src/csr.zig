@@ -47,9 +47,9 @@ const SIP_WRITE_MASK : u32 = (1 << 1);                        // only SSIP writa
 pub const CSR_MSTATUS: u12 = 0x300;
 pub const CSR_MISA: u12 = 0x301;
 // medeleg / mideleg: M-mode exception/interrupt delegation to S-mode.
-// Phase 1 has no S-mode, so delegation is meaningless. We implement them
-// as read-as-zero / write-ignored so code that touches them (rv32mi tests,
-// future kernel init) doesn't trap.
+// Plan 2.B turns these into first-class WARL registers — see
+// MEDELEG_WRITABLE / MIDELEG_WRITABLE for the set of persisted bits.
+// Storage lives in cpu.csr.medeleg / cpu.csr.mideleg (cpu.zig).
 pub const CSR_MEDELEG: u12 = 0x302;
 pub const CSR_MIDELEG: u12 = 0x303;
 pub const CSR_MIE: u12 = 0x304;
@@ -98,6 +98,29 @@ pub const MTVEC_BASE_MASK: u32 = ~MTVEC_MODE_MASK;
 // mepc is 4-byte aligned in Phase 1 (no compressed extension).
 // The low two bits read-as-zero per spec.
 pub const MEPC_ALIGN_MASK: u32 = ~@as(u32, 0b11);
+
+// medeleg WARL mask — bits that correspond to delegatable synchronous
+// exception causes in our Phase 2 subset. ECALL_FROM_S (bit 9) and
+// ECALL_FROM_M (bit 11) are deliberately excluded: the Phase 2 spec
+// routes these to M-mode with no delegation. Reserved bits (10, 14, 16+)
+// are also excluded to keep the register deterministic.
+pub const MEDELEG_WRITABLE: u32 =
+    (1 << 0)  | // inst addr misaligned
+    (1 << 2)  | // illegal instruction
+    (1 << 3)  | // breakpoint
+    (1 << 4)  | // load addr misaligned
+    (1 << 6)  | // store addr misaligned
+    (1 << 8)  | // ECALL from U
+    (1 << 12) | // inst page fault
+    (1 << 13) | // load page fault
+    (1 << 15);  // store/AMO page fault
+
+// mideleg WARL mask — only S-level interrupt bits. M-level interrupts
+// (MSIP=3, MTIP=7, MEIP=11) cannot be delegated (spec §3.1.9).
+pub const MIDELEG_WRITABLE: u32 =
+    (1 << 1) | // SSIP
+    (1 << 5) | // STIP
+    (1 << 9);  // SEIP
 
 // misa value: MXL=01 (RV32), extensions A+I+M+S+U.
 // Bit positions (from RISC-V spec misa chapter):
@@ -167,7 +190,8 @@ fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
             break :blk v;
         },
         CSR_MISA => MISA_VALUE,
-        CSR_MEDELEG, CSR_MIDELEG => 0,
+        CSR_MEDELEG => cpu.csr.medeleg,
+        CSR_MIDELEG => cpu.csr.mideleg,
         CSR_MIE => cpu.csr.mie,
         CSR_STVEC      => cpu.csr.stvec,
         CSR_SCOUNTEREN => cpu.csr.scounteren,
@@ -222,9 +246,11 @@ fn csrWriteUnchecked(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
             cpu.csr.mstatus_tvm = (value & (1 << 20)) != 0;
             cpu.csr.mstatus_tsr = (value & (1 << 22)) != 0;
         },
-        // medeleg / mideleg: writes ignored (we report no S-mode, so
-        // delegation has no effect). Reads return 0.
-        CSR_MEDELEG, CSR_MIDELEG => {},
+        // medeleg / mideleg: WARL — store only the bits Plan 2.B permits.
+        // See MEDELEG_WRITABLE / MIDELEG_WRITABLE comments above for the
+        // rationale behind each included/excluded bit.
+        CSR_MEDELEG => cpu.csr.medeleg = value & MEDELEG_WRITABLE,
+        CSR_MIDELEG => cpu.csr.mideleg = value & MIDELEG_WRITABLE,
         CSR_MIE => cpu.csr.mie = value,
         CSR_STVEC      => cpu.csr.stvec      = value,
         CSR_SCOUNTEREN => cpu.csr.scounteren = value,
@@ -341,14 +367,6 @@ test "mtvec MODE bits forced to 0 on write — WARL, vectored unsupported" {
     try std.testing.expectEqual(@as(u32, 0x8000_0400), try csrRead(&cpu, CSR_MTVEC));
 }
 
-test "medeleg / mideleg read as zero and swallow writes (no trap)" {
-    var dummy_mem: @import("memory.zig").Memory = undefined;
-    var cpu = Cpu.init(&dummy_mem, 0);
-    try csrWrite(&cpu, CSR_MEDELEG, 0xFFFF_FFFF);
-    try csrWrite(&cpu, CSR_MIDELEG, 0xFFFF_FFFF);
-    try std.testing.expectEqual(@as(u32, 0), try csrRead(&cpu, CSR_MEDELEG));
-    try std.testing.expectEqual(@as(u32, 0), try csrRead(&cpu, CSR_MIDELEG));
-}
 
 test "mscratch round-trips full 32 bits" {
     var dummy_mem: @import("memory.zig").Memory = undefined;
@@ -650,4 +668,55 @@ test "satp access from M-mode ignores TVM" {
     cpu.privilege = .M;
     cpu.csr.mstatus_tvm = true;
     try csrWrite(&cpu, CSR_SATP, (1 << 31) | 0x42);
+}
+
+test "medeleg round-trips Phase 2 delegatable bits" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    // Bits we allow: 0 (inst misaligned), 2 (illegal), 3 (breakpoint),
+    // 4 (load misaligned), 6 (store misaligned), 8 (ECALL from U),
+    // 12/13/15 (page faults).
+    const delegatable: u32 =
+        (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) |
+        (1 << 6) | (1 << 8) | (1 << 12) | (1 << 13) | (1 << 15);
+    try csrWrite(&cpu, CSR_MEDELEG, delegatable);
+    try std.testing.expectEqual(delegatable, try csrRead(&cpu, CSR_MEDELEG));
+}
+
+test "medeleg masks out ECALL_FROM_M (bit 11) and reserved bits" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MEDELEG, 0xFFFF_FFFF);
+    const v = try csrRead(&cpu, CSR_MEDELEG);
+    // bit 11 (ECALL_FROM_M) must be zero — M traps cannot be delegated.
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 11));
+    // bit 9 (ECALL_FROM_S) — Phase 2 spec: not delegated; hardwired 0 here.
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 9));
+    // Bits we allow round-trip to 1.
+    try std.testing.expect((v & (1 << 0)) != 0);
+    try std.testing.expect((v & (1 << 8)) != 0);
+    try std.testing.expect((v & (1 << 12)) != 0);
+}
+
+test "mideleg round-trips SSIP/STIP/SEIP" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    const delegatable_ints: u32 = (1 << 1) | (1 << 5) | (1 << 9);
+    try csrWrite(&cpu, CSR_MIDELEG, delegatable_ints);
+    try std.testing.expectEqual(delegatable_ints, try csrRead(&cpu, CSR_MIDELEG));
+}
+
+test "mideleg masks out MSIP/MTIP/MEIP" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MIDELEG, 0xFFFF_FFFF);
+    const v = try csrRead(&cpu, CSR_MIDELEG);
+    // M-level interrupt bits must be zero — M interrupts cannot be delegated.
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 3));  // MSIP
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 7));  // MTIP
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 11)); // MEIP
+    // S-level interrupt bits round-trip.
+    try std.testing.expect((v & (1 << 1)) != 0); // SSIP
+    try std.testing.expect((v & (1 << 5)) != 0); // STIP
+    try std.testing.expect((v & (1 << 9)) != 0); // SEIP
 }
