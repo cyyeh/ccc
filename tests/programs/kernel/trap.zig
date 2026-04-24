@@ -101,10 +101,54 @@ comptime {
     std.debug.assert(@sizeOf(TrapFrame) == TF_SIZE);
 }
 
-// Task 9 shim: asm references s_trap_dispatch at link time; this stub
-// lets the linker resolve the symbol. Task 10 replaces this with the
-// real dispatcher body.
+const kprintf = @import("kprintf.zig");
+const syscall = @import("syscall.zig");
+
+fn readScause() u32 {
+    return asm volatile ("csrr %[out], scause"
+        : [out] "=r" (-> u32),
+    );
+}
+
+fn readStval() u32 {
+    return asm volatile ("csrr %[out], stval"
+        : [out] "=r" (-> u32),
+    );
+}
+
+fn clearSipSsip() void {
+    // sip.SSIP is bit 1. `csrci sip, 2` clears it.
+    asm volatile ("csrci sip, 2"
+        :
+        :
+        : .{ .memory = true }
+    );
+}
+
 export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
-    _ = tf;
-    @import("kprintf.zig").panic("s_trap_dispatch: not implemented (Task 9 stub)", .{});
+    const scause = readScause();
+    const is_interrupt = (scause >> 31) & 1 == 1;
+    const cause = scause & 0x7fff_ffff;
+
+    if (!is_interrupt and cause == 8) {
+        // ECALL from U — advance sepc past the ecall instruction (4 bytes)
+        // so sret returns to the next instruction.
+        tf.sepc +%= 4;
+        syscall.dispatch(tf);
+        return;
+    }
+
+    if (is_interrupt and cause == 1) {
+        // Supervisor software interrupt — forwarded timer tick. Plan 2.C
+        // has no scheduler; just acknowledge and return.
+        clearSipSsip();
+        return;
+    }
+
+    // Synchronous faults — kernel-origin bugs in Phase 2. Panic with
+    // scause + stval so the cause is visible.
+    kprintf.panic(
+        "unhandled S-mode trap: scause={x} stval={x} sepc={x}",
+        .{ scause, readStval(), tf.sepc },
+    );
 }
