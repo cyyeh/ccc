@@ -12,6 +12,17 @@ pub const CSR_SEPC     : u12 = 0x141;
 pub const CSR_SCAUSE   : u12 = 0x142;
 pub const CSR_STVAL    : u12 = 0x143;
 pub const CSR_SIP      : u12 = 0x144;
+pub const CSR_SATP     : u12 = 0x180;
+
+// satp field constants (RV32 Sv32).
+// Bit 31: MODE — 0 = Bare (no translation), 1 = Sv32.
+// Bits 30:22: ASID — WARL 0 in our implementation.
+// Bits 21:0: PPN — physical page number of root page table.
+pub const SATP_MODE_BARE : u32 = 0;
+pub const SATP_MODE_SV32 : u32 = 1;
+pub const SATP_MODE_MASK : u32 = 1 << 31;
+pub const SATP_PPN_MASK  : u32 = (1 << 22) - 1;
+// ASID bits 30:22 — WARL 0 in our implementation.
 
 // sstatus visible/writable field mask (RV32).
 // S-mode can see and modify: SIE (1), SPIE (5), SPP (8), SUM (18), MXR (19).
@@ -111,6 +122,7 @@ pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
         CSR_SSTATUS => (try csrRead(cpu, CSR_MSTATUS)) & SSTATUS_READ_MASK,
         CSR_SIE => cpu.csr.mie & SIE_MASK,
         CSR_SIP => cpu.csr.mip & SIP_READ_MASK,
+        CSR_SATP => cpu.csr.satp,
         CSR_MSTATUS => blk: {
             var v: u32 = 0;
             if (cpu.csr.mstatus_sie) v |= 1 << 1;
@@ -158,6 +170,13 @@ pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
         },
         CSR_SIE => cpu.csr.mie = (cpu.csr.mie & ~SIE_MASK) | (value & SIE_MASK),
         CSR_SIP => cpu.csr.mip = (cpu.csr.mip & ~SIP_WRITE_MASK) | (value & SIP_WRITE_MASK),
+        CSR_SATP => {
+            // MODE: accept 0 (Bare) or 1 (Sv32); anything else clamps to Bare.
+            const mode_bit = value & SATP_MODE_MASK;
+            const ppn      = value & SATP_PPN_MASK;
+            // ASID bits 30:22 — WARL 0 in our implementation; silently dropped.
+            cpu.csr.satp = mode_bit | ppn;
+        },
         CSR_MSTATUS => {
             cpu.csr.mstatus_sie = (value & (1 << 1)) != 0;
             cpu.csr.mstatus_mie = (value & (1 << 3)) != 0;
@@ -491,4 +510,30 @@ test "sip writes only SSIP into mip" {
     try std.testing.expect((m & (1 << 5)) != 0); // STIP preserved (not S-writable via sip)
     try std.testing.expect((m & (1 << 1)) != 0); // SSIP set by sip write
     try std.testing.expect((m & (1 << 9)) == 0); // SEIP NOT set (not in sip write-mask)
+}
+
+test "satp accepts MODE=Bare" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_SATP, 0x0000_0000);
+    try std.testing.expectEqual(@as(u32, 0), try csrRead(&cpu, CSR_SATP));
+}
+
+test "satp accepts MODE=Sv32 with PPN" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    const written: u32 = (1 << 31) | 0x1234; // MODE=Sv32, PPN=0x1234
+    try csrWrite(&cpu, CSR_SATP, written);
+    try std.testing.expectEqual(written, try csrRead(&cpu, CSR_SATP));
+}
+
+test "satp ASID bits are WARL 0" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    const attempt: u32 = (1 << 31) | (0x1FF << 22) | 0x5678;
+    try csrWrite(&cpu, CSR_SATP, attempt);
+    const v = try csrRead(&cpu, CSR_SATP);
+    try std.testing.expectEqual(@as(u32, 0), (v >> 22) & 0x1FF);
+    try std.testing.expect((v & (1 << 31)) != 0);
+    try std.testing.expectEqual(@as(u32, 0x5678), v & SATP_PPN_MASK);
 }
