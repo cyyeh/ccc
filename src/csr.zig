@@ -113,13 +113,33 @@ pub const MISA_VALUE: u32 =
 
 pub const CsrError = error{IllegalInstruction};
 
-/// Read a CSR. In U-mode, any CSR access is illegal (Phase 1 has no
-/// user-accessible CSRs; time/cycle/instret live in CSR 0xC00+ which
-/// we don't implement yet). Unknown addresses also trap.
-pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
-    if (cpu.privilege != .M) return CsrError.IllegalInstruction;
+/// Returns the minimum PrivilegeMode required to access a CSR.
+/// RISC-V encodes this in address bits 9:8: 0b00=U, 0b01=S, 0b10=H (treated
+/// as S here), 0b11=M.
+fn requiredPriv(addr: u12) PrivilegeMode {
+    const priv_bits: u2 = @intCast((addr >> 8) & 0x3);
+    return switch (priv_bits) {
+        0b00 => .U,
+        0b01 => .S,
+        0b10 => .S, // hypervisor — treat as S for our purposes
+        0b11 => .M,
+    };
+}
+
+/// Returns error.IllegalInstruction if `priv` is below the minimum required
+/// to access `addr`.
+fn checkAccess(addr: u12, priv: PrivilegeMode) CsrError!void {
+    const need = requiredPriv(addr);
+    const priv_rank = @intFromEnum(priv);
+    const need_rank = @intFromEnum(need);
+    if (priv_rank < need_rank) return CsrError.IllegalInstruction;
+}
+
+/// Inner read — no privilege check. Used by the sstatus alias arm to read
+/// mstatus without re-triggering the privilege guard.
+fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
     return switch (addr) {
-        CSR_SSTATUS => (try csrRead(cpu, CSR_MSTATUS)) & SSTATUS_READ_MASK,
+        CSR_SSTATUS => (try csrReadUnchecked(cpu, CSR_MSTATUS)) & SSTATUS_READ_MASK,
         CSR_SIE => cpu.csr.mie & SIE_MASK,
         CSR_SIP => cpu.csr.mip & SIP_READ_MASK,
         CSR_SATP => cpu.csr.satp,
@@ -158,15 +178,14 @@ pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
     };
 }
 
-/// Write a CSR. Read-only CSRs silently drop writes (WARL). mstatus and
-/// mtvec honor field masks; mepc zeros the low two bits.
-pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
-    if (cpu.privilege != .M) return CsrError.IllegalInstruction;
+/// Inner write — no privilege check. Used by the sstatus alias arm to write
+/// mstatus without re-triggering the privilege guard.
+fn csrWriteUnchecked(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
     switch (addr) {
         CSR_SSTATUS => {
-            const current = try csrRead(cpu, CSR_MSTATUS);
+            const current = try csrReadUnchecked(cpu, CSR_MSTATUS);
             const merged  = (current & ~SSTATUS_WRITABLE_MASK) | (value & SSTATUS_WRITABLE_MASK);
-            try csrWrite(cpu, CSR_MSTATUS, merged);
+            try csrWriteUnchecked(cpu, CSR_MSTATUS, merged);
         },
         CSR_SIE => cpu.csr.mie = (cpu.csr.mie & ~SIE_MASK) | (value & SIE_MASK),
         CSR_SIP => cpu.csr.mip = (cpu.csr.mip & ~SIP_WRITE_MASK) | (value & SIP_WRITE_MASK),
@@ -217,6 +236,21 @@ pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
         CSR_MISA, CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID => {},
         else => return CsrError.IllegalInstruction,
     }
+}
+
+/// Read a CSR. Access is checked against the CSR's minimum privilege level
+/// encoded in address bits 9:8. Unknown addresses also trap.
+pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
+    try checkAccess(addr, cpu.privilege);
+    return csrReadUnchecked(cpu, addr);
+}
+
+/// Write a CSR. Access is checked against the CSR's minimum privilege level
+/// encoded in address bits 9:8. Read-only CSRs silently drop writes (WARL).
+/// mstatus and mtvec honor field masks; mepc zeros the low two bits.
+pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
+    try checkAccess(addr, cpu.privilege);
+    try csrWriteUnchecked(cpu, addr, value);
 }
 
 test "mstatus round-trips through writable mask" {
@@ -536,4 +570,40 @@ test "satp ASID bits are WARL 0" {
     try std.testing.expectEqual(@as(u32, 0), (v >> 22) & 0x1FF);
     try std.testing.expect((v & (1 << 31)) != 0);
     try std.testing.expectEqual(@as(u32, 0x5678), v & SATP_PPN_MASK);
+}
+
+test "U-mode cannot read mstatus" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    cpu.privilege = .U;
+    try std.testing.expectError(CsrError.IllegalInstruction, csrRead(&cpu, CSR_MSTATUS));
+}
+
+test "U-mode cannot read sstatus" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    cpu.privilege = .U;
+    try std.testing.expectError(CsrError.IllegalInstruction, csrRead(&cpu, CSR_SSTATUS));
+}
+
+test "S-mode cannot read mstatus" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    cpu.privilege = .S;
+    try std.testing.expectError(CsrError.IllegalInstruction, csrRead(&cpu, CSR_MSTATUS));
+}
+
+test "S-mode can read sstatus" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    cpu.privilege = .S;
+    _ = try csrRead(&cpu, CSR_SSTATUS);
+}
+
+test "M-mode can read mstatus and sstatus" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    cpu.privilege = .M;
+    _ = try csrRead(&cpu, CSR_MSTATUS);
+    _ = try csrRead(&cpu, CSR_SSTATUS);
 }
