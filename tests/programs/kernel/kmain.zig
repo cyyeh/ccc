@@ -9,6 +9,9 @@ const uart = @import("uart.zig");
 const vm = @import("vm.zig");
 const page_alloc = @import("page_alloc.zig");
 const trap = @import("trap.zig");
+const user_blob = @import("user_blob");
+
+pub const USER_BLOB: []const u8 = user_blob.BLOB;
 
 const SATP_MODE_SV32: u32 = 1 << 31;
 

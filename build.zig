@@ -216,6 +216,56 @@ pub fn build(b: *std.Build) void {
     });
     kernel_trampoline_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/trampoline.S"));
 
+    // === User program (Plan 2.C) ===
+    const userprog_obj = b.addObject(.{
+        .name = "userprog",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/user/userprog.zig"),
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const userprog_elf = b.addExecutable(.{
+        .name = "userprog.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    userprog_elf.root_module.addObject(userprog_obj);
+    userprog_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    userprog_elf.entry = .{ .symbol_name = "_start" };
+
+    // Flatten ELF -> raw binary so the kernel can @embedFile it. Use
+    // Zig's built-in ObjCopy step (backed by llvm-objcopy from the Zig
+    // distribution) — avoids depending on a system llvm-objcopy binary.
+    const userprog_objcopy = b.addObjCopy(userprog_elf.getEmittedBin(), .{
+        .format = .bin,
+        .basename = "userprog.bin",
+    });
+    const userprog_bin = userprog_objcopy.getOutput();
+
+    // WriteFile step that co-locates a tiny Zig stub with userprog.bin
+    // in a single output dir. The stub `pub const BLOB = @embedFile(...)`
+    // is resolved relative to itself, so the bin must be its sibling.
+    const user_blob_stub_dir = b.addWriteFiles();
+    const user_blob_zig = user_blob_stub_dir.add(
+        "user_blob.zig",
+        "pub const BLOB = @embedFile(\"userprog.bin\");\n",
+    );
+    _ = user_blob_stub_dir.addCopyFile(userprog_bin, "userprog.bin");
+
+    // Expose a top-level step for CI / debugging.
+    const install_userprog_bin = b.addInstallFile(userprog_bin, "userprog.bin");
+    const kernel_user_step = b.step("kernel-user", "Build the Plan 2.C userprog.bin");
+    kernel_user_step.dependOn(&install_userprog_bin.step);
+
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
         .root_module = b.createModule(.{
@@ -225,6 +275,9 @@ pub fn build(b: *std.Build) void {
             .strip = false,
             .single_threaded = true,
         }),
+    });
+    kernel_kmain_obj.root_module.addAnonymousImport("user_blob", .{
+        .root_source_file = user_blob_zig,
     });
 
     const kernel_elf = b.addExecutable(.{
