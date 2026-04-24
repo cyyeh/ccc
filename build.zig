@@ -308,7 +308,7 @@ pub fn build(b: *std.Build) void {
     // Tasks 2, 8, 17 before settling at "hello from u-mode\n" in Task 17.
     const e2e_kernel_run = b.addRunArtifact(exe);
     e2e_kernel_run.addFileArg(kernel_elf.getEmittedBin());
-    e2e_kernel_run.expectStdOutEqual("ok\n");
+    e2e_kernel_run.expectStdOutEqual("hello from u-mode\n");
     e2e_kernel_run.expectExitCode(0);
 
     const e2e_kernel_step = b.step("e2e-kernel", "Run the Plan 2.C kernel e2e test");

@@ -105,6 +105,10 @@ s_trap_entry:
     la      a0, the_tf
     call    s_trap_dispatch
 
+    # s_trap_dispatch is a C-ABI function and may clobber a0. Reload
+    # it before the return path, which expects a0 = &the_tf.
+    la      a0, the_tf
+
     # Fall through to return-to-user.
 
 .globl s_return_to_user
