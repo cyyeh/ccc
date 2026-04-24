@@ -216,6 +216,16 @@ pub fn build(b: *std.Build) void {
     });
     kernel_trampoline_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/trampoline.S"));
 
+    const kernel_mtimer_obj = b.addObject(.{
+        .name = "kernel-mtimer",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_mtimer_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/mtimer.S"));
+
     // === User program (Plan 2.C) ===
     const userprog_obj = b.addObject(.{
         .name = "userprog",
@@ -292,6 +302,7 @@ pub fn build(b: *std.Build) void {
     });
     kernel_elf.root_module.addObject(kernel_boot_obj);
     kernel_elf.root_module.addObject(kernel_trampoline_obj);
+    kernel_elf.root_module.addObject(kernel_mtimer_obj);
     kernel_elf.root_module.addObject(kernel_kmain_obj);
     kernel_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
     kernel_elf.entry = .{ .symbol_name = "_M_start" };

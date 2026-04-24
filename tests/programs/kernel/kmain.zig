@@ -48,6 +48,17 @@ export fn kmain() callconv(.c) noreturn {
         : .{ .memory = true }
     );
 
+    // Enable sie.SSIE so forwarded timer ticks take in S-mode (U-mode
+    // is lower privilege, which ignores sstatus.SIE — SSI always
+    // delivers — but we want SSI to fire in S too once the kernel is
+    // long-lived enough in Plan 2.D to notice).
+    const SIE_SSIE: u32 = 1 << 1;
+    asm volatile ("csrs sie, %[b]"
+        :
+        : [b] "r" (SIE_SSIE),
+        : .{ .memory = true }
+    );
+
     // Configure sstatus.SPP = 0 (U) and sstatus.SPIE = 1 so sret lands
     // in U with SIE=1 after the privilege transition.
     //   SPP is bit 8, SPIE is bit 5, SIE is bit 1.
