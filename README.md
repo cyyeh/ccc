@@ -97,30 +97,32 @@ The Phase 1 §Definition of done demo:
     $ zig build hello-elf && zig build run -- zig-out/bin/hello.elf
     hello world
 
-**Plan 2.B (emulator trap delegation + async interrupts) merged.**
+**Plan 2.C (kernel skeleton — M-mode boot shim, Sv32 paging, S-mode
+trap dispatcher, user `write`+`exit` demo) merged.**
 
-The emulator now supports, in addition to the Plan 2.A surface:
+A bare-metal kernel.elf now builds alongside the emulator:
 
-- `medeleg` / `mideleg` WARL storage; synchronous trap routing to S when
-  the cause bit is delegated and the current privilege is < M.
-- Asynchronous interrupt delivery: per-instruction-boundary check of
-  `mip & mie` with delegation via `mideleg` and per-privilege enable
-  gating (`mstatus.MIE` / `mstatus.SIE`).
-- CLINT `mtime >= mtimecmp && mtimecmp != 0` drives live `mip.MTIP`;
-  writes to `mip.MTIP` are silently dropped (hardware-only signal).
-- `--trace` emits a synthetic marker on async interrupt entry:
-  `--- interrupt N (<name>) taken in <old>, now <new> ---`.
-- `rv32si-p-*` conformance now also includes `sbreak` and `ma_fetch`.
-  Only `dirty` remains excluded — it depends on Sv32 superpages, which
-  the Phase 2 spec permanently rejects.
+- `zig build kernel` builds `kernel.elf`. `ccc kernel.elf` prints
+  exactly `"hello from u-mode\n"` and exits 0.
+- Three privilege levels active in a single run: M-mode boot shim
+  (sets up delegation, CLINT, mtvec, drops to S), S-mode kernel
+  (manages Sv32 page table, trap dispatcher, syscalls), U-mode user
+  program (writes a message, exits).
+- One Sv32 page table with direct-mapped kernel + identity-mapped
+  MMIO + user text/stack mapped at VA 0x00010000 / 0x00030000.
+- Syscall ABI: `write(64)`, `exit(93)` (and a `yield(124)` stub
+  returning `-ENOSYS`; Plan 2.D wires it up).
+- Timer firing forwards from M→S via the Plan 2.B CLINT→MTIP→SSIP
+  pipeline; the S-mode SSI handler clears SSIP and returns (no
+  scheduler yet — Plan 2.D).
 
-The end-to-end `CLINT → M MTI ISR → mip.SSIP → S SSI ISR` forwarding
-round-trip is validated by a dedicated integration test in
-`src/cpu.zig` — the substrate Plan 2.C's kernel `mtimer.S` will
-consume.
+Plan 2.C is deliberately minimal: no `Process` struct, no scheduler,
+no tick counter, no `yield`. Phase 2's Definition of Done (the full
+`"hello from u-mode\nticks observed: N\n"` output and the QEMU-diff
+harness) is achieved in Plan 2.D.
 
-Next: **Plan 2.C — kernel skeleton (M-mode boot shim, single page
-table, sret-to-U, user `write`+`exit` demo)**.
+Next: **Plan 2.D — Process scaffolding + scheduler stub + yield +
+QEMU-diff harness**.
 
 ## Layout
 
