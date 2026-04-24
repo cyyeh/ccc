@@ -324,7 +324,7 @@
         </div>
       </div>
     </div>
-    <div class="caption">This deck walks <strong>Phase 1</strong> in full, then the first two plans of <strong>Phase 2</strong>.</div>
+    <div class="caption">This deck walks <strong>Phase 1</strong> in full, then the first three plans of <strong>Phase 2</strong>.</div>
   </section>
 
   <!-- 3: Prologue · the demo -->
@@ -656,11 +656,58 @@ $ zig build riscv-tests
     <div class="caption"><strong>Round-trip integration test:</strong> CLINT fires MTIP → M-mode ISR acks timer, sets <code class="inline">mip.SSIP</code> → S-mode ISR receives delegated software interrupt, clears it, writes sentinel. One test, every layer.</div>
   </section>
 
-  <!-- 15: Epilogue · where we are -->
+  <!-- 15: Chapter 2.C · kernel skeleton -->
+  <section data-label="Ch 2.C · kernel skeleton">
+    <div class="slide-label">chapter 2.c · kernel skeleton</div>
+    <h2 class="slide-title">Three privileges, <span class="accent">one program</span></h2>
+    <p class="plain">Plans 2.A and 2.B built the CPU substrate. 2.C composes it into a real kernel. An M-mode boot shim sets up delegation and the timer, drops to S at <code class="inline">kmain</code>; the S-mode kernel builds an Sv32 page table, installs a trap dispatcher, and <code class="inline">sret</code>s into a U-mode program that prints <code>hello from u-mode</code> via the <code class="inline">write</code> and <code class="inline">exit</code> syscalls.</p>
+    <div class="two-col">
+      <div class="panel">
+        <h4>Single address space</h4>
+        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;"><span class="dim">process page table</span>
+ 0x00010000  user .text/.rodata   <span class="dim">U R W X</span>
+ 0x00030000  user stack (2 pages) <span class="dim">U R W</span>
+ 0x00100000  halt MMIO            <span class="dim">S R W</span>
+ 0x02000000  CLINT                <span class="dim">S R W</span>
+ 0x10000000  UART                 <span class="dim">S R W</span>
+ 0x80000000  kernel .text         <span class="dim">S R X</span>
+            kernel .rodata       <span class="dim">S R</span>
+            kernel .data/.bss    <span class="dim">S R W</span>
+            kernel stack (16 KB) <span class="dim">S R W</span>
+
+<span class="dim">kernel VA == kernel PA</span>
+<span class="dim">(direct-mapped, G=1 throughout)</span></pre>
+      </div>
+      <div class="panel">
+        <h4>Boot → hello from u-mode</h4>
+        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">M   boot.S zero BSS
+M   medeleg / mideleg
+M   mtvec = m_trap_vector
+M   mtimecmp = mtime + 1e6
+M   mstatus.MPP = S
+M   mret ──────────────► S
+S   page_alloc.init
+S   vm.allocRoot
+S   vm.mapKernelAndMmio
+S   vm.mapUser(blob)
+S   stvec = s_trap_entry
+S   sscratch = &the_tf
+S   csrw satp; sfence.vma
+S   sret ──────────────► U
+U   ecall (write 64)   ◄─┐
+S   sys_write → UART     │
+U   ecall (exit 93)    ◄─┤
+S   sys_exit → halt      └──► emulator exit 0</pre>
+      </div>
+    </div>
+    <div class="caption"><strong>e2e-kernel:</strong> <code class="inline">ccc kernel.elf</code> prints exactly <code>hello from u-mode\n</code> and exits 0. No <code class="inline">Process</code> struct, no scheduler, no <code class="inline">yield</code> — those arrive in Plan 2.D.</div>
+  </section>
+
+  <!-- 16: Epilogue · where we are -->
   <section data-label="Where we are">
     <div class="slide-label">epilogue · where we are</div>
     <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">building</span>.</h2>
-    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asks: can we host a real OS kernel? S-mode, paging, delegation, and async interrupts are the foundation. Plan 2.C — the kernel boot shim — is next.</p>
+    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asks: can we host a real OS kernel? S-mode, paging, delegation, async interrupts, and now a kernel that boots three privileges into a user program. Plan 2.D — process scheduling + <code class="inline">yield</code> — is next.</p>
     <div class="two-col" style="grid-template-columns: 1.25fr 1fr; gap: 64px;">
       <div class="check-list">
         <div class="row">
@@ -687,12 +734,16 @@ $ zig build riscv-tests
           <div class="head">✓ 2.B · delegation + async</div>
           <div class="sub">medeleg / mideleg · CLINT MTIP · interrupt priority</div>
         </div>
+        <div class="row">
+          <div class="head">✓ 2.C · kernel skeleton</div>
+          <div class="sub">M-mode boot shim · Sv32 paging · trap dispatcher · write + exit</div>
+        </div>
       </div>
       <div class="panel" style="align-self: center;">
-        <h4>Next · plan 2.c</h4>
+        <h4>Next · plan 2.d</h4>
         <p style="font-size: 28px; line-height: 1.5;">
-          Kernel boot shim.<br><br>
-          Multi-program scheduler, U-mode process isolation via page tables, first real syscalls delivered through delegated traps.
+          Process scaffolding.<br><br>
+          <code class="inline">Process</code> struct, scheduler stub, <code class="inline">sys_yield</code>, tick counter, and the QEMU-diff harness — hitting Phase 2's Definition of Done.
         </p>
       </div>
     </div>
