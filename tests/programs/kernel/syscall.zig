@@ -1,7 +1,7 @@
 // tests/programs/kernel/syscall.zig — syscall table.
 //
-// Task 11 state: sys_write implemented; sys_exit still stubbed. Task 12
-// finishes both and dispatch.
+// Phase 2 Plan 2.C supports write(64) + exit(93). yield(124) arrives in
+// Plan 2.D when the scheduler lands.
 
 const trap = @import("trap.zig");
 const uart = @import("uart.zig");
@@ -38,10 +38,21 @@ fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
     return len;
 }
 
-pub fn dispatch(tf: *trap.TrapFrame) void {
-    _ = tf;
-    @import("kprintf.zig").panic("syscall.dispatch: not implemented (Task 11 stub)", .{});
+fn sysExit(status: u32) noreturn {
+    const halt: *volatile u8 = @ptrFromInt(0x00100000);
+    halt.* = @intCast(status & 0xFF);
+    // Unreachable — halt MMIO terminates the emulator on the store above.
+    while (true) asm volatile ("wfi");
 }
 
-// Keep sys_write file-scope-callable; Task 12 wires dispatch().
-pub const sys_write = sysWrite;
+pub fn dispatch(tf: *trap.TrapFrame) void {
+    switch (tf.a7) {
+        64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
+        93 => sysExit(tf.a0),
+        124 => {
+            // yield — not implemented in Plan 2.C; Plan 2.D adds it.
+            tf.a0 = @bitCast(@as(i32, -38)); // -ENOSYS
+        },
+        else => tf.a0 = @bitCast(@as(i32, -38)), // -ENOSYS
+    }
+}
