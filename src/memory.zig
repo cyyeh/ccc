@@ -11,6 +11,30 @@ pub const RAM_SIZE_DEFAULT: usize = 128 * 1024 * 1024;
 
 pub const Access = enum { fetch, load, store };
 
+// ---------------------------------------------------------------------------
+// Sv32 PTE bit constants (RISC-V privileged spec §4.3.1)
+// ---------------------------------------------------------------------------
+pub const PTE_V: u32 = 1 << 0;
+pub const PTE_R: u32 = 1 << 1;
+pub const PTE_W: u32 = 1 << 2;
+pub const PTE_X: u32 = 1 << 3;
+pub const PTE_U: u32 = 1 << 4;
+pub const PTE_G: u32 = 1 << 5;
+pub const PTE_A: u32 = 1 << 6;
+pub const PTE_D: u32 = 1 << 7;
+
+/// Build a 4-KB leaf PTE from a physical address and permission flags.
+/// The caller must include PTE_V in `flags`.
+pub fn makeLeafPte(pa: u32, flags: u32) u32 {
+    return ((pa >> 12) << 10) | flags;
+}
+
+/// Build a pointer (non-leaf) PTE pointing at `child_table_pa`.
+/// V=1, R=W=X=0 marks it as a pointer per the Sv32 spec.
+pub fn makePointerPte(child_table_pa: u32) u32 {
+    return ((child_table_pa >> 12) << 10) | PTE_V;
+}
+
 pub const TranslationError = error{
     InstPageFault,
     LoadPageFault,
@@ -185,7 +209,7 @@ pub const Memory = struct {
     ///
     /// M-mode always produces an identity mapping regardless of satp.
     /// Non-M-mode with satp.MODE == Bare (bit 31 == 0) also returns identity.
-    /// Sv32 page-walk (satp.MODE == 1) is stubbed here; Task 15 implements it.
+    /// Sv32 4-KB-leaf page walk (satp.MODE == 1): see RISC-V priv spec §4.3.2.
     pub fn translate(
         self: *Memory,
         va: u32,
@@ -193,17 +217,54 @@ pub const Memory = struct {
         effective_priv: PrivilegeMode,
         cpu: *const Cpu,
     ) TranslationError!u32 {
-        _ = self;
-        _ = access;
         // M-mode always identity, regardless of satp.
         if (effective_priv == .M) return va;
         // Non-M + MODE == Bare (satp bit 31 == 0) → identity.
         const mode = (cpu.csr.satp >> 31) & 1;
         if (mode == 0) return va;
-        // Sv32 walk — stubbed; Task 15 implements.
-        return va;
+
+        // Sv32 walk — 4KB leaves only, superpage (L1 leaf) rejected.
+        //
+        // NOTE: `self.loadWord` is currently a physical-address-keyed direct
+        // RAM read (no translation). Task 18 will fork this into
+        // `loadWordPhysical` (bypass) and a translation-aware `loadWord`.
+        // At that point these call sites must be updated to `loadWordPhysical`
+        // to avoid infinite recursion.
+        const vpn1: u32 = (va >> 22) & 0x3FF;
+        const vpn0: u32 = (va >> 12) & 0x3FF;
+        const off: u32 = va & 0xFFF;
+        const root_pa: u32 = (cpu.csr.satp & 0x003F_FFFF) << 12;
+
+        // Level-1 PTE lookup.
+        const l1_pte_pa = root_pa + vpn1 * 4;
+        const l1_pte = self.loadWord(l1_pte_pa) catch return pageFaultFor(access);
+        if ((l1_pte & PTE_V) == 0) return pageFaultFor(access);
+        if ((l1_pte & (PTE_R | PTE_W | PTE_X)) != 0) {
+            // Superpage leaf at L1 — Phase 2 rejects (not yet implemented).
+            return pageFaultFor(access);
+        }
+
+        // Level-0 PTE lookup.
+        const l0_table_pa = ((l1_pte >> 10) & 0x003F_FFFF) << 12;
+        const l0_pte_pa = l0_table_pa + vpn0 * 4;
+        const l0_pte = self.loadWord(l0_pte_pa) catch return pageFaultFor(access);
+        if ((l0_pte & PTE_V) == 0) return pageFaultFor(access);
+        // A pointer PTE (R|W|X == 0) at leaf level is invalid per spec §4.3.2 step 5.
+        if ((l0_pte & (PTE_R | PTE_W | PTE_X)) == 0) return pageFaultFor(access);
+
+        const leaf_pa = ((l0_pte >> 10) & 0x003F_FFFF) << 12;
+        return leaf_pa | off;
     }
 };
+
+/// Return the appropriate page-fault error variant for the given access type.
+fn pageFaultFor(access: Access) TranslationError {
+    return switch (access) {
+        .fetch => error.InstPageFault,
+        .load => error.LoadPageFault,
+        .store => error.StorePageFault,
+    };
+}
 
 // Test fixture: the Uart embeds `*std.Io.Writer` pointing into the rig's
 // `aw` field, so the rig MUST NOT be moved/copied after init. We use a
@@ -310,4 +371,43 @@ test "translate: M-mode always identity even with Sv32 MODE" {
     rig.cpu.csr.satp = (1 << 31) | 0x1234;
     const pa = try rig.mem.translate(0x8000_0000, .load, .M, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x8000_0000), pa);
+}
+
+test "translate: Sv32 4K leaf, U-mode, matches VA→PA" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    const root_pa: u32 = 0x8010_0000;
+    const l0_table_pa: u32 = 0x8010_1000;
+    const leaf_pa: u32 = 0x8020_0000;
+
+    // VA 0x00010000 → VPN[1]=0, VPN[0]=0x10, offset=0
+    try rig.mem.storeWord(root_pa + 0, makePointerPte(l0_table_pa));
+    try rig.mem.storeWord(l0_table_pa + 0x10 * 4, makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
+
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    const pa = try rig.mem.translate(0x0001_0000, .load, .U, &rig.cpu);
+    try std.testing.expectEqual(leaf_pa, pa);
+}
+
+test "translate: Sv32 4K leaf preserves offset" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    const root_pa: u32 = 0x8010_0000;
+    const l0_table_pa: u32 = 0x8010_1000;
+    const leaf_pa: u32 = 0x8020_0000;
+
+    try rig.mem.storeWord(root_pa + 0, makePointerPte(l0_table_pa));
+    try rig.mem.storeWord(l0_table_pa + 0x10 * 4, makeLeafPte(leaf_pa, PTE_V | PTE_R | PTE_W | PTE_U));
+
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.satp = (1 << 31) | (root_pa >> 12);
+
+    const pa = try rig.mem.translate(0x0001_0ABC, .load, .U, &rig.cpu);
+    try std.testing.expectEqual(leaf_pa + 0xABC, pa);
 }
