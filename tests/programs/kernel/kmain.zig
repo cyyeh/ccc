@@ -1,29 +1,34 @@
-// tests/programs/kernel/kmain.zig — Phase 2 Plan 2.C kernel S-mode entry.
+// tests/programs/kernel/kmain.zig — Phase 2 Plan 2.D kernel S-mode entry.
 //
-// Task 17 state: end-to-end U-mode entry. Maps user program, installs
-// S-mode trap vector, writes satp, jumps to trampoline's s_return_to_user
-// which sret's to user _start. Syscall handling is already in place from
-// Tasks 10-12.
-//
-// Plan 2.C does NOT enable `sie.SSIE` yet — timer handling arrives in
-// Tasks 18-20. This task intentionally runs without interrupts so the
-// control flow for the happy path is unambiguous.
+// Difference from 2.C: the standalone `the_tf` is gone. The trapframe is
+// now the first field of `proc.the_process`, so sscratch / trampoline
+// references point at the same memory via the new symbol `the_process`.
+// Boot also routes through `sched.context_switch_to` for the initial
+// satp write so Plan 3 has one code path to edit when the switch becomes
+// non-trivial.
 
 const std = @import("std");
 const uart = @import("uart.zig");
 const vm = @import("vm.zig");
 const page_alloc = @import("page_alloc.zig");
 const trap = @import("trap.zig");
+const proc = @import("proc.zig");
+const sched = @import("sched.zig");
 const user_blob = @import("user_blob");
 
 pub const USER_BLOB: []const u8 = user_blob.BLOB;
 
 const SATP_MODE_SV32: u32 = 1 << 31;
 
-pub export var the_tf: trap.TrapFrame = std.mem.zeroes(trap.TrapFrame);
-
 extern fn s_trap_entry() void;
 extern fn s_return_to_user(tf: *trap.TrapFrame) noreturn;
+
+// Linker symbol: top of the 16 KB kernel stack. Used to populate
+// the_process.kstack_top so the trampoline can switch to it on trap entry.
+// (Plan 2.C's trampoline hard-codes `la sp, _kstack_top`; Plan 3 will
+// want this per-process. 2.D stores it but trampoline still uses the
+// linker symbol directly — wiring it through is Phase 3 scope.)
+extern const _kstack_top: u8;
 
 export fn kmain() callconv(.c) noreturn {
     page_alloc.init();
@@ -31,13 +36,17 @@ export fn kmain() callconv(.c) noreturn {
     vm.mapKernelAndMmio(root_pa);
     vm.mapUser(root_pa, USER_BLOB.ptr, @intCast(USER_BLOB.len));
 
-    // Initialize the user trap frame.
-    the_tf = std.mem.zeroes(trap.TrapFrame);
-    the_tf.sepc = vm.USER_TEXT_VA; // _start lives at VA 0x00010000
-    the_tf.sp = vm.USER_STACK_TOP;
+    // Initialize the single process.
+    proc.the_process = std.mem.zeroes(proc.Process);
+    proc.the_process.tf.sepc = vm.USER_TEXT_VA; // _start lives at VA 0x00010000
+    proc.the_process.tf.sp = vm.USER_STACK_TOP;
+    proc.the_process.satp = SATP_MODE_SV32 | (root_pa >> 12);
+    proc.the_process.kstack_top = @intCast(@intFromPtr(&_kstack_top));
+    proc.the_process.state = .Runnable;
+    // ticks_observed, exit_code already zero from zeroes().
 
     // Install the S-mode trap vector and sscratch.
-    const tf_addr: u32 = @intCast(@intFromPtr(&the_tf));
+    const tf_addr: u32 = @intCast(@intFromPtr(&proc.the_process));
     const stvec_val: u32 = @intCast(@intFromPtr(&s_trap_entry));
     asm volatile (
         \\ csrw stvec, %[stv]
@@ -48,10 +57,10 @@ export fn kmain() callconv(.c) noreturn {
         : .{ .memory = true }
     );
 
-    // Enable sie.SSIE so forwarded timer ticks take in S-mode (U-mode
-    // is lower privilege, which ignores sstatus.SIE — SSI always
-    // delivers — but we want SSI to fire in S too once the kernel is
-    // long-lived enough in Plan 2.D to notice).
+    // Enable sie.SSIE so forwarded timer ticks deliver in S-mode.
+    // (U-mode delivery is always on as a consequence of lower-privilege
+    // semantics; this bit matters for any S-mode-originated SSI once the
+    // kernel grows nested structures — defense-in-depth for Plan 3+.)
     const SIE_SSIE: u32 = 1 << 1;
     asm volatile ("csrs sie, %[b]"
         :
@@ -73,22 +82,16 @@ export fn kmain() callconv(.c) noreturn {
         : .{ .memory = true }
     );
 
-    // Flip on Sv32 translation.
-    const satp_val: u32 = SATP_MODE_SV32 | (root_pa >> 12);
-    asm volatile (
-        \\ csrw satp, %[satp]
-        \\ sfence.vma zero, zero
-        :
-        : [satp] "r" (satp_val),
-        : .{ .memory = true }
-    );
+    // Flip on Sv32 translation via the scheduler's context-switch helper.
+    // Plan 3 will reroute SSI + yield here too; 2.D only uses it from boot.
+    sched.context_switch_to(&proc.the_process);
 
-    // Jump to the trampoline's return-to-user path with a0 = &the_tf.
-    s_return_to_user(&the_tf);
+    // Jump to the trampoline's return-to-user path with a0 = &the_process.tf.
+    // Since @offsetOf(Process, "tf") == 0, &the_process is the TrapFrame ptr.
+    s_return_to_user(@ptrCast(&proc.the_process));
 }
 
-// Suppress "unused" on uart; uart is transitively used by syscall/kprintf
-// but kmain also retains it for potential early-boot panic printing.
+// Keep `uart` in the reachable set for potential early-boot panic printing.
 comptime {
     _ = uart;
 }

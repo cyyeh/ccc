@@ -1,12 +1,14 @@
 # tests/programs/kernel/trampoline.S — S-mode trap entry/exit.
 #
-# On trap: stvec points here. sscratch holds &the_tf (kmain initializes
-# it before sret). We swap sp with sscratch to land on &the_tf, save all
-# user GPRs at fixed offsets, then switch to the kernel stack and call
-# s_trap_dispatch (Zig, in trap.zig).
+# On trap: stvec points here. sscratch holds &the_process (kmain
+# initializes it before sret). Since tf is the first field of Process
+# (@offsetOf(Process,"tf")==0), &the_process is also the TrapFrame pointer
+# used throughout this file. We swap sp with sscratch to land on the tf,
+# save all user GPRs at fixed offsets, then switch to the kernel stack
+# and call s_trap_dispatch (Zig, in trap.zig).
 #
-# Return-to-user path: restore GPRs from &the_tf, then sret. The last
-# two loads handle sp and a0 — a0 has been serving as the tf base
+# Return-to-user path: restore GPRs from the tf at a0, then sret. The
+# last two loads handle sp and a0 — a0 has been serving as the tf base
 # pointer, so it's loaded last (which discards the base pointer as
 # a side effect — well-known RISC-V trampoline idiom).
 #
@@ -89,9 +91,10 @@ s_trap_entry:
     csrr    t0, sscratch
     sw      t0, TF_SP(sp)
 
-    # Reset sscratch = &the_tf so the NEXT trap has something valid to
-    # swap with.
-    la      t0, the_tf
+    # Reset sscratch = &the_process so the NEXT trap has something valid
+    # to swap with. @offsetOf(Process, "tf") == 0 so &the_process is also
+    # the TrapFrame pointer trampoline save/restore blocks work on.
+    la      t0, the_process
     csrw    sscratch, t0
 
     # Save sepc.
@@ -102,12 +105,13 @@ s_trap_entry:
     la      sp, _kstack_top
 
     # Call s_trap_dispatch(tf).
-    la      a0, the_tf
+    la      a0, the_process
     call    s_trap_dispatch
 
     # s_trap_dispatch is a C-ABI function and may clobber a0. Reload
-    # it before the return path, which expects a0 = &the_tf.
-    la      a0, the_tf
+    # it before the return path, which expects a0 = &the_process (equal
+    # to &the_process.tf since tf is the first field).
+    la      a0, the_process
 
     # Fall through to return-to-user.
 
