@@ -105,3 +105,86 @@ pub fn mapPage(root_pa: u32, va: u32, pa: u32, flags: u32) void {
     }
     l0_entry.* = makeLeaf(pa, flags | PTE_V);
 }
+
+/// Map a contiguous VA region to a contiguous PA region, page by page.
+/// `va` and `pa` must be PAGE_SIZE-aligned; `len` is rounded up to a
+/// PAGE_SIZE multiple.
+pub fn mapRange(root_pa: u32, va: u32, pa: u32, len: u32, flags: u32) void {
+    const aligned_len = (len + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
+    var off: u32 = 0;
+    while (off < aligned_len) : (off += PAGE_SIZE) {
+        mapPage(root_pa, va + off, pa + off, flags);
+    }
+}
+
+// Linker symbols — boundaries of each kernel section, all 4KB-aligned
+// by linker.ld.
+extern const _text_start: u8;
+extern const _text_end: u8;
+extern const _rodata_start: u8;
+extern const _rodata_end: u8;
+extern const _data_start: u8;
+extern const _data_end: u8;
+extern const _bss_start: u8;
+extern const _bss_end: u8;
+extern const _kstack_bottom: u8;
+extern const _kstack_top: u8;
+
+fn extU32(sym: *const u8) u32 {
+    return @intCast(@intFromPtr(sym));
+}
+
+/// Map the kernel's own direct-mapped image plus the MMIO strip into
+/// `root_pa`. Kernel VA == Kernel PA for every page we install here.
+///
+/// After this call, `csrw satp; sfence.vma` can safely switch to the
+/// new page table — the executing kernel's .text will still be
+/// reachable, its stack will still be valid, and its UART/Halt writes
+/// will still hit the real MMIO.
+pub fn mapKernelAndMmio(root_pa: u32) void {
+    const text_s = extU32(&_text_start);
+    const text_e = extU32(&_text_end);
+    mapRange(root_pa, text_s, text_s, text_e - text_s, KERNEL_TEXT);
+
+    const rodata_s = extU32(&_rodata_start);
+    const rodata_e = extU32(&_rodata_end);
+    if (rodata_e > rodata_s) {
+        mapRange(root_pa, rodata_s, rodata_s, rodata_e - rodata_s, KERNEL_RODATA);
+    }
+
+    const data_s = extU32(&_data_start);
+    const data_e = extU32(&_data_end);
+    if (data_e > data_s) {
+        mapRange(root_pa, data_s, data_s, data_e - data_s, KERNEL_DATA);
+    }
+
+    const bss_s = extU32(&_bss_start);
+    const bss_e = extU32(&_bss_end);
+    if (bss_e > bss_s) {
+        mapRange(root_pa, bss_s, bss_s, bss_e - bss_s, KERNEL_DATA);
+    }
+
+    const stack_s = extU32(&_kstack_bottom);
+    const stack_e = extU32(&_kstack_top);
+    mapRange(root_pa, stack_s, stack_s, stack_e - stack_s, KERNEL_DATA);
+
+    // Also cover the free-page region the allocator is bumping into — we
+    // need to walk and install entries in L0 tables that the allocator
+    // itself is producing, so each of those pages must be mappable as
+    // the kernel accesses them. Map the entire 128 MiB RAM ceiling for
+    // simplicity; over-mapping is harmless (unreferenced PTEs cost
+    // nothing). Start at the current heap position (post-init) and
+    // extend to RAM_END.
+    const heap_s = page_alloc.heapPos();
+    mapRange(root_pa, heap_s, heap_s, page_alloc.RAM_END - heap_s, KERNEL_DATA);
+
+    // MMIO — one page each, identity-mapped, S-only.
+    mapPage(root_pa, 0x0010_0000, 0x0010_0000, KERNEL_MMIO); // Halt
+    // CLINT spans 0x02000000..0x0200FFFF (64KB). One page is the mtime/
+    // mtimecmp window; the kernel only touches that page in S-mode.
+    // Future plans touching msip elsewhere in CLINT should extend this.
+    mapPage(root_pa, 0x0200_0000, 0x0200_0000, KERNEL_MMIO);
+    mapPage(root_pa, 0x0200_4000, 0x0200_4000, KERNEL_MMIO);
+    // UART is one page.
+    mapPage(root_pa, 0x1000_0000, 0x1000_0000, KERNEL_MMIO);
+}
