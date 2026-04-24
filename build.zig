@@ -336,6 +336,19 @@ pub fn build(b: *std.Build) void {
     const e2e_kernel_step = b.step("e2e-kernel", "Run the Phase 2 kernel e2e test (hello + ticks)");
     e2e_kernel_step.dependOn(&e2e_kernel_run.step);
 
+    // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
+    // qemu-system-riscv32 on PATH; not run by CI.
+    const qemu_diff_kernel_cmd = b.addSystemCommand(&.{
+        "bash",
+        "scripts/qemu-diff-kernel.sh",
+    });
+    qemu_diff_kernel_cmd.step.dependOn(&install_kernel_elf.step);
+    const qemu_diff_kernel_step = b.step(
+        "qemu-diff-kernel",
+        "Diff kernel.elf instruction trace against qemu-system-riscv32 (debug aid)",
+    );
+    qemu_diff_kernel_step.dependOn(&qemu_diff_kernel_cmd.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
