@@ -54,6 +54,9 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build e2e-trap` | M→U→ecall→M→UART→halt round-trip; stdout equals `trap ok\n` |
 | `zig build hello-elf` | Build the Zig-compiled `hello.elf` (M-mode monitor + U-mode Zig payload) |
 | `zig build e2e-hello-elf` | Run `ccc hello.elf` and assert stdout equals `hello world\n` (Phase 1 §Definition of done) |
+| `zig build kernel-user` | Build the Plan 2.C user payload to a flat binary (`zig-out/userprog.bin`) |
+| `zig build kernel-elf` (or `kernel`) | Build the Plan 2.C `kernel.elf` (M-mode boot shim + S-mode kernel + embedded user blob) |
+| `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout equals `hello from u-mode\n` (Plan 2.C integration test) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
 
