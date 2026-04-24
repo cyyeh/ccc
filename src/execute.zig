@@ -1192,10 +1192,14 @@ test "CSRRSI with uimm=0 suppresses CSR write" {
     var rig: Rig = undefined;
     try rig.init(std.testing.allocator, mem_mod.RAM_BASE);
     defer rig.deinit();
-    rig.cpu.csr.mstatus = 0x0000_1880;
+    // 0x0000_1880 = MPIE(bit7)=1, MPP(bits12:11)=0b11(M). SPP=0.
+    rig.cpu.csr.mstatus_mpie = true;
+    rig.cpu.csr.mstatus_mpp = 0b11;
     try dispatch(.{ .op = .csrrsi, .rd = 2, .rs1 = 0, .csr = 0x300, .raw = 0 }, &rig.cpu);
+    // csrrsi with uimm=0 is a read-only CSR access — no write, rd gets old value.
     try std.testing.expectEqual(@as(u32, 0x0000_1880), rig.cpu.readReg(2));
-    try std.testing.expectEqual(@as(u32, 0x0000_1880), rig.cpu.csr.mstatus);
+    // mstatus unchanged after a no-write access.
+    try std.testing.expectEqual(@as(u32, 0x0000_1880), try csr_mod.csrRead(&rig.cpu, csr_mod.CSR_MSTATUS));
 }
 
 test "CSRRCI with nonzero uimm clears bits" {
@@ -1262,14 +1266,17 @@ test "MRET in M-mode: PC←mepc, privilege←MPP, MIE←MPIE, MPIE←1, MPP←U"
     defer rig.deinit();
     rig.cpu.privilege = .M;
     rig.cpu.csr.mepc = mem_mod.RAM_BASE + 0x108;
-    rig.cpu.csr.mstatus = csr_mod.MSTATUS_MPIE;
+    // Set up: MPP=U(0b00), MPIE=true, MIE=false.
+    rig.cpu.csr.mstatus_mpp = @intFromEnum(cpu_mod.PrivilegeMode.U);
+    rig.cpu.csr.mstatus_mpie = true;
+    rig.cpu.csr.mstatus_mie = false;
     try dispatch(.{ .op = .mret, .raw = 0x30200073 }, &rig.cpu);
     try std.testing.expectEqual(mem_mod.RAM_BASE + 0x108, rig.cpu.pc);
     try std.testing.expectEqual(cpu_mod.PrivilegeMode.U, rig.cpu.privilege);
-    const ms = rig.cpu.csr.mstatus;
-    try std.testing.expect((ms & csr_mod.MSTATUS_MIE) != 0);
-    try std.testing.expect((ms & csr_mod.MSTATUS_MPIE) != 0);
-    try std.testing.expectEqual(@as(u32, 0), ms & csr_mod.MSTATUS_MPP_MASK);
+    // After mret: MIE ← MPIE (was true), MPIE ← 1, MPP ← U.
+    try std.testing.expect(rig.cpu.csr.mstatus_mie);
+    try std.testing.expect(rig.cpu.csr.mstatus_mpie);
+    try std.testing.expectEqual(@as(u2, 0b00), rig.cpu.csr.mstatus_mpp);
 }
 
 test "MRET in U-mode traps as illegal-instruction" {

@@ -30,8 +30,25 @@ pub const PrivilegeMode = enum(u2) {
 /// marchid, mimpid) live as constants in csr.zig — they have no storage.
 /// Field semantics live in csr.zig's mask constants and its csrRead /
 /// csrWrite functions; this struct is just the bytes.
+///
+/// mstatus is split into per-field storage because the fields are scattered
+/// across bit positions and may need to be accessed independently by the
+/// trap and S-mode subsystems. The flat mstatus_XYZ naming lets trap.zig
+/// read fields directly without helper functions.
 pub const CsrFile = struct {
-    mstatus: u32 = 0,
+    // mstatus — split into per-field storage (Plan 2.A Task 2)
+    mstatus_sie: bool = false, // bit 1  — S Interrupt Enable
+    mstatus_mie: bool = false, // bit 3  — M Interrupt Enable
+    mstatus_spie: bool = false, // bit 5  — Previous SIE (saved on S-trap entry)
+    mstatus_mpie: bool = false, // bit 7  — Previous MIE (saved on M-trap entry)
+    mstatus_spp: u1 = 0, // bit 8  — Previous S-mode privilege (0=U, 1=S)
+    mstatus_mpp: u2 = 0, // bits 12:11 — Previous M-mode privilege
+    mstatus_mprv: bool = false, // bit 17 — Modify PRiVilege
+    mstatus_sum: bool = false, // bit 18 — Supervisor User Memory access
+    mstatus_mxr: bool = false, // bit 19 — Make eXecutable Readable
+    mstatus_tvm: bool = false, // bit 20 — Trap Virtual Memory
+    mstatus_tsr: bool = false, // bit 22 — Trap SRET
+    // M-mode trap/interrupt CSRs
     mtvec: u32 = 0,
     mepc: u32 = 0,
     mcause: u32 = 0,
@@ -48,6 +65,13 @@ pub const CsrFile = struct {
     // software-visible state only — writes stored, reads returned. Added
     // for rv32mi-csr conformance.
     mcounteren: u32 = 0,
+    // S-mode CSRs (placeholders for Tasks 4, 5, 6, 7, etc.)
+    stvec: u32 = 0,
+    sscratch: u32 = 0,
+    sepc: u32 = 0,
+    scause: u32 = 0,
+    stval: u32 = 0,
+    satp: u32 = 0,
 };
 
 pub const Cpu = struct {

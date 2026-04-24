@@ -27,12 +27,27 @@ pub const CSR_MARCHID: u12 = 0xF12;
 pub const CSR_MIMPID: u12 = 0xF13;
 pub const CSR_MHARTID: u12 = 0xF14;
 
-// mstatus field bits we honor in Phase 1. Other bits read-as-zero.
+// mstatus field bit positions (RV32 M-view). Storage is split into per-field
+// booleans/integers in CsrFile; these constants are kept for compatibility
+// with existing tests and trap.zig code that checks individual bits.
+pub const MSTATUS_SIE: u32 = 1 << 1; // S Interrupt Enable
 pub const MSTATUS_MIE: u32 = 1 << 3; // Machine Interrupt Enable
+pub const MSTATUS_SPIE: u32 = 1 << 5; // Previous SIE
 pub const MSTATUS_MPIE: u32 = 1 << 7; // Previous MIE (saved on trap entry)
+pub const MSTATUS_SPP_SHIFT: u5 = 8; // Previous S privilege (1 bit)
+pub const MSTATUS_SPP_MASK: u32 = @as(u32, 0x1) << MSTATUS_SPP_SHIFT;
 pub const MSTATUS_MPP_SHIFT: u5 = 11; // Previous privilege (2 bits, 12:11)
 pub const MSTATUS_MPP_MASK: u32 = @as(u32, 0b11) << MSTATUS_MPP_SHIFT;
-pub const MSTATUS_WRITABLE: u32 = MSTATUS_MIE | MSTATUS_MPIE | MSTATUS_MPP_MASK;
+pub const MSTATUS_MPRV: u32 = 1 << 17; // Modify PRiVilege
+pub const MSTATUS_SUM: u32 = 1 << 18; // Supervisor User Memory access
+pub const MSTATUS_MXR: u32 = 1 << 19; // Make eXecutable Readable
+pub const MSTATUS_TVM: u32 = 1 << 20; // Trap Virtual Memory
+pub const MSTATUS_TSR: u32 = 1 << 22; // Trap SRET
+// All writable bits (Phase 2.A — excludes UIE bit 0, TW bit 21, SD bit 31).
+pub const MSTATUS_WRITABLE: u32 =
+    MSTATUS_SIE | MSTATUS_MIE | MSTATUS_SPIE | MSTATUS_MPIE |
+    MSTATUS_SPP_MASK | MSTATUS_MPP_MASK |
+    MSTATUS_MPRV | MSTATUS_SUM | MSTATUS_MXR | MSTATUS_TVM | MSTATUS_TSR;
 
 // mtvec field bits. BASE is bits 31:2 (word-aligned); MODE is bits 1:0.
 // Phase 1 only honors MODE=0 (direct); MODE=1 (vectored) is stored
@@ -63,7 +78,21 @@ pub const CsrError = error{IllegalInstruction};
 pub fn csrRead(cpu: *const Cpu, addr: u12) CsrError!u32 {
     if (cpu.privilege != .M) return CsrError.IllegalInstruction;
     return switch (addr) {
-        CSR_MSTATUS => cpu.csr.mstatus,
+        CSR_MSTATUS => blk: {
+            var v: u32 = 0;
+            if (cpu.csr.mstatus_sie) v |= 1 << 1;
+            if (cpu.csr.mstatus_mie) v |= 1 << 3;
+            if (cpu.csr.mstatus_spie) v |= 1 << 5;
+            if (cpu.csr.mstatus_mpie) v |= 1 << 7;
+            v |= @as(u32, cpu.csr.mstatus_spp) << 8;
+            v |= @as(u32, cpu.csr.mstatus_mpp) << 11;
+            if (cpu.csr.mstatus_mprv) v |= 1 << 17;
+            if (cpu.csr.mstatus_sum) v |= 1 << 18;
+            if (cpu.csr.mstatus_mxr) v |= 1 << 19;
+            if (cpu.csr.mstatus_tvm) v |= 1 << 20;
+            if (cpu.csr.mstatus_tsr) v |= 1 << 22;
+            break :blk v;
+        },
         CSR_MISA => MISA_VALUE,
         CSR_MEDELEG, CSR_MIDELEG => 0,
         CSR_MIE => cpu.csr.mie,
@@ -85,16 +114,20 @@ pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
     if (cpu.privilege != .M) return CsrError.IllegalInstruction;
     switch (addr) {
         CSR_MSTATUS => {
-            var ms = value & MSTATUS_WRITABLE;
-            // MPP is WARL: Phase 1 only supports U (00) and M (11). Normalize
-            // writes of 01/10 (would-be S/H modes) to 00 — otherwise rv32mi
-            // tests detect "S-mode present" and take code paths we can't
-            // handle in Phase 1.
-            const mpp_bits = (ms & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
-            if (mpp_bits != 0b00 and mpp_bits != 0b11) {
-                ms &= ~MSTATUS_MPP_MASK;
-            }
-            cpu.csr.mstatus = ms;
+            cpu.csr.mstatus_sie = (value & (1 << 1)) != 0;
+            cpu.csr.mstatus_mie = (value & (1 << 3)) != 0;
+            cpu.csr.mstatus_spie = (value & (1 << 5)) != 0;
+            cpu.csr.mstatus_mpie = (value & (1 << 7)) != 0;
+            cpu.csr.mstatus_spp = @intCast((value >> 8) & 0x1);
+            // MPP is WARL: only U (0b00), S (0b01), and M (0b11) are valid.
+            // The reserved H-mode value (0b10) is clamped to U (0b00).
+            const mpp_raw: u2 = @intCast((value >> 11) & 0x3);
+            cpu.csr.mstatus_mpp = if (mpp_raw == 0b10) 0 else mpp_raw;
+            cpu.csr.mstatus_mprv = (value & (1 << 17)) != 0;
+            cpu.csr.mstatus_sum = (value & (1 << 18)) != 0;
+            cpu.csr.mstatus_mxr = (value & (1 << 19)) != 0;
+            cpu.csr.mstatus_tvm = (value & (1 << 20)) != 0;
+            cpu.csr.mstatus_tsr = (value & (1 << 22)) != 0;
         },
         // medeleg / mideleg: writes ignored (we report no S-mode, so
         // delegation has no effect). Reads return 0.
@@ -120,6 +153,8 @@ pub fn csrWrite(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
 test "mstatus round-trips through writable mask" {
     var dummy_mem: @import("memory.zig").Memory = undefined;
     var cpu = Cpu.init(&dummy_mem, 0);
+    // Write all-ones; only writable bits should survive. MPP bits 12:11 = 0b11
+    // (M-mode) — valid, not clamped. So the full MSTATUS_WRITABLE mask applies.
     try csrWrite(&cpu, CSR_MSTATUS, 0xFFFF_FFFF);
     try std.testing.expectEqual(MSTATUS_WRITABLE, try csrRead(&cpu, CSR_MSTATUS));
 }
@@ -164,20 +199,25 @@ test "mepc forces 4-byte alignment on read and write" {
     try std.testing.expectEqual(@as(u32, 0x8000_1000), try csrRead(&cpu, CSR_MEPC));
 }
 
-test "mstatus MPP of 01 (would-be S) normalizes to 00 (U) — WARL" {
+test "mstatus MPP of 0b10 (reserved H) normalizes to 00 (U) — WARL" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, @as(u32, 0b10) << MSTATUS_MPP_SHIFT);
+    try std.testing.expectEqual(@as(u2, 0b00), cpu.csr.mstatus_mpp);
+}
+
+test "mstatus MPP of 0b01 (S) round-trips" {
     var dummy_mem: @import("memory.zig").Memory = undefined;
     var cpu = Cpu.init(&dummy_mem, 0);
     try csrWrite(&cpu, CSR_MSTATUS, @as(u32, 0b01) << MSTATUS_MPP_SHIFT);
-    const mpp_bits = (cpu.csr.mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
-    try std.testing.expectEqual(@as(u32, 0b00), mpp_bits);
+    try std.testing.expectEqual(@as(u2, 0b01), cpu.csr.mstatus_mpp);
 }
 
 test "mstatus MPP of 11 (M) round-trips" {
     var dummy_mem: @import("memory.zig").Memory = undefined;
     var cpu = Cpu.init(&dummy_mem, 0);
     try csrWrite(&cpu, CSR_MSTATUS, @as(u32, 0b11) << MSTATUS_MPP_SHIFT);
-    const mpp_bits = (cpu.csr.mstatus & MSTATUS_MPP_MASK) >> MSTATUS_MPP_SHIFT;
-    try std.testing.expectEqual(@as(u32, 0b11), mpp_bits);
+    try std.testing.expectEqual(@as(u2, 0b11), cpu.csr.mstatus_mpp);
 }
 
 test "mtvec MODE bits forced to 0 on write — WARL, vectored unsupported" {
@@ -208,4 +248,69 @@ test "mcause round-trips full 32 bits (interrupt high bit + cause)" {
     var cpu = Cpu.init(&dummy_mem, 0);
     try csrWrite(&cpu, CSR_MCAUSE, 0x8000_0007);
     try std.testing.expectEqual(@as(u32, 0x8000_0007), try csrRead(&cpu, CSR_MCAUSE));
+}
+
+test "mstatus SIE bit is writable and readable" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 1 << 1);
+    try std.testing.expectEqual(@as(u32, 1 << 1), try csrRead(&cpu, CSR_MSTATUS) & (1 << 1));
+}
+
+test "mstatus SPIE bit is writable and readable" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 1 << 5);
+    try std.testing.expectEqual(@as(u32, 1 << 5), try csrRead(&cpu, CSR_MSTATUS) & (1 << 5));
+}
+
+test "mstatus SPP bit is writable and readable" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 1 << 8);
+    try std.testing.expectEqual(@as(u32, 1 << 8), try csrRead(&cpu, CSR_MSTATUS) & (1 << 8));
+}
+
+test "mstatus MPRV bit is writable and readable" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 1 << 17);
+    try std.testing.expectEqual(@as(u32, 1 << 17), try csrRead(&cpu, CSR_MSTATUS) & (1 << 17));
+}
+
+test "mstatus SUM bit is writable and readable" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 1 << 18);
+    try std.testing.expectEqual(@as(u32, 1 << 18), try csrRead(&cpu, CSR_MSTATUS) & (1 << 18));
+}
+
+test "mstatus MXR bit is writable and readable" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 1 << 19);
+    try std.testing.expectEqual(@as(u32, 1 << 19), try csrRead(&cpu, CSR_MSTATUS) & (1 << 19));
+}
+
+test "mstatus TVM bit is writable and readable" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 1 << 20);
+    try std.testing.expectEqual(@as(u32, 1 << 20), try csrRead(&cpu, CSR_MSTATUS) & (1 << 20));
+}
+
+test "mstatus TSR bit is writable and readable" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 1 << 22);
+    try std.testing.expectEqual(@as(u32, 1 << 22), try csrRead(&cpu, CSR_MSTATUS) & (1 << 22));
+}
+
+test "mstatus UIE and TW remain zero (WARL)" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    try csrWrite(&cpu, CSR_MSTATUS, 0xFFFFFFFF);
+    const v = try csrRead(&cpu, CSR_MSTATUS);
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 0)); // UIE
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 21)); // TW
 }

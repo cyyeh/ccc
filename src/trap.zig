@@ -35,19 +35,12 @@ pub fn enter(cause: Cause, tval: u32, cpu: *Cpu) void {
     cpu.csr.mcause = @intFromEnum(cause);
     cpu.csr.mtval = tval;
 
-    // mstatus updates in one pass.
-    var ms = cpu.csr.mstatus;
-    // MPP ← current priv (clear first, then OR in the new value).
-    ms &= ~csr.MSTATUS_MPP_MASK;
-    ms |= (@as(u32, @intFromEnum(cpu.privilege)) << csr.MSTATUS_MPP_SHIFT) & csr.MSTATUS_MPP_MASK;
+    // mstatus updates using flat split fields.
+    // MPP ← current privilege mode.
+    cpu.csr.mstatus_mpp = @intFromEnum(cpu.privilege);
     // MPIE ← MIE, then MIE ← 0.
-    if ((ms & csr.MSTATUS_MIE) != 0) {
-        ms |= csr.MSTATUS_MPIE;
-    } else {
-        ms &= ~csr.MSTATUS_MPIE;
-    }
-    ms &= ~csr.MSTATUS_MIE;
-    cpu.csr.mstatus = ms;
+    cpu.csr.mstatus_mpie = cpu.csr.mstatus_mie;
+    cpu.csr.mstatus_mie = false;
 
     cpu.privilege = .M;
     cpu.pc = cpu.csr.mtvec & csr.MTVEC_BASE_MASK;
@@ -66,22 +59,14 @@ pub fn enter(cause: Cause, tval: u32, cpu: *Cpu) void {
 pub fn exit_mret(cpu: *Cpu) void {
     cpu.pc = cpu.csr.mepc & csr.MEPC_ALIGN_MASK;
 
-    const mpp_bits: u2 = @truncate((cpu.csr.mstatus & csr.MSTATUS_MPP_MASK) >> csr.MSTATUS_MPP_SHIFT);
-    cpu.privilege = switch (mpp_bits) {
-        0b00 => .U,
-        0b11 => .M,
-        else => .U, // unsupported modes read back as U
-    };
+    // Restore privilege from MPP. The write path clamps 0b10 (reserved H) to
+    // 0b00, so only U=0b00, S=0b01, M=0b11 reach here — all valid enum values.
+    cpu.privilege = @enumFromInt(cpu.csr.mstatus_mpp);
 
-    var ms = cpu.csr.mstatus;
-    if ((ms & csr.MSTATUS_MPIE) != 0) {
-        ms |= csr.MSTATUS_MIE;
-    } else {
-        ms &= ~csr.MSTATUS_MIE;
-    }
-    ms |= csr.MSTATUS_MPIE; // MPIE ← 1
-    ms &= ~csr.MSTATUS_MPP_MASK; // MPP ← 0b00 (U)
-    cpu.csr.mstatus = ms;
+    // MIE ← MPIE; MPIE ← 1; MPP ← U (0b00).
+    cpu.csr.mstatus_mie = cpu.csr.mstatus_mpie;
+    cpu.csr.mstatus_mpie = true;
+    cpu.csr.mstatus_mpp = @intFromEnum(PrivilegeMode.U);
 }
 
 // --- tests ---
@@ -93,7 +78,7 @@ test "enter sets mepc, mcause, mtval; jumps to mtvec; switches to M" {
     var cpu = Cpu.init(&dummy_mem, 0x8000_0100);
     cpu.privilege = .U;
     cpu.csr.mtvec = 0x8000_0400; // direct mode (MODE=00)
-    cpu.csr.mstatus = csr.MSTATUS_MIE; // MIE=1, MPIE=0, MPP=00
+    cpu.csr.mstatus_mie = true; // MIE=1, MPIE=0, MPP=00
 
     enter(.ecall_from_u, 0, &cpu);
 
@@ -102,7 +87,10 @@ test "enter sets mepc, mcause, mtval; jumps to mtvec; switches to M" {
     try std.testing.expectEqual(@as(u32, 0), cpu.csr.mtval);
     try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
     try std.testing.expectEqual(@as(u32, 0x8000_0400), cpu.pc);
-    try std.testing.expectEqual(@as(u32, csr.MSTATUS_MPIE), cpu.csr.mstatus & (csr.MSTATUS_MPP_MASK | csr.MSTATUS_MPIE | csr.MSTATUS_MIE));
+    // After trap from U: MPP=U(0b00), MPIE=true (was MIE=true), MIE=false.
+    try std.testing.expectEqual(@as(u2, 0b00), cpu.csr.mstatus_mpp); // MPP=U
+    try std.testing.expect(cpu.csr.mstatus_mpie); // MPIE ← old MIE
+    try std.testing.expect(!cpu.csr.mstatus_mie); // MIE cleared
 }
 
 test "enter masks mtvec MODE bits (direct mode only in Phase 1)" {
@@ -118,8 +106,7 @@ test "enter from M-mode sets MPP=M" {
     var cpu = Cpu.init(&dummy_mem, 0x8000_0100);
     cpu.privilege = .M;
     enter(.illegal_instruction, 0xDEADBEEF, &cpu);
-    const mpp_bits: u2 = @truncate((cpu.csr.mstatus & csr.MSTATUS_MPP_MASK) >> csr.MSTATUS_MPP_SHIFT);
-    try std.testing.expectEqual(@as(u2, 0b11), mpp_bits);
+    try std.testing.expectEqual(@as(u2, 0b11), cpu.csr.mstatus_mpp);
     try std.testing.expectEqual(@as(u32, 0xDEADBEEF), cpu.csr.mtval);
 }
 
@@ -136,16 +123,19 @@ test "exit_mret restores PC from mepc, privilege from MPP" {
     var cpu = Cpu.init(&dummy_mem, 0x8000_0400);
     cpu.privilege = .M;
     cpu.csr.mepc = 0x8000_0108;
-    cpu.csr.mstatus = csr.MSTATUS_MPIE;
+    // Set up: MPP=U(0b00), MPIE=true, MIE=false.
+    cpu.csr.mstatus_mpp = @intFromEnum(PrivilegeMode.U);
+    cpu.csr.mstatus_mpie = true;
+    cpu.csr.mstatus_mie = false;
 
     exit_mret(&cpu);
 
     try std.testing.expectEqual(@as(u32, 0x8000_0108), cpu.pc);
     try std.testing.expectEqual(PrivilegeMode.U, cpu.privilege);
-    try std.testing.expectEqual(
-        csr.MSTATUS_MIE | csr.MSTATUS_MPIE,
-        cpu.csr.mstatus & (csr.MSTATUS_MPP_MASK | csr.MSTATUS_MPIE | csr.MSTATUS_MIE),
-    );
+    // After mret: MIE ← old MPIE (true), MPIE ← 1, MPP ← U.
+    try std.testing.expect(cpu.csr.mstatus_mie); // MIE ← MPIE (was true)
+    try std.testing.expect(cpu.csr.mstatus_mpie); // MPIE ← 1
+    try std.testing.expectEqual(@as(u2, 0b00), cpu.csr.mstatus_mpp); // MPP ← U
 }
 
 test "exit_mret with MPP=M restores M-mode" {
@@ -153,17 +143,20 @@ test "exit_mret with MPP=M restores M-mode" {
     var cpu = Cpu.init(&dummy_mem, 0x8000_0400);
     cpu.privilege = .M;
     cpu.csr.mepc = 0x8000_0500;
-    cpu.csr.mstatus = csr.MSTATUS_MPP_MASK | csr.MSTATUS_MPIE;
+    cpu.csr.mstatus_mpp = @intFromEnum(PrivilegeMode.M); // MPP=0b11
+    cpu.csr.mstatus_mpie = true;
     exit_mret(&cpu);
     try std.testing.expectEqual(PrivilegeMode.M, cpu.privilege);
 }
 
-test "exit_mret MPP=S (0b01) normalizes to U in mret (S trap delegation not yet wired)" {
+test "exit_mret MPP=S (0b01) restores S-mode privilege" {
     var dummy_mem: Memory = undefined;
     var cpu = Cpu.init(&dummy_mem, 0x8000_0400);
     cpu.privilege = .M;
     cpu.csr.mepc = 0x8000_0200;
-    cpu.csr.mstatus = (@as(u32, 0b01) << csr.MSTATUS_MPP_SHIFT) | csr.MSTATUS_MPIE;
+    cpu.csr.mstatus_mpp = @intFromEnum(PrivilegeMode.S); // MPP=0b01
+    cpu.csr.mstatus_mpie = true;
     exit_mret(&cpu);
-    try std.testing.expectEqual(PrivilegeMode.U, cpu.privilege);
+    // Phase 2.A: S-mode is now a valid PrivilegeMode, so MPP=S restores S.
+    try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
 }
