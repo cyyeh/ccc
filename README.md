@@ -56,7 +56,8 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build e2e-hello-elf` | Run `ccc hello.elf` and assert stdout equals `hello world\n` (Phase 1 §Definition of done) |
 | `zig build kernel-user` | Build the Plan 2.C user payload to a flat binary (`zig-out/userprog.bin`) |
 | `zig build kernel-elf` (or `kernel`) | Build the Plan 2.C `kernel.elf` (M-mode boot shim + S-mode kernel + embedded user blob) |
-| `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout equals `hello from u-mode\n` (Plan 2.C integration test) |
+| `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout matches `hello from u-mode\nticks observed: N\n` with N > 0 (Phase 2 §Definition of done) |
+| `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
 
@@ -100,32 +101,34 @@ The Phase 1 §Definition of done demo:
     $ zig build hello-elf && zig build run -- zig-out/bin/hello.elf
     hello world
 
-**Plan 2.C (kernel skeleton — M-mode boot shim, Sv32 paging, S-mode
-trap dispatcher, user `write`+`exit` demo) merged.**
+**Phase 2 — Bare-metal kernel — complete.**
 
-A bare-metal kernel.elf now builds alongside the emulator:
+Plans 2.A (emulator S-mode + Sv32 paging), 2.B (trap delegation + async
+interrupts), 2.C (kernel skeleton: boot shim, page table, S-mode trap
+dispatcher, `write`/`exit` demo), and 2.D (Process struct + scheduler
+stub + `yield` + tick counter) are merged.
 
-- `zig build kernel` builds `kernel.elf`. `ccc kernel.elf` prints
-  exactly `"hello from u-mode\n"` and exits 0.
-- Three privilege levels active in a single run: M-mode boot shim
-  (sets up delegation, CLINT, mtvec, drops to S), S-mode kernel
-  (manages Sv32 page table, trap dispatcher, syscalls), U-mode user
-  program (writes a message, exits).
-- One Sv32 page table with direct-mapped kernel + identity-mapped
-  MMIO + user text/stack mapped at VA 0x00010000 / 0x00030000.
-- Syscall ABI: `write(64)`, `exit(93)` (and a `yield(124)` stub
-  returning `-ENOSYS`; Plan 2.D wires it up).
-- Timer firing forwards from M→S via the Plan 2.B CLINT→MTIP→SSIP
-  pipeline; the S-mode SSI handler clears SSIP and returns (no
-  scheduler yet — Plan 2.D).
+The Phase 2 §Definition of done demo:
 
-Plan 2.C is deliberately minimal: no `Process` struct, no scheduler,
-no tick counter, no `yield`. Phase 2's Definition of Done (the full
-`"hello from u-mode\nticks observed: N\n"` output and the QEMU-diff
-harness) is achieved in Plan 2.D.
+    $ zig build e2e-kernel
+    # passes: stdout matches "hello from u-mode\nticks observed: N\n" with N > 0
 
-Next: **Plan 2.D — Process scaffolding + scheduler stub + yield +
-QEMU-diff harness**.
+    $ zig build kernel && zig build run -- zig-out/bin/kernel.elf
+    hello from u-mode
+    ticks observed: 19
+
+Three privilege levels active in a single run: M-mode boot shim (sets up
+delegation + CLINT, forwards MTI to SSIP on each tick), S-mode kernel
+(manages Sv32 page table, trap dispatcher, syscalls `write`/`exit`/`yield`,
+increments tick counter), U-mode user program (writes, yields, busy-loops,
+exits). The scheduler stub always re-picks the single process; Phase 3
+will swap in a real picker behind the same `sched.schedule()` interface.
+
+Debug aids: `zig build qemu-diff-kernel` runs `scripts/qemu-diff-kernel.sh`,
+which compares per-instruction traces between our emulator and QEMU.
+Requires `qemu-system-riscv32`; not a CI gate.
+
+Next: **Phase 3 — multi-process OS + filesystem + shell.**
 
 ## Layout
 
