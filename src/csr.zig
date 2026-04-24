@@ -198,6 +198,9 @@ fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
         CSR_SIE => cpu.csr.mie & SIE_MASK,
         CSR_SIP => blk: {
             var v = cpu.csr.mip;
+            // MTIP bit 7 is masked out by SIP_READ_MASK below; included
+            // here for symmetry with the CSR_MIP arm so any future expansion
+            // of SIP_READ_MASK that exposes MTIP to S-mode works seamlessly.
             if (cpu.memory.clint.isMtipPending()) v |= 1 << 7;
             break :blk v & SIP_READ_MASK;
         },

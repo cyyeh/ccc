@@ -33,7 +33,8 @@ pub const INTERRUPT_PRIORITY_ORDER = [_]u32{ 11, 3, 7, 9, 1, 5 };
 
 /// Interrupt-cause bit 31 marker per RISC-V spec: scause/mcause have the
 /// high bit set to 1 for async interrupts, 0 for synchronous exceptions.
-pub const INTERRUPT_CAUSE_FLAG: u32 = 1 << 31;
+/// Internal — callers should use enter_interrupt, which applies the flag.
+const INTERRUPT_CAUSE_FLAG: u32 = 1 << 31;
 
 /// Take a synchronous trap. Implements spec §Trap entry and §Exception
 /// delegation (§3.1.8).
