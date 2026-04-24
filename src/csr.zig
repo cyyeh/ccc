@@ -135,6 +135,10 @@ fn checkAccess(addr: u12, priv: PrivilegeMode) CsrError!void {
     if (priv_rank < need_rank) return CsrError.IllegalInstruction;
 }
 
+fn satpTvmCheck(cpu: *const Cpu) CsrError!void {
+    if (cpu.privilege == .S and cpu.csr.mstatus_tvm) return CsrError.IllegalInstruction;
+}
+
 /// Inner read — no privilege check. Used by the sstatus alias arm to read
 /// mstatus without re-triggering the privilege guard.
 fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
@@ -142,7 +146,10 @@ fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
         CSR_SSTATUS => (try csrReadUnchecked(cpu, CSR_MSTATUS)) & SSTATUS_READ_MASK,
         CSR_SIE => cpu.csr.mie & SIE_MASK,
         CSR_SIP => cpu.csr.mip & SIP_READ_MASK,
-        CSR_SATP => cpu.csr.satp,
+        CSR_SATP => blk: {
+            try satpTvmCheck(cpu);
+            break :blk cpu.csr.satp;
+        },
         CSR_MSTATUS => blk: {
             var v: u32 = 0;
             if (cpu.csr.mstatus_sie) v |= 1 << 1;
@@ -190,6 +197,7 @@ fn csrWriteUnchecked(cpu: *Cpu, addr: u12, value: u32) CsrError!void {
         CSR_SIE => cpu.csr.mie = (cpu.csr.mie & ~SIE_MASK) | (value & SIE_MASK),
         CSR_SIP => cpu.csr.mip = (cpu.csr.mip & ~SIP_WRITE_MASK) | (value & SIP_WRITE_MASK),
         CSR_SATP => {
+            try satpTvmCheck(cpu);
             // MODE: accept 0 (Bare) or 1 (Sv32); anything else clamps to Bare.
             const mode_bit = value & SATP_MODE_MASK;
             const ppn      = value & SATP_PPN_MASK;
@@ -606,4 +614,30 @@ test "M-mode can read mstatus and sstatus" {
     cpu.privilege = .M;
     _ = try csrRead(&cpu, CSR_MSTATUS);
     _ = try csrRead(&cpu, CSR_SSTATUS);
+}
+
+test "satp access from S-mode with TVM=1 is illegal" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    cpu.privilege = .S;
+    cpu.csr.mstatus_tvm = true;
+    try std.testing.expectError(CsrError.IllegalInstruction, csrRead(&cpu, CSR_SATP));
+    try std.testing.expectError(CsrError.IllegalInstruction, csrWrite(&cpu, CSR_SATP, 0));
+}
+
+test "satp access from S-mode with TVM=0 succeeds" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    cpu.privilege = .S;
+    cpu.csr.mstatus_tvm = false;
+    _ = try csrRead(&cpu, CSR_SATP);
+    try csrWrite(&cpu, CSR_SATP, (1 << 31) | 0x42);
+}
+
+test "satp access from M-mode ignores TVM" {
+    var dummy_mem: @import("memory.zig").Memory = undefined;
+    var cpu = Cpu.init(&dummy_mem, 0);
+    cpu.privilege = .M;
+    cpu.csr.mstatus_tvm = true;
+    try csrWrite(&cpu, CSR_SATP, (1 << 31) | 0x42);
 }
