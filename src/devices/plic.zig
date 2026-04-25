@@ -15,6 +15,9 @@ pub const Plic = struct {
     /// S-mode hart context enable bits. Bit N permits source N to drive
     /// the S-context's claim/threshold gate. Bit 0 hardwired 0.
     enable_s: u32 = 0,
+    /// S-context threshold (u3 0..7). A source's priority must be strictly
+    /// greater than this to be deliverable.
+    threshold_s: u3 = 0,
 
     pub fn init() Plic {
         return .{};
@@ -47,6 +50,12 @@ pub const Plic = struct {
             const shift: u5 = @intCast((offset - 0x2080) * 8);
             return @truncate(self.enable_s >> shift);
         }
+        // S-context threshold: 0x20_1000..0x20_1003.
+        if (offset >= 0x20_1000 and offset < 0x20_1004) {
+            const byte_in_word: u2 = @intCast(offset - 0x20_1000);
+            if (byte_in_word == 0) return @as(u8, self.threshold_s);
+            return 0;
+        }
         return 0;
     }
 
@@ -70,6 +79,12 @@ pub const Plic = struct {
             self.enable_s = (self.enable_s & ~mask) | new_byte;
             // Bit 0 hardwired zero.
             self.enable_s &= ~@as(u32, 1);
+            return;
+        }
+        // S-context threshold.
+        if (offset >= 0x20_1000 and offset < 0x20_1004) {
+            const byte_in_word: u2 = @intCast(offset - 0x20_1000);
+            if (byte_in_word == 0) self.threshold_s = @intCast(value & 0x07);
             return;
         }
         // Out-of-range writes silently dropped.
@@ -172,4 +187,25 @@ test "S-context enable spans all 4 bytes (sources 0..31)" {
     try std.testing.expectEqual(@as(u8, 0x02), try p.readByte(0x2080));
     try std.testing.expectEqual(@as(u8, 0x04), try p.readByte(0x2081));
     try std.testing.expectEqual(@as(u8, 0x80), try p.readByte(0x2083));
+}
+
+test "S-context threshold byte round-trip with masking" {
+    var p = Plic.init();
+    try p.writeByte(0x20_1000, 0x07);
+    try std.testing.expectEqual(@as(u8, 0x07), try p.readByte(0x20_1000));
+    // Upper bytes of the threshold u32 are always 0 (threshold is u3).
+    try std.testing.expectEqual(@as(u8, 0), try p.readByte(0x20_1001));
+    try std.testing.expectEqual(@as(u8, 0), try p.readByte(0x20_1002));
+    try std.testing.expectEqual(@as(u8, 0), try p.readByte(0x20_1003));
+}
+
+test "S-context threshold writes mask to 0..7" {
+    var p = Plic.init();
+    try p.writeByte(0x20_1000, 0xFF);
+    try std.testing.expectEqual(@as(u8, 0x07), try p.readByte(0x20_1000));
+}
+
+test "S-context threshold defaults to 0" {
+    const p = Plic.init();
+    try std.testing.expectEqual(@as(u8, 0), try p.readByte(0x20_1000));
 }
