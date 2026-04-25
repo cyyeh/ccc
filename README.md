@@ -4,6 +4,10 @@ Building a working RISC-V computer from scratch in Zig — emulator, kernel,
 OS, networking, and a tiny text-mode web browser. No Linux. No TLS. No
 graphics.
 
+**Live demo:** [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
+— `ccc` cross-compiled to `wasm32-freestanding`, running `hello.elf` in your
+browser. Same Zig core as the CLI; new ~80-line entry point for the browser.
+
 ## Goal
 
 Go from an empty repo to `browse http://test-server/` rendering a page in
@@ -66,6 +70,7 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
+| `zig build wasm` | Cross-compile `demo/web_main.zig` to `wasm32-freestanding` (installed to `zig-out/web/ccc.wasm`; powers the live web demo) |
 
 ## Running programs
 
@@ -96,6 +101,37 @@ synthetic markers on async events:
     --- interrupt N (<name>) taken in <old>, now <new> ---
     --- interrupt 9 (supervisor external, src N) taken in <old>, now <new> ---
     --- block: read sector S at PA 0x<P> ---
+
+## Web demo
+
+Live: [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
+
+The browser demo cross-compiles the same emulator core
+(`cpu.zig` / `memory.zig` / `elf.zig` / `devices/*.zig`) to
+`wasm32-freestanding` via a thin entry point at `demo/web_main.zig`
+(plus a one-file `src/lib.zig` shim that exposes the emulator as a
+single named module). `hello.elf` is embedded into the wasm at
+compile time; the JS side fetches `ccc.wasm`, instantiates it with
+no imports, calls a single `run(trace) -> i32` export, and copies
+the captured UART output out of linear memory via `outputPtr()` /
+`outputLen()`. Zero JS dependencies, zero WASM imports.
+
+The page renders a terminal-style session — typed `$ ./ccc hello.elf`
+prompt followed by the captured `hello world` output. A
+`show instruction trace` checkbox enables `cpu.trace_writer` and
+exposes the per-instruction CPU log in a collapsible panel below the
+output.
+
+Local dev:
+
+    ./scripts/stage-web.sh              # zig build wasm + copy into web/
+    python3 -m http.server -d . 8000
+    open http://localhost:8000/web/
+
+CI: `.github/workflows/pages.yml` runs the existing `zig build test`
++ every `e2e-*` step on every PR; on push to `main` it builds the
+wasm and deploys the deck + demo to Pages. Pages source must be set
+to "GitHub Actions" in repo settings (one-time manual step).
 
 ## Status
 
@@ -158,6 +194,7 @@ Next: Plan 3.B — kernel-side drivers, syscalls, and a tiny FS + shell.
 ```
 src/
   main.zig          # CLI entry point (ELF default, --raw fallback; --disk/--input/--trace/etc.)
+  lib.zig           # re-export shim consumed by the wasm build (one named module)
   cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation; idleSpin (wfi)
   decoder.zig       # RV32IMA + Zicsr + Zifencei + mret/sret/wfi/sfence.vma decoder
   execute.zig       # instruction execution + trap-routing; wfi → cpu.idleSpin
@@ -169,9 +206,16 @@ src/
   devices/
     uart.zig        # NS16550A UART (TX + 256B RX FIFO + level IRQ via PLIC src 10)
     halt.zig        # test-only halt device at 0x00100000
-    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime; raises mip.MTIP)
+    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime; raises mip.MTIP; comptime clock branch for wasm)
     plic.zig        # Platform-Level Interrupt Controller (32 sources, S-context, claim/complete)
     block.zig       # Simple MMIO block device (4 KB sectors, host-file-backed via --disk)
+demo/
+  web_main.zig      # freestanding wasm entry — embeds hello.elf, exports run/outputPtr/outputLen + tracePtr/traceLen
+web/                # GitHub Pages root (https://cyyeh.github.io/ccc/web/)
+  index.html        # demo page (terminal-style typed-command UI + optional trace panel)
+  demo.css          # palette matches the deck
+  demo.js           # ~80 lines: instantiate, type cmd, call run(), copy output, render trace
+  README.md         # how the demo works + how to add another ELF
 tests/
   programs/
     hello/             # Phase 1: RV32I hello-world encoder + Phase 1.D Zig-compiled hello.elf
@@ -187,12 +231,16 @@ tests/
 scripts/
   qemu-diff.sh           # debug aid: per-instruction trace diff vs qemu-system-riscv32
   qemu-diff-kernel.sh    # same, scoped to kernel.elf (Phase 2 debugging)
+  stage-web.sh           # local dev: zig build wasm + copy ccc.wasm into web/
 docs/
   superpowers/
     specs/          # design docs per phase (brainstormed + approved)
     plans/          # implementation plans per phase
   references/       # notes on RISC-V specifics (traps, etc.)
-build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests + plic-block-test
+.github/
+  workflows/
+    pages.yml       # CI: test on every PR; build wasm + deploy Pages on push to main
+build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests + plic-block-test + wasm
 build.zig.zon       # pinned Zig version + dependencies
 ```
 

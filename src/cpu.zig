@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const decoder = @import("decoder.zig");
 const execute = @import("execute.zig");
 const trap = @import("trap.zig");
@@ -261,25 +262,54 @@ pub const Cpu = struct {
     }
 };
 
-/// Monotonic timestamp in nanoseconds via libc clock_gettime. Mirrors the
-/// approach in devices/clint.zig because Zig 0.16 removed std.time.nanoTimestamp.
+/// Monotonic timestamp in nanoseconds. Comptime-branched on target so the
+/// freestanding (wasm) build doesn't pull libc in. Mirrors the approach in
+/// devices/clint.zig — Zig 0.16 removed std.time.nanoTimestamp, so each
+/// host gets the most direct API:
+///   - freestanding: a static counter that advances ~1ms per call so
+///     idleSpin's max_ns timeout fires (hello.elf doesn't actually wfi,
+///     but make sure idleSpin terminates if it ever does).
+///   - wasi: clock_time_get from the WASI ABI directly (no libc).
+///   - else (POSIX): clock_gettime via libc.
 fn monotonicNs() i128 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
-    const sec: i128 = @intCast(ts.sec);
-    const nsec: i128 = @intCast(ts.nsec);
-    return sec * 1_000_000_000 + nsec;
+    switch (comptime builtin.os.tag) {
+        .freestanding => {
+            const State = struct {
+                var counter: i128 = 0;
+            };
+            State.counter += 1_000_000;
+            return State.counter;
+        },
+        .wasi => {
+            var ns: u64 = undefined;
+            _ = std.os.wasi.clock_time_get(.MONOTONIC, 1, &ns);
+            return @intCast(ns);
+        },
+        else => {
+            var ts: std.c.timespec = undefined;
+            if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
+            const sec: i128 = @intCast(ts.sec);
+            const nsec: i128 = @intCast(ts.nsec);
+            return sec * 1_000_000_000 + nsec;
+        },
+    }
 }
 
-/// Sleep for `ms` milliseconds via libc nanosleep. Best-effort: an EINTR/early
-/// wakeup just shortens the iteration, which is harmless — idleSpin loops.
+/// Sleep for `ms` milliseconds. No-op on wasm targets (no scheduler). On
+/// POSIX hosts, libc nanosleep — best-effort; an EINTR/early wakeup just
+/// shortens the iteration, which is harmless because idleSpin loops.
 fn sleepMs(ms: u32) void {
-    const ns_per_ms: i64 = 1_000_000;
-    var req: std.c.timespec = .{
-        .sec = @intCast(@divTrunc(ms, 1000)),
-        .nsec = @intCast(@as(i64, @intCast(ms % 1000)) * ns_per_ms),
-    };
-    _ = std.c.nanosleep(&req, null);
+    switch (comptime builtin.os.tag) {
+        .freestanding, .wasi => return,
+        else => {
+            const ns_per_ms: i64 = 1_000_000;
+            var req: std.c.timespec = .{
+                .sec = @intCast(@divTrunc(ms, 1000)),
+                .nsec = @intCast(@as(i64, @intCast(ms % 1000)) * ns_per_ms),
+            };
+            _ = std.c.nanosleep(&req, null);
+        },
+    }
 }
 
 /// Compute the effective `mip` for the interrupt-boundary check. This is

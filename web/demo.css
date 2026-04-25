@@ -1,0 +1,186 @@
+:root {
+  --bg: #14110d;
+  --fg: #faf9f5;
+  --accent: #d97757;
+  --muted: #8a8070;
+  --panel: #1e1a14;
+  --panel-border: #2d261d;
+  --dim: #5a5247;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", Arial, sans-serif;
+  font-size: 18px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+.page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 64px 32px 96px;
+}
+
+.brand {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 64px;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+h1 {
+  font-size: 36px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 24px 0 8px;
+}
+
+.subtitle {
+  color: var(--muted);
+  font-size: 16px;
+  letter-spacing: 0.04em;
+  margin-bottom: 32px;
+}
+
+.controls {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+button.run {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 16px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 10px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+button.run:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+button.run:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  min-height: 1.5em;
+}
+
+pre.output {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  color: var(--fg);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 15px;
+  line-height: 1.55;
+  padding: 20px 24px;
+  height: 360px;
+  overflow-y: auto;
+  margin: 0 0 32px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+pre.output .stderr { color: var(--muted); }
+pre.output .meta   { color: var(--dim); }
+
+.explain {
+  color: var(--muted);
+  font-size: 15px;
+  margin-bottom: 32px;
+}
+.explain code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--fg);
+  background: var(--panel);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.footer-links {
+  display: flex;
+  gap: 24px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+}
+.footer-links a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.footer-links a:hover { color: var(--fg); }
+
+/* ----- trace toggle + trace block ----- */
+
+.trace-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  cursor: pointer;
+  user-select: none;
+}
+.trace-toggle input { cursor: pointer; }
+.trace-toggle:hover { color: var(--fg); }
+
+.trace-details {
+  margin: 0 0 32px;
+}
+.trace-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  padding: 6px 0;
+  list-style: none;
+}
+.trace-details summary::-webkit-details-marker { display: none; }
+.trace-details summary::before {
+  content: "▸ ";
+  color: var(--accent);
+}
+.trace-details[open] summary::before { content: "▾ "; }
+.trace-details summary:hover { color: var(--fg); }
+.trace-details .trace-meta {
+  color: var(--dim);
+  margin-left: 6px;
+}
+
+pre.trace {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 16px 20px;
+  height: 480px;
+  overflow: auto;
+  margin: 8px 0 0;
+  white-space: pre;
+}
+
+/* ----- terminal prompt + typed command (inside pre.output) ----- */
+
+pre.output .prompt { color: var(--accent); font-weight: 600; }
+pre.output .cmd    { color: var(--fg); }

@@ -10,6 +10,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            // Link libc on the native build so devices/clint.zig's
+            // std.c.clock_gettime + cpu.zig's std.c.nanosleep resolve.
+            // macOS's libSystem auto-links so the omission was invisible
+            // there; Linux needs the explicit opt-in. The wasm build uses
+            // a separate module rooted at demo/web_main.zig and stays
+            // libc-free via the comptime branches in cpu.zig + clint.zig.
+            .link_libc = true,
         }),
     });
     // Expose tests/fixtures/minimal.elf as an importable module so that
@@ -557,4 +564,63 @@ pub fn build(b: *std.Build) void {
             rv_step.dependOn(&run_it.step);
         }
     }
+
+    // === Phase 1.W — Web demo: cross-compile ccc to wasm32-freestanding ===
+    // Thin entry point in demo/web_main.zig that imports the existing
+    // emulator modules and exports a minimal run/outputPtr/outputLen
+    // interface for the browser. The web_main.zig file embeds hello.elf
+    // at compile time, so this step depends on the hello-elf build.
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+
+    // Single emulator module exposed via src/lib.zig so demo/web_main.zig
+    // can import the emulator without escaping its own package root.
+    // One module (not six) avoids "file exists in modules X and Y": the
+    // emulator files cross-import each other via relative paths, so
+    // declaring memory/cpu/etc as separate modules would pull the same
+    // file into multiple module trees. The shim re-exports the six
+    // pieces web_main.zig needs (cpu / memory / elf / halt / uart / clint).
+    const ccc_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+    });
+
+    const wasm_exe = b.addExecutable(.{
+        .name = "ccc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("demo/web_main.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "ccc", .module = ccc_module },
+            },
+        }),
+    });
+    wasm_exe.entry = .disabled;        // we call our own export, not _start
+    wasm_exe.rdynamic = true;          // expose `export fn` symbols
+
+    // Expose hello.elf as an importable module so web_main.zig can
+    // @embedFile it without escaping demo/'s package root. WriteFile
+    // step that co-locates a tiny Zig stub with hello.elf in a single
+    // output dir; the stub `pub const BLOB = @embedFile(...)` resolves
+    // relative to itself, so the .elf must be its sibling. Mirrors
+    // the user_blob pattern used by kernel.elf (see above).
+    const hello_blob_dir = b.addWriteFiles();
+    const hello_blob_zig = hello_blob_dir.add(
+        "hello_elf.zig",
+        "pub const BLOB = @embedFile(\"hello.elf\");\n",
+    );
+    _ = hello_blob_dir.addCopyFile(hello_elf.getEmittedBin(), "hello.elf");
+    wasm_exe.root_module.addAnonymousImport("hello_elf", .{
+        .root_source_file = hello_blob_zig,
+    });
+
+    const install_wasm = b.addInstallArtifact(wasm_exe, .{
+        .dest_dir = .{ .override = .{ .custom = "web" } },
+    });
+    // Make sure hello.elf is built before we try to @embedFile it.
+    install_wasm.step.dependOn(&install_hello_elf.step);
+    const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-freestanding");
+    wasm_step.dependOn(&install_wasm.step);
 }

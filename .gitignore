@@ -4,3 +4,5 @@ zig-out/
 *.bin
 .DS_Store
 .worktrees/
+.gstack/
+web/ccc.wasm

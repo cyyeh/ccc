@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ccc — hello world, in your browser</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="demo.css">
+  <script src="demo.js" defer></script>
+</head>
+<body>
+  <div class="page">
+    <div class="brand">ccc</div>
+    <h1>hello world, in your browser</h1>
+    <div class="subtitle">the same Zig core as <code>./ccc</code> — compiled to <code>wasm32-freestanding</code></div>
+
+    <div class="controls">
+      <button class="run" id="run-btn" disabled>loading…</button>
+      <label class="trace-toggle">
+        <input type="checkbox" id="trace-toggle">
+        <span>show instruction trace</span>
+      </label>
+    </div>
+    <div class="status" id="status">fetching ccc.wasm…</div>
+    <pre class="output" id="output"></pre>
+
+    <details class="trace-details" id="trace-details" hidden>
+      <summary>instruction trace <span class="trace-meta" id="trace-meta"></span></summary>
+      <pre class="trace" id="trace"></pre>
+    </details>
+
+    <p class="explain">
+      This page fetched <code>ccc.wasm</code> (<span id="wasm-size">…</span>
+      of WebAssembly with <code>hello.elf</code> embedded at compile time),
+      instantiated it with no imports, and called the wasm <code>run()</code>
+      export. UART output was captured into a buffer inside wasm linear memory;
+      this page copied it out via <code>outputPtr()</code> and
+      <code>outputLen()</code>. No server, no remote execution, no JavaScript
+      dependencies — your browser is the RISC-V machine.
+    </p>
+
+    <div class="footer-links">
+      <a href="../">← back to the deck</a>
+      <a href="https://github.com/cyyeh/ccc">view source on GitHub</a>
+    </div>
+  </div>
+</body>
+</html>

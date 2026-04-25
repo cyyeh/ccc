@@ -285,6 +285,22 @@
     }
     .site-footer a:hover { color: #fff; }
     .site-footer svg { width: 14px; height: 14px; display: block; }
+    .demo-link {
+      display: inline-block;
+      margin-top: 24px;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 22px;
+      color: var(--accent);
+      text-decoration: none;
+      padding: 10px 18px;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      transition: background-color 140ms ease, color 140ms ease;
+    }
+    .demo-link:hover {
+      background: var(--accent);
+      color: var(--bg);
+    }
     @media print { .site-footer { display: none !important; } }
   </style>
 </head>
@@ -298,6 +314,7 @@
     <div class="brand-rule"></div>
     <div class="title-line-1">a web browser, from scratch</div>
     <div class="title-line-2">a RISC-V computer in Zig · emulator → kernel → OS → network → browser</div>
+    <a class="demo-link" href="web/">▶ try it in your browser</a>
   </section>
 
   <!-- 2: Table of contents · five phases -->
@@ -355,6 +372,7 @@ $ ./zig-out/bin/ccc zig-out/bin/hello.elf
 <span class="a">hello world</span>
 $ echo $?
 <span class="a">0</span></pre>
+    <a class="demo-link" href="web/">▶ run this in your browser</a>
   </section>
 
   <!-- 3: Chapter 1.A · baseline -->

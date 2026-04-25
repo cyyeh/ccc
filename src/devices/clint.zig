@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const CLINT_BASE: u32 = 0x0200_0000;
 pub const CLINT_SIZE: u32 = 0x1_0000; // 64 KB, matches spec memory map
@@ -12,15 +13,28 @@ pub const ClintError = error{UnexpectedRegister};
 pub const ClockSourceFn = *const fn () i128;
 
 fn defaultClockSource() i128 {
-    // Zig 0.16 removed `std.time.nanoTimestamp`; fall back to a direct
-    // `clock_gettime(MONOTONIC, ...)` via libc. Any failure (unlikely on
-    // supported hosts) collapses to 0 — mtime just freezes until the next
-    // successful read.
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
-    const sec: i128 = @intCast(ts.sec);
-    const nsec: i128 = @intCast(ts.nsec);
-    return sec * 1_000_000_000 + nsec;
+    // Comptime branch on target. Native uses libc; WASI uses the WASI
+    // ABI directly; wasm32-freestanding (web demo) returns 0 — the
+    // browser-side entry point passes a custom clock source instead,
+    // and a constant default is fine because hello.elf doesn't poll
+    // mtime. Keeping this branch with no libc references guarantees
+    // the freestanding link succeeds even if Zig's DCE doesn't remove
+    // this function.
+    switch (comptime builtin.os.tag) {
+        .freestanding => return 0,
+        .wasi => {
+            var ns: u64 = undefined;
+            _ = std.os.wasi.clock_time_get(.MONOTONIC, 1, &ns);
+            return @intCast(ns);
+        },
+        else => {
+            var ts: std.c.timespec = undefined;
+            if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
+            const sec: i128 = @intCast(ts.sec);
+            const nsec: i128 = @intCast(ts.nsec);
+            return sec * 1_000_000_000 + nsec;
+        },
+    }
 }
 
 pub const Clint = struct {
