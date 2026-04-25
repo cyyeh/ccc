@@ -77,11 +77,16 @@ fn sysYield() u32 {
     return 0;
 }
 
+fn sysGetpid() u32 {
+    return proc.cur().pid;
+}
+
 pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
         64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
         93 => sysExit(tf.a0),
         124 => tf.a0 = sysYield(),
+        172 => tf.a0 = sysGetpid(),
         else => tf.a0 = @bitCast(@as(i32, -38)), // -ENOSYS
     }
 }
