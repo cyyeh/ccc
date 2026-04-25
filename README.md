@@ -4,6 +4,10 @@ Building a working RISC-V computer from scratch in Zig — emulator, kernel,
 OS, networking, and a tiny text-mode web browser. No Linux. No TLS. No
 graphics.
 
+**Live demo:** [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
+— `ccc` cross-compiled to `wasm32-freestanding`, running `hello.elf` in your
+browser. Same Zig core as the CLI; new ~80-line entry point for the browser.
+
 ## Goal
 
 Go from an empty repo to `browse http://test-server/` rendering a page in
