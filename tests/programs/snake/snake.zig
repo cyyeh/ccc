@@ -40,19 +40,100 @@ fn advanceMtimecmp() void {
     mtcmp_high_ptr.* = hi + carry;
 }
 
+const UART_THR: u32 = 0x1000_0000;
+
+fn uartPut(b: u8) void {
+    const thr: *volatile u8 = @ptrFromInt(UART_THR);
+    thr.* = b;
+}
+
+fn uartPutSlice(s: []const u8) void {
+    for (s) |b| uartPut(b);
+}
+
+fn uartPutDecimal(n: u32) void {
+    if (n == 0) {
+        uartPut('0');
+        return;
+    }
+    var buf: [10]u8 = undefined;
+    var i: usize = 0;
+    var v = n;
+    while (v > 0) : (v /= 10) {
+        buf[i] = @intCast('0' + (v % 10));
+        i += 1;
+    }
+    while (i > 0) {
+        i -= 1;
+        uartPut(buf[i]);
+    }
+}
+
+// Frame buffer: 15 rows × 32 cols. Filled by `paint`, written to UART
+// by `render`. Lives in .bss (zeroed by monitor.S).
+var frame: [game_mod.H][game_mod.W]u8 = undefined;
+
+fn paint() void {
+    // Borders + interior.
+    var y: u8 = 0;
+    while (y < game_mod.H) : (y += 1) {
+        var x: u8 = 0;
+        while (x < game_mod.W) : (x += 1) {
+            const top_or_bot = (y == 0 or y == game_mod.H - 1);
+            const left_or_right = (x == 0 or x == game_mod.W - 1);
+            if (top_or_bot and left_or_right) {
+                frame[y][x] = '+';
+            } else if (top_or_bot) {
+                frame[y][x] = '-';
+            } else if (left_or_right) {
+                frame[y][x] = '|';
+            } else {
+                frame[y][x] = ' ';
+            }
+        }
+    }
+    // Snake body.
+    var i: u16 = 0;
+    var idx: u16 = game.tail;
+    while (i < game.len) : (i += 1) {
+        const sx = game.snake_x[idx];
+        const sy = game.snake_y[idx];
+        if (sx < game_mod.W and sy < game_mod.H) {
+            frame[sy][sx] = if (idx == game.head) 'O' else '#';
+        }
+        idx = (idx + 1) % game_mod.MAX_SNAKE;
+    }
+    // Food.
+    if (game.food) |f| {
+        if (f.x < game_mod.W and f.y < game_mod.H) frame[f.y][f.x] = '*';
+    }
+}
+
+fn render() void {
+    paint();
+    // Clear screen + home cursor.
+    uartPutSlice("\x1b[2J\x1b[H");
+    // HUD row.
+    uartPutSlice("SNAKE  score: ");
+    uartPutDecimal(game.score);
+    uartPutSlice("  (q quit)\r\n");
+    // Board.
+    var y: u8 = 0;
+    while (y < game_mod.H) : (y += 1) {
+        var x: u8 = 0;
+        while (x < game_mod.W) : (x += 1) uartPut(frame[y][x]);
+        uartPutSlice("\r\n");
+    }
+}
+
 export fn snakeTrap() callconv(.c) void {
     if (!initialized) {
         game = game_mod.Game.init(.{
-            .x = @as(u8, game_mod.PLAY_W) / 2 + 1, // ~16
-            .y = @as(u8, game_mod.PLAY_H) / 2 + 1, // ~7
+            .x = @as(u8, game_mod.PLAY_W) / 2 + 1,
+            .y = @as(u8, game_mod.PLAY_H) / 2 + 1,
         });
         initialized = true;
     }
-
-    // T13 will replace this with real tick logic. For now: just halt
-    // on the first tick to prove the trap path works.
-    halt();
-
-    // Unreachable in this task; T13+ uses:
-    // advanceMtimecmp();
+    render();
+    halt(); // T13 removes this; tick loop continues until quit.
 }
