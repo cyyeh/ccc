@@ -8,24 +8,37 @@ pub const PlicError = error{UnexpectedRegister};
 pub const NSOURCES: u32 = 32;
 
 pub const Plic = struct {
-    /// Per-source priority. Index 0 hardwired 0 (source 0 reserved by spec).
-    /// Indices 1..31 hold u3 (0..7).
     priority: [NSOURCES]u3 = [_]u3{0} ** NSOURCES,
+    /// Pending bits. Bit N pending for source N. Bit 0 hardwired 0.
+    /// Mutated via assertSource/deassertSource and (later) cleared on claim.
+    pending: u32 = 0,
 
     pub fn init() Plic {
         return .{};
     }
 
+    pub fn assertSource(self: *Plic, irq: u5) void {
+        if (irq == 0) return;
+        self.pending |= @as(u32, 1) << irq;
+    }
+
+    pub fn deassertSource(self: *Plic, irq: u5) void {
+        if (irq == 0) return;
+        self.pending &= ~(@as(u32, 1) << irq);
+    }
+
     pub fn readByte(self: *const Plic, offset: u32) PlicError!u8 {
-        // Priority registers: 0x0000..0x007F (u32 per source, src 0..31).
         if (offset < 0x0080) {
             const src: u5 = @intCast(offset / 4);
             const byte_in_word: u2 = @intCast(offset % 4);
-            // Priority is u3, lives in byte 0 of the u32; bytes 1..3 are 0.
             if (byte_in_word == 0) return @as(u8, self.priority[src]);
             return 0;
         }
-        // Out-of-range (the rest of the 4 MB aperture): lenient zero.
+        // Pending register: u32 at 0x1000..0x1003.
+        if (offset >= 0x1000 and offset < 0x1004) {
+            const shift: u5 = @intCast((offset - 0x1000) * 8);
+            return @truncate(self.pending >> shift);
+        }
         return 0;
     }
 
@@ -33,15 +46,14 @@ pub const Plic = struct {
         if (offset < 0x0080) {
             const src: u5 = @intCast(offset / 4);
             const byte_in_word: u2 = @intCast(offset % 4);
-            // Source 0 is reserved — writes silently dropped.
             if (src == 0) return;
-            // Only byte 0 stores; mask to u3.
             if (byte_in_word == 0) {
                 self.priority[src] = @intCast(value & 0x07);
             }
-            // Bytes 1..3 are write-ignored (priority is u3).
             return;
         }
+        // Pending register is read-only.
+        if (offset >= 0x1000 and offset < 0x1004) return;
         // Out-of-range writes silently dropped.
     }
 };
@@ -77,4 +89,45 @@ test "priority source 31 is the last writable priority slot" {
     var p = Plic.init();
     try p.writeByte(0x007C, 0x03);
     try std.testing.expectEqual(@as(u8, 0x03), try p.readByte(0x007C));
+}
+
+test "assertSource(5) sets pending bit 5" {
+    var p = Plic.init();
+    p.assertSource(5);
+    // Pending u32 lives at offset 0x1000.
+    try std.testing.expectEqual(@as(u8, 0b0010_0000), try p.readByte(0x1000)); // byte 0, bit 5
+}
+
+test "deassertSource(5) clears pending bit 5" {
+    var p = Plic.init();
+    p.assertSource(5);
+    p.deassertSource(5);
+    try std.testing.expectEqual(@as(u8, 0), try p.readByte(0x1000));
+}
+
+test "assertSource(0) is a no-op (source 0 reserved)" {
+    var p = Plic.init();
+    p.assertSource(0);
+    try std.testing.expectEqual(@as(u8, 0), try p.readByte(0x1000));
+}
+
+test "assertSource is idempotent" {
+    var p = Plic.init();
+    p.assertSource(10);
+    p.assertSource(10);
+    p.assertSource(10);
+    // Bit 10 sits in byte 1 (bit 2 of byte 1).
+    try std.testing.expectEqual(@as(u8, 0b0000_0100), try p.readByte(0x1001));
+}
+
+test "MMIO writes to pending register are dropped (read-only)" {
+    var p = Plic.init();
+    try p.writeByte(0x1000, 0xFF);
+    try std.testing.expectEqual(@as(u8, 0), try p.readByte(0x1000));
+}
+
+test "assertSource(31) reaches byte 3" {
+    var p = Plic.init();
+    p.assertSource(31);
+    try std.testing.expectEqual(@as(u8, 0x80), try p.readByte(0x1003)); // bit 7 of byte 3
 }
