@@ -6,7 +6,7 @@
  *               .rodata      (msg)
  *   ...
  *
- * Contiguous — vm.mapUser treats the whole blob as one RWX span in 2.C.
+ * Contiguous — elfload.load maps PT_LOAD segments in Phase 3.B.
  * Permission tightening is a Plan 3+ concern.
  */
 

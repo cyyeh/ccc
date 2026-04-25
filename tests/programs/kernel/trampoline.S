@@ -1,11 +1,12 @@
 # tests/programs/kernel/trampoline.S — S-mode trap entry/exit.
 #
-# On trap: stvec points here. sscratch holds &the_process (kmain
-# initializes it before sret). Since tf is the first field of Process
-# (@offsetOf(Process,"tf")==0), &the_process is also the TrapFrame pointer
-# used throughout this file. We swap sp with sscratch to land on the tf,
-# save all user GPRs at fixed offsets, then switch to the kernel stack
-# and call s_trap_dispatch (Zig, in trap.zig).
+# On trap: stvec points here. sscratch holds &cur_proc (the currently-
+# scheduled process); sched.zig writes sscratch before each swtch into a
+# process, and s_return_to_user re-arms it on the forkret first-entry
+# path. Since tf is the first field of Process (@offsetOf(Process,"tf")==0),
+# &cur_proc is also the TrapFrame pointer used throughout this file. We swap
+# sp with sscratch to land on the tf, save all user GPRs at fixed offsets,
+# then switch to the kernel stack and call s_trap_dispatch (Zig, in trap.zig).
 #
 # Return-to-user path: restore GPRs from the tf at a0, then sret. The
 # last two loads handle sp and a0 — a0 has been serving as the tf base
@@ -14,6 +15,8 @@
 #
 # Offsets MUST match trap.zig's TF_* constants. comptime asserts in
 # trap.zig catch drift; this .equ block mirrors the numeric values.
+# KSTACK_TOP_OFFSET must match proc.zig's KSTACK_TOP_OFFSET; the
+# comptime assert in proc.zig catches drift there too.
 
 .equ TF_RA,   0
 .equ TF_SP,   4
@@ -47,12 +50,13 @@
 .equ TF_T5,  116
 .equ TF_T6,  120
 .equ TF_SEPC, 124
+.equ KSTACK_TOP_OFFSET, 144
 
 .section .text, "ax", @progbits
 .balign 4
 .globl s_trap_entry
 s_trap_entry:
-    # sp <-> sscratch: sp now = &the_tf, sscratch now = user sp.
+    # sp <-> sscratch: sp now = &ptable[0].tf, sscratch now = user sp.
     csrrw   sp, sscratch, sp
 
     # Save all GPRs except x0 and x2 (sp, which we'll save from sscratch).
@@ -91,33 +95,42 @@ s_trap_entry:
     csrr    t0, sscratch
     sw      t0, TF_SP(sp)
 
-    # Reset sscratch = &the_process so the NEXT trap has something valid
-    # to swap with. @offsetOf(Process, "tf") == 0 so &the_process is also
-    # the TrapFrame pointer trampoline save/restore blocks work on.
-    la      t0, the_process
-    csrw    sscratch, t0
+    # Re-arm sscratch for the next trap. sp currently points at &cur_proc
+    # (since we swapped sp<->sscratch on entry and tf is offset 0 in
+    # Process), so simply reflect it back into sscratch.
+    csrw    sscratch, sp
 
     # Save sepc.
     csrr    t0, sepc
     sw      t0, TF_SEPC(sp)
 
-    # Switch sp to the kernel stack. _kstack_top is the linker symbol.
-    la      sp, _kstack_top
+    # Move &cur_proc into a0 BEFORE switching the stack — the dispatcher
+    # takes the tf pointer in a0, and we need to keep it accessible.
+    mv      a0, sp
+
+    # Switch sp to the per-process kernel stack.
+    lw      sp, KSTACK_TOP_OFFSET(a0)
 
     # Call s_trap_dispatch(tf).
-    la      a0, the_process
     call    s_trap_dispatch
 
-    # s_trap_dispatch is a C-ABI function and may clobber a0. Reload
-    # it before the return path, which expects a0 = &the_process (equal
-    # to &the_process.tf since tf is the first field).
-    la      a0, the_process
+    # On return, s_trap_dispatch may have called swtch, which leaves us
+    # on a (possibly different) process's kstack with a0 clobbered. We
+    # need a0 = &cur_proc.tf for the s_return_to_user path. Read sscratch
+    # — re-armed at trap entry to point at the current process struct.
+    csrr    a0, sscratch
 
     # Fall through to return-to-user.
 
 .globl s_return_to_user
 s_return_to_user:
-    # a0 = &the_tf (either from call return or kmain's initial jump).
+    # a0 = &cur_proc (== &cur_proc.tf, since tf is at offset 0 in Process).
+    # Re-arm sscratch so the NEXT trap entry swaps sp with the correct
+    # process's struct. Without this, multi-proc traps would read the
+    # stale sscratch left by the previous process's trap entry and corrupt
+    # its trapframe and kernel stack. Single-proc: sscratch == a0 always
+    # (only &ptable[0]), so this csrw is a no-op in that case.
+    csrw    sscratch, a0
 
     # Restore sepc first.
     lw      t0, TF_SEPC(a0)

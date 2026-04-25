@@ -41,6 +41,21 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&test_run.step);
 
+    // Host-runnable tests for kernel-side modules whose algorithms can run
+    // outside the cross-compiled kernel (e.g., elfload's parser).
+    const kernel_host_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/elfload.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_host_tests.root_module.addAnonymousImport("minimal_elf_fixture", .{
+        .root_source_file = b.path("tests/fixtures/minimal_elf.zig"),
+    });
+    const kernel_host_tests_run = b.addRunArtifact(kernel_host_tests);
+    test_step.dependOn(&kernel_host_tests_run.step);
+
     // === Hand-crafted hello world demo (Task 17) ===
     // The encoder is a host tool that emits a raw RV32I binary.
     const hello_encoder = b.addExecutable(.{
@@ -233,6 +248,16 @@ pub fn build(b: *std.Build) void {
     });
     kernel_mtimer_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/mtimer.S"));
 
+    const kernel_swtch_obj = b.addObject(.{
+        .name = "kernel-swtch",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_swtch_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/swtch.S"));
+
     // === User program (Plan 2.C) ===
     const userprog_obj = b.addObject(.{
         .name = "userprog",
@@ -259,29 +284,63 @@ pub fn build(b: *std.Build) void {
     userprog_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
     userprog_elf.entry = .{ .symbol_name = "_start" };
 
-    // Flatten ELF -> raw binary so the kernel can @embedFile it. Use
-    // Zig's built-in ObjCopy step (backed by llvm-objcopy from the Zig
-    // distribution) — avoids depending on a system llvm-objcopy binary.
-    const userprog_objcopy = b.addObjCopy(userprog_elf.getEmittedBin(), .{
-        .format = .bin,
-        .basename = "userprog.bin",
-    });
-    const userprog_bin = userprog_objcopy.getOutput();
+    const userprog_elf_bin = userprog_elf.getEmittedBin();
 
-    // WriteFile step that co-locates a tiny Zig stub with userprog.bin
-    // in a single output dir. The stub `pub const BLOB = @embedFile(...)`
-    // is resolved relative to itself, so the bin must be its sibling.
-    const user_blob_stub_dir = b.addWriteFiles();
-    const user_blob_zig = user_blob_stub_dir.add(
-        "user_blob.zig",
-        "pub const BLOB = @embedFile(\"userprog.bin\");\n",
+    const boot_config_stub_dir = b.addWriteFiles();
+    const boot_config_zig = boot_config_stub_dir.add(
+        "boot_config.zig",
+        \\pub const MULTI_PROC: bool = false;
+        \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
+        \\pub const USERPROG2_ELF: []const u8 = &.{};
+        \\
     );
-    _ = user_blob_stub_dir.addCopyFile(userprog_bin, "userprog.bin");
+    _ = boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
 
-    // Expose a top-level step for CI / debugging.
-    const install_userprog_bin = b.addInstallFile(userprog_bin, "userprog.bin");
-    const kernel_user_step = b.step("kernel-user", "Build the Plan 2.C userprog.bin");
-    kernel_user_step.dependOn(&install_userprog_bin.step);
+    const install_userprog_elf = b.addInstallFile(userprog_elf_bin, "userprog.elf");
+    const kernel_user_step = b.step("kernel-user", "Build the Phase 3.B userprog.elf");
+    kernel_user_step.dependOn(&install_userprog_elf.step);
+
+    const userprog2_obj = b.addObject(.{
+        .name = "userprog2",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/user/userprog2.zig"),
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const userprog2_elf = b.addExecutable(.{
+        .name = "userprog2.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    userprog2_elf.root_module.addObject(userprog2_obj);
+    userprog2_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    userprog2_elf.entry = .{ .symbol_name = "_start" };
+
+    const userprog2_elf_bin = userprog2_elf.getEmittedBin();
+
+    const install_userprog2_elf = b.addInstallFile(userprog2_elf_bin, "userprog2.elf");
+    const userprog2_step = b.step("kernel-user2", "Build the Phase 3.B userprog2.elf");
+    userprog2_step.dependOn(&install_userprog2_elf.step);
+
+    const multi_boot_config_stub_dir = b.addWriteFiles();
+    const multi_boot_config_zig = multi_boot_config_stub_dir.add(
+        "boot_config.zig",
+        \\pub const MULTI_PROC: bool = true;
+        \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
+        \\pub const USERPROG2_ELF: []const u8 = @embedFile("userprog2.elf");
+        \\
+    );
+    _ = multi_boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
+    _ = multi_boot_config_stub_dir.addCopyFile(userprog2_elf_bin, "userprog2.elf");
 
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
@@ -293,8 +352,22 @@ pub fn build(b: *std.Build) void {
             .single_threaded = true,
         }),
     });
-    kernel_kmain_obj.root_module.addAnonymousImport("user_blob", .{
-        .root_source_file = user_blob_zig,
+    kernel_kmain_obj.root_module.addAnonymousImport("boot_config", .{
+        .root_source_file = boot_config_zig,
+    });
+
+    const kernel_kmain_multi_obj = b.addObject(.{
+        .name = "kernel-kmain-multi",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_kmain_multi_obj.root_module.addAnonymousImport("boot_config", .{
+        .root_source_file = multi_boot_config_zig,
     });
 
     const kernel_elf = b.addExecutable(.{
@@ -310,6 +383,7 @@ pub fn build(b: *std.Build) void {
     kernel_elf.root_module.addObject(kernel_boot_obj);
     kernel_elf.root_module.addObject(kernel_trampoline_obj);
     kernel_elf.root_module.addObject(kernel_mtimer_obj);
+    kernel_elf.root_module.addObject(kernel_swtch_obj);
     kernel_elf.root_module.addObject(kernel_kmain_obj);
     kernel_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
     kernel_elf.entry = .{ .symbol_name = "_M_start" };
@@ -320,6 +394,28 @@ pub fn build(b: *std.Build) void {
 
     const kernel_step = b.step("kernel", "Alias for kernel-elf");
     kernel_step.dependOn(&install_kernel_elf.step);
+
+    const kernel_multi_elf = b.addExecutable(.{
+        .name = "kernel-multi.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_multi_elf.root_module.addObject(kernel_boot_obj);
+    kernel_multi_elf.root_module.addObject(kernel_trampoline_obj);
+    kernel_multi_elf.root_module.addObject(kernel_mtimer_obj);
+    kernel_multi_elf.root_module.addObject(kernel_swtch_obj);
+    kernel_multi_elf.root_module.addObject(kernel_kmain_multi_obj);
+    kernel_multi_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_multi_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_kernel_multi_elf = b.addInstallArtifact(kernel_multi_elf, .{});
+    const kernel_multi_step = b.step("kernel-multi", "Build the Phase 3.B multi-proc kernel.elf");
+    kernel_multi_step.dependOn(&install_kernel_multi_elf.step);
 
     // End-to-end: Plan 2.D uses a host-compiled verifier that spawns ccc
     // on kernel.elf, captures stdout, and asserts the Phase 2 §Definition
@@ -342,6 +438,23 @@ pub fn build(b: *std.Build) void {
 
     const e2e_kernel_step = b.step("e2e-kernel", "Run the Phase 2 kernel e2e test (hello + ticks)");
     e2e_kernel_step.dependOn(&e2e_kernel_run.step);
+
+    const multiproc_verify = b.addExecutable(.{
+        .name = "multiproc_verify_e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/multiproc_verify_e2e.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const e2e_multiproc_run = b.addRunArtifact(multiproc_verify);
+    e2e_multiproc_run.addFileArg(exe.getEmittedBin());
+    e2e_multiproc_run.addFileArg(kernel_multi_elf.getEmittedBin());
+    e2e_multiproc_run.expectExitCode(0);
+
+    const e2e_multiproc_step = b.step("e2e-multiproc-stub", "Run the Phase 3.B multi-proc e2e test (PID 1 + PID 2)");
+    e2e_multiproc_step.dependOn(&e2e_multiproc_run.step);
 
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.

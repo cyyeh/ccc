@@ -1,7 +1,7 @@
 // tests/programs/kernel/trap.zig — S-mode trap dispatcher.
 //
-// Plan 2.D changes: the SSI branch now increments the_process.ticks_observed
-// and calls sched.schedule(). The ECALL branch is unchanged from 2.C; the
+// Phase 3.B changes: the SSI branch now increments proc.cur().ticks_observed
+// and calls proc.yield(). The ECALL branch is unchanged from 2.C; the
 // panic branch is unchanged from 2.C.
 //
 // Field order in TrapFrame matters. trampoline.S saves/restores registers
@@ -105,7 +105,6 @@ comptime {
 const kprintf = @import("kprintf.zig");
 const syscall = @import("syscall.zig");
 const proc = @import("proc.zig");
-const sched = @import("sched.zig");
 
 fn readScause() u32 {
     return asm volatile ("csrr %[out], scause"
@@ -145,13 +144,13 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         // Supervisor software interrupt — forwarded timer tick.
         // 1. Clear sip.SSIP so the same edge doesn't re-fire immediately.
         // 2. Bump the per-process tick counter (wrapping add — 2^32 ticks
-        //    at 10 kHz nominal is ~4.9 days, overflow is not a 2.D worry).
+        //    at 10 kHz nominal is ~4.9 days, overflow is not a Phase 3.B worry).
         // 3. Pick next process. In Phase 2 this is always the same one,
         //    but we exercise the code path so Plan 3's picker drops in
         //    without a signature change.
         clearSipSsip();
-        proc.the_process.ticks_observed +%= 1;
-        _ = sched.schedule();
+        proc.cur().ticks_observed +%= 1;
+        proc.yield();
         return;
     }
 

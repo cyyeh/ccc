@@ -1,66 +1,102 @@
-// tests/programs/kernel/kmain.zig — Phase 2 Plan 2.D kernel S-mode entry.
+// tests/programs/kernel/kmain.zig — Phase 3.B kernel S-mode entry.
 //
-// Difference from 2.C: the standalone `the_tf` is gone. The trapframe is
-// now the first field of `proc.the_process`, so sscratch / trampoline
-// references point at the same memory via the new symbol `the_process`.
-// Boot also routes through `sched.context_switch_to` for the initial
-// satp write so Plan 3 has one code path to edit when the switch becomes
-// non-trivial.
+// Phase 3.B: kmain allocates PID 1 via proc.alloc(), builds its address
+// space with elfload.load(), marks it Runnable, then switches into
+// scheduler(). No more single-process tail-call to s_return_to_user;
+// the scheduler + forkret path takes over from here.
 
 const std = @import("std");
 const uart = @import("uart.zig");
 const vm = @import("vm.zig");
 const page_alloc = @import("page_alloc.zig");
-const trap = @import("trap.zig");
 const proc = @import("proc.zig");
 const sched = @import("sched.zig");
-const user_blob = @import("user_blob");
-
-pub const USER_BLOB: []const u8 = user_blob.BLOB;
+const elfload = @import("elfload.zig");
+const kprintf = @import("kprintf.zig");
+const boot_config = @import("boot_config");
 
 const SATP_MODE_SV32: u32 = 1 << 31;
 
 extern fn s_trap_entry() void;
-extern fn s_return_to_user(tf: *trap.TrapFrame) noreturn;
 
-// Linker symbol: top of the 16 KB kernel stack. Used to populate
-// the_process.kstack_top so the trampoline can switch to it on trap entry.
-// (Plan 2.C's trampoline hard-codes `la sp, _kstack_top`; Plan 3 will
-// want this per-process. 2.D stores it but trampoline still uses the
-// linker symbol directly — wiring it through is Phase 3 scope.)
-extern const _kstack_top: u8;
+// Keep `uart` in the reachable set for early-boot panic printing.
+comptime {
+    _ = uart;
+}
 
 export fn kmain() callconv(.c) noreturn {
     page_alloc.init();
-    const root_pa = vm.allocRoot();
-    vm.mapKernelAndMmio(root_pa);
-    vm.mapUser(root_pa, USER_BLOB.ptr, @intCast(USER_BLOB.len));
+    proc.cpuInit();
 
-    // Initialize the single process.
-    proc.the_process = std.mem.zeroes(proc.Process);
-    proc.the_process.tf.sepc = vm.USER_TEXT_VA; // _start lives at VA 0x00010000
-    proc.the_process.tf.sp = vm.USER_STACK_TOP;
-    proc.the_process.satp = SATP_MODE_SV32 | (root_pa >> 12);
-    proc.the_process.kstack_top = @intCast(@intFromPtr(&_kstack_top));
-    proc.the_process.state = .Runnable;
-    // ticks_observed, exit_code already zero from zeroes().
+    // Allocate PID 1.
+    const pid1 = proc.alloc() orelse kprintf.panic("kmain: proc.alloc PID 1", .{});
+    @memcpy(pid1.name[0..4], "init");
 
-    // Install the S-mode trap vector and sscratch.
-    const tf_addr: u32 = @intCast(@intFromPtr(&proc.the_process));
+    // Build PID 1's address space.
+    const root = vm.allocRoot() orelse kprintf.panic("kmain: allocRoot PID 1", .{});
+    pid1.pgdir = root;
+    pid1.satp = SATP_MODE_SV32 | (root >> 12);
+    vm.mapKernelAndMmio(root);
+
+    const allocFn = struct {
+        fn f() ?u32 {
+            return page_alloc.alloc();
+        }
+    }.f;
+    const mapFn = struct {
+        fn f(pgdir: u32, va: u32, pa: u32, flags: u32) void {
+            vm.mapPage(pgdir, va, pa, flags);
+        }
+    }.f;
+    const lookupFn = struct {
+        fn f(pgdir: u32, va: u32) ?u32 {
+            return vm.lookupPA(pgdir, va);
+        }
+    }.f;
+
+    const entry = elfload.load(boot_config.USERPROG_ELF, root, allocFn, mapFn, lookupFn, vm.USER_RWX) catch |err| {
+        kprintf.panic("elfload PID 1: {s}", .{@errorName(err)});
+    };
+    if (!vm.mapUserStack(root)) kprintf.panic("mapUserStack PID 1", .{});
+
+    pid1.tf.sepc = entry;
+    pid1.tf.sp = vm.USER_STACK_TOP;
+    pid1.sz = vm.USER_TEXT_VA + 0x10000; // initial brk above text region
+    pid1.state = .Runnable;
+
+    // Optional: PID 2.
+    if (boot_config.MULTI_PROC) {
+        const pid2 = proc.alloc() orelse kprintf.panic("kmain: alloc PID 2", .{});
+        @memcpy(pid2.name[0..5], "init2");
+        const root2 = vm.allocRoot() orelse kprintf.panic("kmain: allocRoot PID 2", .{});
+        pid2.pgdir = root2;
+        pid2.satp = SATP_MODE_SV32 | (root2 >> 12);
+        vm.mapKernelAndMmio(root2);
+        const entry2 = elfload.load(boot_config.USERPROG2_ELF, root2, allocFn, mapFn, lookupFn, vm.USER_RWX) catch |err| {
+            kprintf.panic("elfload PID 2: {s}", .{@errorName(err)});
+        };
+        if (!vm.mapUserStack(root2)) kprintf.panic("mapUserStack PID 2", .{});
+        pid2.tf.sepc = entry2;
+        pid2.tf.sp = vm.USER_STACK_TOP;
+        pid2.sz = vm.USER_TEXT_VA + 0x10000;
+        pid2.state = .Runnable;
+    }
+
+    // Install the S-mode trap vector + sscratch (will be overwritten on
+    // each schedule, but a non-null initial value matters in case the
+    // first schedule races a tick — defense-in-depth).
     const stvec_val: u32 = @intCast(@intFromPtr(&s_trap_entry));
+    const sscratch_val: u32 = @intCast(@intFromPtr(pid1));
     asm volatile (
         \\ csrw stvec, %[stv]
         \\ csrw sscratch, %[ss]
         :
         : [stv] "r" (stvec_val),
-          [ss] "r" (tf_addr),
+          [ss] "r" (sscratch_val),
         : .{ .memory = true }
     );
 
-    // Enable sie.SSIE so forwarded timer ticks deliver in S-mode.
-    // (U-mode delivery is always on as a consequence of lower-privilege
-    // semantics; this bit matters for any S-mode-originated SSI once the
-    // kernel grows nested structures — defense-in-depth for Plan 3+.)
+    // sie.SSIE for forwarded timer ticks.
     const SIE_SSIE: u32 = 1 << 1;
     asm volatile ("csrs sie, %[b]"
         :
@@ -68,9 +104,7 @@ export fn kmain() callconv(.c) noreturn {
         : .{ .memory = true }
     );
 
-    // Configure sstatus.SPP = 0 (U) and sstatus.SPIE = 1 so sret lands
-    // in U with SIE=1 after the privilege transition.
-    //   SPP is bit 8, SPIE is bit 5, SIE is bit 1.
+    // sstatus: SPP=0, SPIE=1 — for whoever sret's first.
     const SSTATUS_SPP: u32 = 1 << 8;
     const SSTATUS_SPIE: u32 = 1 << 5;
     asm volatile (
@@ -82,16 +116,12 @@ export fn kmain() callconv(.c) noreturn {
         : .{ .memory = true }
     );
 
-    // Flip on Sv32 translation via the scheduler's context-switch helper.
-    // Plan 3 will reroute SSI + yield here too; 2.D only uses it from boot.
-    sched.context_switch_to(&proc.the_process);
-
-    // Jump to the trampoline's return-to-user path with a0 = &the_process.tf.
-    // Since @offsetOf(Process, "tf") == 0, &the_process is the TrapFrame ptr.
-    s_return_to_user(@ptrCast(&proc.the_process));
-}
-
-// Keep `uart` in the reachable set for potential early-boot panic printing.
-comptime {
-    _ = uart;
+    // Switch onto the scheduler stack and jump into scheduler(). swtch
+    // saves the (irrelevant) caller context to a throwaway and jumps
+    // into scheduler() with sp = sched_stack_top.
+    var bootstrap: proc.Context = std.mem.zeroes(proc.Context);
+    proc.cpu.sched_context.ra = @intCast(@intFromPtr(&sched.scheduler));
+    proc.cpu.sched_context.sp = proc.cpu.sched_stack_top;
+    proc.swtch(&bootstrap, &proc.cpu.sched_context);
+    unreachable;
 }

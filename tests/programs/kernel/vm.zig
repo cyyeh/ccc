@@ -66,9 +66,8 @@ fn ptePtr(table_pa: u32, index: u32) *volatile u32 {
     return @ptrFromInt(table_pa + index * 4);
 }
 
-pub fn allocRoot() u32 {
-    // A fresh Sv32 L1 table is just a zeroed 4KB page.
-    return page_alloc.allocZeroPage();
+pub fn allocRoot() ?u32 {
+    return page_alloc.alloc();
 }
 
 /// Map a single 4KB page at `va` to physical page `pa` with the given flags.
@@ -104,6 +103,20 @@ pub fn mapPage(root_pa: u32, va: u32, pa: u32, flags: u32) void {
         kprintf.panic("vm.mapPage: remap at va {x} (old pte {x})", .{ va, l0_entry.* });
     }
     l0_entry.* = makeLeaf(pa, flags | PTE_V);
+}
+
+/// Look up the physical address backing `va` in `root_pa`'s Sv32 table.
+/// Returns the PA if a valid leaf PTE exists, null otherwise.
+pub fn lookupPA(root_pa: u32, va: u32) ?u32 {
+    const l1_idx = vpn1(va);
+    const l1_entry = ptePtr(root_pa, l1_idx);
+    if ((l1_entry.* & PTE_V) == 0) return null;
+    if ((l1_entry.* & (PTE_R | PTE_W | PTE_X)) != 0) return null; // superpage — not used
+    const l0_table_pa = ppnOfPte(l1_entry.*) << 12;
+    const l0_idx = vpn0(va);
+    const l0_entry = ptePtr(l0_table_pa, l0_idx);
+    if ((l0_entry.* & PTE_V) == 0) return null;
+    return ppnOfPte(l0_entry.*) << 12;
 }
 
 /// Map a contiguous VA region to a contiguous PA region, page by page.
@@ -168,14 +181,13 @@ pub fn mapKernelAndMmio(root_pa: u32) void {
     const stack_e = extU32(&_kstack_top);
     mapRange(root_pa, stack_s, stack_s, stack_e - stack_s, KERNEL_DATA);
 
-    // Also cover the free-page region the allocator is bumping into — we
-    // need to walk and install entries in L0 tables that the allocator
-    // itself is producing, so each of those pages must be mappable as
-    // the kernel accesses them. Map the entire 128 MiB RAM ceiling for
-    // simplicity; over-mapping is harmless (unreferenced PTEs cost
-    // nothing). Start at the current heap position (post-init) and
-    // extend to RAM_END.
-    const heap_s = page_alloc.heapPos();
+    // Also cover the free-page region managed by the free-list allocator.
+    // We need the kernel to be able to dereference any allocator-owned
+    // page during page-table walks (e.g. reading an L0 table produced by
+    // a prior alloc). Map all kernel-direct RAM beyond heap_start up to
+    // RAM_END; over-mapping is harmless (unreferenced PTEs cost nothing).
+    // heap_start is a fixed boundary set by init() — not a moving cursor.
+    const heap_s = page_alloc.heapStart();
     mapRange(root_pa, heap_s, heap_s, page_alloc.RAM_END - heap_s, KERNEL_DATA);
 
     // MMIO — one page each, identity-mapped, S-only.
@@ -194,35 +206,15 @@ pub const USER_STACK_TOP: u32 = 0x0003_2000;
 pub const USER_STACK_BOTTOM: u32 = 0x0003_0000;
 pub const USER_STACK_PAGES: u32 = 2;
 
-/// Map the user program: copy each 4 KB chunk of `blob` into a fresh
-/// physical frame, install a U+R+W+X leaf PTE at VA 0x0001_0000 + k*4K.
-/// Then allocate 2 stack pages mapped at VA 0x0003_0000 + {0, 4K}
-/// with U+R+W (no X). The user's sp is initialized to USER_STACK_TOP
-/// by kmain before sret.
-pub fn mapUser(root_pa: u32, blob_ptr: [*]const u8, blob_len: u32) void {
-    // Round up blob length to PAGE_SIZE for allocation purposes.
-    const page_count: u32 = (blob_len + (PAGE_SIZE - 1)) >> PAGE_SHIFT;
-    var i: u32 = 0;
-    while (i < page_count) : (i += 1) {
-        const user_pa = page_alloc.allocZeroPage();
-        // Copy up to PAGE_SIZE bytes from blob[i*PAGE_SIZE..] into this frame.
-        const src_off = i * PAGE_SIZE;
-        const remaining = if (blob_len > src_off) blob_len - src_off else 0;
-        const copy_len = @min(remaining, PAGE_SIZE);
-        const dst: [*]volatile u8 = @ptrFromInt(user_pa);
-        var j: u32 = 0;
-        while (j < copy_len) : (j += 1) dst[j] = blob_ptr[src_off + j];
-
-        const va = USER_TEXT_VA + i * PAGE_SIZE;
-        mapPage(root_pa, va, user_pa, USER_RWX);
-    }
-
-    // User stack: 2 pages, U+R+W, zero-initialized (already zero from
-    // allocZeroPage).
+/// Allocate USER_STACK_PAGES (2) zeroed frames, map them at
+/// USER_STACK_BOTTOM..USER_STACK_TOP with U+R+W. Returns false on OOM,
+/// in which case partial mappings remain in pgdir (caller frees).
+pub fn mapUserStack(root_pa: u32) bool {
     var s: u32 = 0;
     while (s < USER_STACK_PAGES) : (s += 1) {
-        const stack_pa = page_alloc.allocZeroPage();
+        const stack_pa = page_alloc.alloc() orelse return false;
         const va = USER_STACK_BOTTOM + s * PAGE_SIZE;
         mapPage(root_pa, va, stack_pa, USER_RW);
     }
+    return true;
 }
