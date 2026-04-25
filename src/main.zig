@@ -34,6 +34,7 @@ const Args = struct {
     memory_mb: u32 = 128,
     disk_path: ?[]const u8 = null,
     disk_latency: u32 = 0,
+    input_path: ?[]const u8 = null,
 };
 
 const ArgsError = error{
@@ -72,6 +73,10 @@ fn parseArgs(argv: []const [:0]const u8, stderr: *Io.Writer) ArgsError!Args {
             i += 1;
             if (i >= argv.len) return error.MissingArg;
             args.disk_latency = std.fmt.parseInt(u32, argv[i], 0) catch return error.InvalidAddress;
+        } else if (std.mem.eql(u8, a, "--input")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingArg;
+            args.input_path = argv[i];
         } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
             printUsage(stderr) catch {};
             std.process.exit(0);
@@ -185,6 +190,19 @@ pub fn main(init: std.process.Init) !void {
     }
     defer if (block.disk_file) |f| f.close(io);
 
+    // --input PATH: stream the file's bytes into UART RX FIFO during idleSpin.
+    var rx_pump_storage: uart_dev.RxPump = undefined;
+    if (args.input_path) |ipath| {
+        const f = Io.Dir.cwd().openFile(io, ipath, .{ .mode = .read_only }) catch |err| {
+            stderr.print("failed to open input file {s}: {s}\n", .{ ipath, @errorName(err) }) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        rx_pump_storage = .{ .file = f };
+        uart.rx_pump = &rx_pump_storage;
+    }
+    defer if (uart.rx_pump) |p| p.file.close(io);
+
     const ram_size: usize = @as(usize, args.memory_mb) * 1024 * 1024;
 
     // Default boot: ELF. Fallback: --raw <addr>.
@@ -268,4 +286,12 @@ test "parseArgs default disk_path is null" {
     const argv = &[_][:0]const u8{ "ccc", "kernel.elf" };
     const args = try parseArgs(argv[0..], &aw.writer);
     try std.testing.expect(args.disk_path == null);
+}
+
+test "parseArgs accepts --input PATH" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const argv = &[_][:0]const u8{ "ccc", "--input", "/dev/null", "kernel.elf" };
+    const args = try parseArgs(argv[0..], &aw.writer);
+    try std.testing.expectEqualStrings("/dev/null", args.input_path.?);
 }

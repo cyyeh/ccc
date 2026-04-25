@@ -116,10 +116,21 @@ pub const RxPump = struct {
     file: std.Io.File,
     eof: bool = false,
 
-    pub fn drainAvailable(self: *RxPump, uart: *Uart) void {
-        // Stub: Task 16 replaces this body with the real non-blocking read.
-        _ = self;
-        _ = uart;
+    pub fn drainAvailable(self: *RxPump, io: std.Io, uart: *Uart) void {
+        if (self.eof) return;
+        var buf: [64]u8 = undefined;
+        // Bound the read by FIFO free space so we never drop bytes.
+        const free = @as(usize, RX_CAPACITY) - uart.rx_count;
+        if (free == 0) return;
+        const cap = @min(free, buf.len);
+        // Zig 0.16: File.readStreaming takes a vector slice and signals EOF
+        // via error.EndOfStream. Treat any error (incl. EndOfStream) as 0.
+        const n = self.file.readStreaming(io, &.{buf[0..cap]}) catch 0;
+        if (n == 0) {
+            self.eof = true;
+            return;
+        }
+        for (buf[0..n]) |b| _ = uart.pushRx(b);
     }
 };
 

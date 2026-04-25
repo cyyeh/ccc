@@ -215,7 +215,7 @@ pub const Cpu = struct {
             }
             // Drain host stdin if a pump is configured (Task 16 wires this).
             if (self.memory.uart.rx_pump) |pump| {
-                pump.drainAvailable(self.memory.uart);
+                pump.drainAvailable(self.memory.io, self.memory.uart);
             }
             // Did we just get something interrupt-worthy?
             if (check_interrupt(self)) return;
