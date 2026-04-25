@@ -168,14 +168,13 @@ pub fn mapKernelAndMmio(root_pa: u32) void {
     const stack_e = extU32(&_kstack_top);
     mapRange(root_pa, stack_s, stack_s, stack_e - stack_s, KERNEL_DATA);
 
-    // Also cover the free-page region the allocator is bumping into — we
-    // need to walk and install entries in L0 tables that the allocator
-    // itself is producing, so each of those pages must be mappable as
-    // the kernel accesses them. Map the entire 128 MiB RAM ceiling for
-    // simplicity; over-mapping is harmless (unreferenced PTEs cost
-    // nothing). Start at the current heap position (post-init) and
-    // extend to RAM_END.
-    const heap_s = page_alloc.heapPos();
+    // Also cover the free-page region managed by the free-list allocator.
+    // We need the kernel to be able to dereference any allocator-owned
+    // page during page-table walks (e.g. reading an L0 table produced by
+    // a prior alloc). Map all kernel-direct RAM beyond heap_start up to
+    // RAM_END; over-mapping is harmless (unreferenced PTEs cost nothing).
+    // heap_start is a fixed boundary set by init() — not a moving cursor.
+    const heap_s = page_alloc.heapStart();
     mapRange(root_pa, heap_s, heap_s, page_alloc.RAM_END - heap_s, KERNEL_DATA);
 
     // MMIO — one page each, identity-mapped, S-only.
