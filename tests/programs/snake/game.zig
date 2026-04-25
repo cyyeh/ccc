@@ -71,6 +71,19 @@ pub const Game = struct {
             return .CollisionWall;
         }
 
+        // Self-collision: scan the current body for (nx, ny).
+        var i: u16 = 0;
+        var idx: u16 = self.tail;
+        while (i < self.len) : (i += 1) {
+            if (self.snake_x[idx] == @as(u8, @intCast(nx)) and
+                self.snake_y[idx] == @as(u8, @intCast(ny)))
+            {
+                self.state = .GameOver;
+                return .CollisionSelf;
+            }
+            idx = (idx + 1) % MAX_SNAKE;
+        }
+
         const new_head: u16 = (self.head + 1) % MAX_SNAKE;
         self.snake_x[new_head] = @intCast(nx);
         self.snake_y[new_head] = @intCast(ny);
@@ -120,12 +133,15 @@ test "advance: hits right wall returns CollisionWall" {
 }
 
 test "advance: hits left wall" {
+    // L-shaped snake, head at (1,5) facing Left — no body in the leftward path.
     var g = Game.init(.{ .x = 5, .y = 7 });
+    g.len = 3;
+    g.tail = 0;
+    g.head = 2;
+    g.snake_x[0] = 3; g.snake_y[0] = 6; // tail
+    g.snake_x[1] = 2; g.snake_y[1] = 6; // mid
+    g.snake_x[2] = 1; g.snake_y[2] = 6; // head at x=1
     g.dir = .Left;
-    _ = g.advance();
-    _ = g.advance();
-    _ = g.advance();
-    _ = g.advance();
     const r = g.advance();
     try std.testing.expectEqual(AdvanceResult.CollisionWall, r);
 }
@@ -177,4 +193,28 @@ test "applyDirIfLegal: no pending is a no-op" {
     g.pending_dir = null;
     g.applyDirIfLegal();
     try std.testing.expectEqual(Dir.Right, g.dir);
+}
+
+test "advance: self-collision when head re-enters body" {
+    // Length-5 snake forming a hook: turning back on itself collides next move.
+    var g = Game.init(.{ .x = 6, .y = 7 });
+    g.len = 5;
+    g.tail = 0;
+    g.head = 4;
+    const path = [_]Cell{
+        .{ .x = 5, .y = 5 }, // tail
+        .{ .x = 6, .y = 5 },
+        .{ .x = 6, .y = 6 },
+        .{ .x = 5, .y = 6 },
+        .{ .x = 6, .y = 7 }, // head
+    };
+    for (path, 0..) |c, i| {
+        g.snake_x[i] = c.x;
+        g.snake_y[i] = c.y;
+    }
+    g.dir = .Up;
+    // Next move: head goes (6,7) → (6,6). (6,6) is in the body (index 2).
+    const r = g.advance();
+    try std.testing.expectEqual(AdvanceResult.CollisionSelf, r);
+    try std.testing.expectEqual(State.GameOver, g.state);
 }
