@@ -38,6 +38,10 @@ pub const Uart = struct {
     rx_count: u16 = 0,
     /// Set by main.zig after construction. Tests set it directly.
     plic: ?*plic_dev.Plic = null,
+    /// Optional host-stdin pump. Drained by cpu.idleSpin during WFI.
+    /// Task 16 wires a real pump via main.zig --input; until then this is null
+    /// and idleSpin's branch is a no-op.
+    rx_pump: ?*RxPump = null,
 
     pub fn init(writer: *std.Io.Writer) Uart {
         return .{ .writer = writer };
@@ -102,6 +106,20 @@ pub const Uart = struct {
             REG_SR => self.sr = value,
             else => return UartError.UnexpectedRegister,
         }
+    }
+};
+
+/// Host-stdin pump. Drains available bytes from `file` into a Uart's RX FIFO
+/// during cpu.idleSpin. Task 14 ships this as a stub; Task 16 swaps the
+/// drainAvailable body for the real non-blocking read loop.
+pub const RxPump = struct {
+    file: std.Io.File,
+    eof: bool = false,
+
+    pub fn drainAvailable(self: *RxPump, uart: *Uart) void {
+        // Stub: Task 16 replaces this body with the real non-blocking read.
+        _ = self;
+        _ = uart;
     }
 };
 

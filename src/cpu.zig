@@ -196,7 +196,59 @@ pub const Cpu = struct {
             }
         }
     }
+
+    /// Idle the CPU until a deliverable interrupt arrives or 10s wall-clock
+    /// elapses. Called by execute.zig's wfi arm.
+    ///
+    /// Each iteration: service deferred device IRQs (block); poll host stdin
+    /// (if a UART pump is wired); check for deliverable interrupts. If a trap
+    /// fires, return early — the caller's step() will detect cpu.trap_taken
+    /// and skip the +4 PC advance. If nothing happens, sleep ~1 ms and loop.
+    pub fn idleSpin(self: *Cpu) void {
+        const max_ns: i128 = 10_000_000_000; // 10 s
+        const start = monotonicNs();
+        while (true) {
+            // Service deferred block IRQ.
+            if (self.memory.block.pending_irq) {
+                self.memory.plic.assertSource(1);
+                self.memory.block.pending_irq = false;
+            }
+            // Drain host stdin if a pump is configured (Task 16 wires this).
+            if (self.memory.uart.rx_pump) |pump| {
+                pump.drainAvailable(self.memory.uart);
+            }
+            // Did we just get something interrupt-worthy?
+            if (check_interrupt(self)) return;
+
+            if (monotonicNs() - start > max_ns) return;
+            // 1 ms sleep — short enough to keep tests fast, long enough to
+            // not chew CPU when truly idle. Zig 0.16 has no top-level
+            // std.Thread.sleep; go through libc nanosleep directly.
+            sleepMs(1);
+        }
+    }
 };
+
+/// Monotonic timestamp in nanoseconds via libc clock_gettime. Mirrors the
+/// approach in devices/clint.zig because Zig 0.16 removed std.time.nanoTimestamp.
+fn monotonicNs() i128 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
+    const sec: i128 = @intCast(ts.sec);
+    const nsec: i128 = @intCast(ts.nsec);
+    return sec * 1_000_000_000 + nsec;
+}
+
+/// Sleep for `ms` milliseconds via libc nanosleep. Best-effort: an EINTR/early
+/// wakeup just shortens the iteration, which is harmless — idleSpin loops.
+fn sleepMs(ms: u32) void {
+    const ns_per_ms: i64 = 1_000_000;
+    var req: std.c.timespec = .{
+        .sec = @intCast(@divTrunc(ms, 1000)),
+        .nsec = @intCast(@as(i64, @intCast(ms % 1000)) * ns_per_ms),
+    };
+    _ = std.c.nanosleep(&req, null);
+}
 
 /// Compute the effective `mip` for the interrupt-boundary check. This is
 /// cpu.csr.mip OR'd with CLINT's live MTIP bit and PLIC's live SEIP bit.
@@ -655,4 +707,35 @@ test "step asserts PLIC IRQ #1 when block has pending_irq set, then clears the f
     _ = rig.cpu.step() catch {};
     try std.testing.expect((rig.cpu.memory.plic.pending & (1 << 1)) != 0);
     try std.testing.expect(!rig.cpu.memory.block.pending_irq);
+}
+
+test "WFI returns promptly when a deliverable interrupt arrives during idle" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+
+    // Configure delegation + enable so SEIP delivers to S.
+    rig.cpu.privilege = .U;                              // U < S → trap deliverable regardless of sstatus.SIE
+    rig.cpu.csr.stvec = 0x8000_0500;
+    rig.cpu.csr.mideleg = 1 << 9;                        // delegate SEIP to S
+    rig.cpu.csr.mie = 1 << 9;                            // SEIE
+    // PLIC: src 1 priority 1, enabled, threshold 0.
+    try rig.cpu.memory.plic.writeByte(0x0004, 1);
+    try rig.cpu.memory.plic.writeByte(0x2080, 0x02);
+
+    // Pre-arm block IRQ so the first idleSpin iteration asserts PLIC src 1
+    // and check_interrupt fires immediately.
+    rig.cpu.memory.block.pending_irq = true;
+
+    // Place WFI at PC. (U-mode wfi traps illegal in our model, but here we'll
+    // test idleSpin directly to keep the unit-level concern pure.)
+    rig.cpu.idleSpin();
+
+    // After idleSpin returns: PLIC src 1 was asserted, the trap was taken,
+    // privilege flipped to S, PC redirected to stvec.
+    // Plan note: pending bit stays set until claim; what we test is: trap was taken.
+    try std.testing.expect((rig.cpu.memory.plic.pending & (1 << 1)) != 0);
+    try std.testing.expectEqual(@import("cpu.zig").PrivilegeMode.S, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0500), rig.cpu.pc);
+    try std.testing.expectEqual(@as(u32, (1 << 31) | 9), rig.cpu.csr.scause);
+    try std.testing.expect(!rig.cpu.memory.block.pending_irq); // serviced
 }

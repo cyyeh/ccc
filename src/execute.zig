@@ -297,8 +297,15 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 trap.enter(.illegal_instruction, instr.raw, cpu);
                 return;
             }
-            // Phase 1/2 has no interrupt sources; wfi is a no-op (advance PC).
-            cpu.pc +%= 4;
+            // Real idle: spin on host events until an interrupt fires or 10s elapses.
+            cpu.idleSpin();
+            // PC advance: if idleSpin returned because a trap fired, the trap
+            // entry already redirected PC to stvec/mtvec; skip the +4 so we
+            // don't trample the redirected PC. If idleSpin returned because
+            // of timeout (no event), advance past wfi to make forward progress.
+            if (!cpu.trap_taken) {
+                cpu.pc +%= 4;
+            }
         },
         .sret => {
             if (cpu.privilege == .U) {
