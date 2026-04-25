@@ -1,8 +1,8 @@
 # tests/programs/kernel/trampoline.S — S-mode trap entry/exit.
 #
-# On trap: stvec points here. sscratch holds &the_process (kmain
+# On trap: stvec points here. sscratch holds &ptable[0] (kmain
 # initializes it before sret). Since tf is the first field of Process
-# (@offsetOf(Process,"tf")==0), &the_process is also the TrapFrame pointer
+# (@offsetOf(Process,"tf")==0), &ptable[0] is also the TrapFrame pointer
 # used throughout this file. We swap sp with sscratch to land on the tf,
 # save all user GPRs at fixed offsets, then switch to the kernel stack
 # and call s_trap_dispatch (Zig, in trap.zig).
@@ -52,7 +52,7 @@
 .balign 4
 .globl s_trap_entry
 s_trap_entry:
-    # sp <-> sscratch: sp now = &the_tf, sscratch now = user sp.
+    # sp <-> sscratch: sp now = &ptable[0].tf, sscratch now = user sp.
     csrrw   sp, sscratch, sp
 
     # Save all GPRs except x0 and x2 (sp, which we'll save from sscratch).
@@ -91,10 +91,10 @@ s_trap_entry:
     csrr    t0, sscratch
     sw      t0, TF_SP(sp)
 
-    # Reset sscratch = &the_process so the NEXT trap has something valid
-    # to swap with. @offsetOf(Process, "tf") == 0 so &the_process is also
+    # Reset sscratch = &ptable[0] so the NEXT trap has something valid
+    # to swap with. @offsetOf(Process, "tf") == 0 so &ptable[0] is also
     # the TrapFrame pointer trampoline save/restore blocks work on.
-    la      t0, the_process
+    la      t0, ptable
     csrw    sscratch, t0
 
     # Save sepc.
@@ -105,19 +105,19 @@ s_trap_entry:
     la      sp, _kstack_top
 
     # Call s_trap_dispatch(tf).
-    la      a0, the_process
+    la      a0, ptable
     call    s_trap_dispatch
 
     # s_trap_dispatch is a C-ABI function and may clobber a0. Reload
-    # it before the return path, which expects a0 = &the_process (equal
-    # to &the_process.tf since tf is the first field).
-    la      a0, the_process
+    # it before the return path, which expects a0 = &ptable[0] (equal
+    # to &ptable[0].tf since tf is the first field).
+    la      a0, ptable
 
     # Fall through to return-to-user.
 
 .globl s_return_to_user
 s_return_to_user:
-    # a0 = &the_tf (either from call return or kmain's initial jump).
+    # a0 = &ptable[0].tf (either from call return or kmain's initial jump via &ptable[0]).
 
     # Restore sepc first.
     lw      t0, TF_SEPC(a0)

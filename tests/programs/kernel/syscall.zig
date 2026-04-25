@@ -1,10 +1,13 @@
-// tests/programs/kernel/syscall.zig — Phase 2 Plan 2.D syscall table.
+// tests/programs/kernel/syscall.zig — Phase 3.B syscall table.
 //
-// Plan 2.D changes vs 2.C:
-//   - `124` (yield) now real — calls sched.schedule().
-//   - `93` (exit) now prints "ticks observed: {d}\n" via kprintf before
-//     halting, so the final observable stdout matches the Phase 2 DoD:
-//       "hello from u-mode\nticks observed: N\n"
+// Syscalls dispatched in Phase 3.B:
+//   - 64  (write): copies user bytes to UART via SSTATUS.SUM.
+//   - 93  (exit):  prints "ticks observed: N\n" then halts via MMIO.
+//   - 124 (yield): calls sched.schedule() (currently always ptable[0]).
+//
+// proc.cur() is used for any per-process state reads (currently always
+// &ptable[0] until Task 9 wires in a real CPU-local picker). Future
+// tasks add syscall 172 (getpid) and 214 (sbrk).
 //
 // ABI unchanged: a7 = syscall number, a0..a5 = args, a0 = return.
 
@@ -49,9 +52,9 @@ fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
 fn sysExit(status: u32) noreturn {
     // Emit the Phase 2 §Definition of done trailer: "ticks observed: N\n".
     // We read the counter AFTER the scheduler has had a chance to bump it
-    // one last time (the ticks live in proc.the_process, touched by the
+    // one last time (the ticks live in proc.cur(), touched by the
     // SSI handler in trap.zig).
-    kprintf.print("ticks observed: {d}\n", .{proc.the_process.ticks_observed});
+    kprintf.print("ticks observed: {d}\n", .{proc.cur().ticks_observed});
     const halt: *volatile u8 = @ptrFromInt(0x00100000);
     halt.* = @intCast(status & 0xFF);
     // Unreachable — halt MMIO terminates the emulator on the store above.
@@ -59,9 +62,8 @@ fn sysExit(status: u32) noreturn {
 }
 
 fn sysYield() u32 {
-    // Plan 2.D: scheduler has one process, so this is a no-op pick. We
-    // still exercise the path so Plan 3's real picker drops in without
-    // changing the syscall layer.
+    // Phase 3.B: schedule() always returns ptable[0]; still exercises the
+    // path so Task 9's real picker drops in without changing this layer.
     _ = sched.schedule();
     return 0;
 }

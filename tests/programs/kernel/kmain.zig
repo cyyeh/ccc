@@ -1,11 +1,10 @@
-// tests/programs/kernel/kmain.zig — Phase 2 Plan 2.D kernel S-mode entry.
+// tests/programs/kernel/kmain.zig — Phase 3.B kernel S-mode entry.
 //
-// Difference from 2.C: the standalone `the_tf` is gone. The trapframe is
-// now the first field of `proc.the_process`, so sscratch / trampoline
-// references point at the same memory via the new symbol `the_process`.
-// Boot also routes through `sched.context_switch_to` for the initial
-// satp write so Plan 3 has one code path to edit when the switch becomes
-// non-trivial.
+// Phase 3.B: the singleton `the_process` is replaced by `ptable[0]`.
+// sscratch / trampoline references now point at &ptable[0], whose first
+// field is `tf` (offset 0), preserving the trampoline invariant.
+// Boot routes through `sched.context_switch_to` for the initial satp
+// write so Phase 3 can extend this path without a signature change.
 
 const std = @import("std");
 const uart = @import("uart.zig");
@@ -24,10 +23,9 @@ extern fn s_trap_entry() void;
 extern fn s_return_to_user(tf: *trap.TrapFrame) noreturn;
 
 // Linker symbol: top of the 16 KB kernel stack. Used to populate
-// the_process.kstack_top so the trampoline can switch to it on trap entry.
-// (Plan 2.C's trampoline hard-codes `la sp, _kstack_top`; Plan 3 will
-// want this per-process. 2.D stores it but trampoline still uses the
-// linker symbol directly — wiring it through is Phase 3 scope.)
+// ptable[0].kstack_top so the trampoline can switch to it on trap entry.
+// (Trampoline still uses `la sp, _kstack_top` directly; Task 5 will
+// wire kstack_top through the Process struct for per-process stacks.)
 extern const _kstack_top: u8;
 
 export fn kmain() callconv(.c) noreturn {
@@ -37,16 +35,20 @@ export fn kmain() callconv(.c) noreturn {
     vm.mapUser(root_pa, USER_BLOB.ptr, @intCast(USER_BLOB.len));
 
     // Initialize the single process.
-    proc.the_process = std.mem.zeroes(proc.Process);
-    proc.the_process.tf.sepc = vm.USER_TEXT_VA; // _start lives at VA 0x00010000
-    proc.the_process.tf.sp = vm.USER_STACK_TOP;
-    proc.the_process.satp = SATP_MODE_SV32 | (root_pa >> 12);
-    proc.the_process.kstack_top = @intCast(@intFromPtr(&_kstack_top));
-    proc.the_process.state = .Runnable;
-    // ticks_observed, exit_code already zero from zeroes().
+    const p = &proc.ptable[0];
+    p.* = std.mem.zeroes(proc.Process);
+    p.tf.sepc = vm.USER_TEXT_VA;
+    p.tf.sp = vm.USER_STACK_TOP;
+    p.satp = SATP_MODE_SV32 | (root_pa >> 12);
+    p.pgdir = root_pa;
+    p.kstack_top = @intCast(@intFromPtr(&_kstack_top));
+    p.kstack = p.kstack_top - 0x4000; // Phase 2 has a 16 KB linker-supplied stack
+    p.state = .Runnable;
+    p.pid = 1;
+    @memcpy(p.name[0..4], "init");
 
     // Install the S-mode trap vector and sscratch.
-    const tf_addr: u32 = @intCast(@intFromPtr(&proc.the_process));
+    const tf_addr: u32 = @intCast(@intFromPtr(&proc.ptable[0]));
     const stvec_val: u32 = @intCast(@intFromPtr(&s_trap_entry));
     asm volatile (
         \\ csrw stvec, %[stv]
@@ -83,12 +85,12 @@ export fn kmain() callconv(.c) noreturn {
     );
 
     // Flip on Sv32 translation via the scheduler's context-switch helper.
-    // Plan 3 will reroute SSI + yield here too; 2.D only uses it from boot.
-    sched.context_switch_to(&proc.the_process);
+    // Phase 3.B only calls this from boot; Task 9 will reroute SSI + yield.
+    sched.context_switch_to(&proc.ptable[0]);
 
-    // Jump to the trampoline's return-to-user path with a0 = &the_process.tf.
-    // Since @offsetOf(Process, "tf") == 0, &the_process is the TrapFrame ptr.
-    s_return_to_user(@ptrCast(&proc.the_process));
+    // Jump to the trampoline's return-to-user path with a0 = &ptable[0].tf.
+    // Since @offsetOf(Process, "tf") == 0, &ptable[0] is the TrapFrame ptr.
+    s_return_to_user(@ptrCast(&proc.ptable[0]));
 }
 
 // Keep `uart` in the reachable set for potential early-boot panic printing.
