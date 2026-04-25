@@ -137,9 +137,28 @@ pub const Cpu = struct {
         // performTransfer; we drain it here at the next instruction boundary
         // so the PLIC sees the source-1 assertion atomically with respect to
         // the instruction stream.
+        //
+        // Plan 3.A Task 17: when --trace is on, emit the block-transfer
+        // marker at this same boundary, between the previous instruction
+        // line and the upcoming interrupt marker that check_interrupt
+        // will produce. The op/sector/PA snapshot was captured inside
+        // performTransfer, then mirrored on Block; we drop last_op back
+        // to null after emission so a subsequent CMD=0 reset (which does
+        // not refresh the snapshot) doesn't print a phantom marker.
         if (self.memory.block.pending_irq) {
+            if (self.trace_writer) |tw| {
+                if (self.memory.block.last_op) |op| {
+                    @import("trace.zig").formatBlockTransfer(
+                        tw,
+                        op,
+                        self.memory.block.last_sector,
+                        self.memory.block.last_buffer_pa,
+                    ) catch {};
+                }
+            }
             self.memory.plic.assertSource(1);
             self.memory.block.pending_irq = false;
+            self.memory.block.last_op = null;
         }
 
         // Plan 2.B: check for deliverable async interrupts BEFORE fetching.
@@ -208,10 +227,23 @@ pub const Cpu = struct {
         const max_ns: i128 = 10_000_000_000; // 10 s
         const start = monotonicNs();
         while (true) {
-            // Service deferred block IRQ.
+            // Service deferred block IRQ. Mirror cpu.step's trace hook so
+            // a transfer that completes while the guest is in WFI still
+            // gets its `--- block: ... ---` marker on the trace stream.
             if (self.memory.block.pending_irq) {
+                if (self.trace_writer) |tw| {
+                    if (self.memory.block.last_op) |op| {
+                        @import("trace.zig").formatBlockTransfer(
+                            tw,
+                            op,
+                            self.memory.block.last_sector,
+                            self.memory.block.last_buffer_pa,
+                        ) catch {};
+                    }
+                }
                 self.memory.plic.assertSource(1);
                 self.memory.block.pending_irq = false;
+                self.memory.block.last_op = null;
             }
             // Drain host stdin if a pump is configured (Task 16 wires this).
             if (self.memory.uart.rx_pump) |pump| {

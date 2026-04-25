@@ -32,6 +32,15 @@ pub const Block = struct {
     pending_cmd: u32 = 0,
     /// Optional host-file backing. When null, every CMD sets STATUS=NoMedia.
     disk_file: ?std.Io.File = null,
+    /// Snapshot of the most recently completed (success or failure) transfer
+    /// for the trace subsystem. `cpu.step` reads these fields when emitting
+    /// the `--- block: ... ---` marker the cycle the deferred IRQ is
+    /// serviced, then clears `last_op` back to null. Set by `performTransfer`
+    /// for valid CMDs (Read=1 / Write=2); left null for CMD=0 (reset) and
+    /// bogus CMDs so we don't print a phantom marker for them.
+    last_op: ?@import("../trace.zig").Op = null,
+    last_sector: u32 = 0,
+    last_buffer_pa: u32 = 0,
 
     pub fn init() Block {
         return .{};
@@ -96,6 +105,16 @@ pub const Block = struct {
             self.status = @intFromEnum(Status.Error);
             return;
         }
+
+        // Snapshot the transfer for the trace subsystem. Recorded for any
+        // valid Read/Write CMD regardless of whether the body below
+        // succeeds (NoMedia, sector OOB, RAM OOB all still produce a
+        // marker — what failed is the placement, not the request itself).
+        // cpu.step reads these fields and clears last_op once the marker
+        // has been emitted.
+        self.last_op = if (self.pending_cmd == 1) .Read else .Write;
+        self.last_sector = self.sector;
+        self.last_buffer_pa = self.buffer_pa;
 
         // No disk → NoMedia for any otherwise-valid non-zero CMD.
         const f = self.disk_file orelse {

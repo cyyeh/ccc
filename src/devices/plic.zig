@@ -54,6 +54,31 @@ pub const Plic = struct {
         return best_id;
     }
 
+    /// Non-destructive variant of `claim()`: returns the source ID that
+    /// `claim()` would yield right now (highest priority pending+enabled
+    /// strictly above the S-context threshold; ties broken by lowest ID),
+    /// without clearing the chosen source's pending bit. Returns 0 when
+    /// nothing qualifies. Used by trace markers, which want to print the
+    /// source ID without consuming it ahead of the guest's own claim.
+    pub fn peekHighestPendingForS(self: *const Plic) u32 {
+        var best_id: u32 = 0;
+        var best_prio: u3 = 0;
+        var i: u5 = 1;
+        while (true) : (i += 1) {
+            if ((self.pending & (@as(u32, 1) << i)) != 0 and
+                (self.enable_s & (@as(u32, 1) << i)) != 0)
+            {
+                const prio = self.priority[i];
+                if (prio > self.threshold_s and prio > best_prio) {
+                    best_prio = prio;
+                    best_id = i;
+                }
+            }
+            if (i == 31) break;
+        }
+        return best_id;
+    }
+
     /// Non-destructive query: does any source have pending=1, enabled=1,
     /// and priority > S-context threshold? Used by csr.zig to derive
     /// mip.SEIP without claiming the source.

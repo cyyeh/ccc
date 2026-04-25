@@ -110,7 +110,13 @@ pub fn enter_interrupt(cause_code: u32, cpu: *Cpu) void {
     if (cpu.trace_writer) |tw| {
         // Trace errors are non-fatal: a failed write must not block trap entry.
         // Matches the formatInstr convention in cpu.step().
-        trace.formatInterruptMarker(tw, cause_code, from_priv, target) catch {};
+        // For S-external (cause 9), the PLIC source ID is reported alongside
+        // the cause name; otherwise the slot is left unfilled (null).
+        const plic_src: ?u32 = if (cause_code == 9)
+            cpu.memory.plic.peekHighestPendingForS()
+        else
+            null;
+        trace.formatInterruptMarker(tw, cause_code, from_priv, target, plic_src) catch {};
     }
 
     switch (target) {
