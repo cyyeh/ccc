@@ -53,6 +53,31 @@ pub const Game = struct {
         g.snake_x[2] = spawn.x;     g.snake_y[2] = spawn.y;
         return g;
     }
+
+    pub fn advance(self: *Game) AdvanceResult {
+        const head_x = self.snake_x[self.head];
+        const head_y = self.snake_y[self.head];
+        var nx: i16 = head_x;
+        var ny: i16 = head_y;
+        switch (self.dir) {
+            .Up    => ny -= 1,
+            .Down  => ny += 1,
+            .Left  => nx -= 1,
+            .Right => nx += 1,
+        }
+
+        if (nx <= 0 or nx > PLAY_W or ny <= 0 or ny > PLAY_H) {
+            self.state = .GameOver;
+            return .CollisionWall;
+        }
+
+        const new_head: u16 = (self.head + 1) % MAX_SNAKE;
+        self.snake_x[new_head] = @intCast(nx);
+        self.snake_y[new_head] = @intCast(ny);
+        self.head = new_head;
+        self.tail = (self.tail + 1) % MAX_SNAKE;
+        return .Moved;
+    }
 };
 
 test "Game.init: snake length 3, head at spawn, facing right" {
@@ -64,4 +89,50 @@ test "Game.init: snake length 3, head at spawn, facing right" {
     try std.testing.expectEqual(@as(u8, 14), g.snake_x[g.tail]);
     try std.testing.expectEqual(State.Playing, g.state);
     try std.testing.expect(!g.game_started);
+}
+
+test "advance: moves head one cell right" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    const r = g.advance();
+    try std.testing.expectEqual(AdvanceResult.Moved, r);
+    try std.testing.expectEqual(@as(u8, 17), g.snake_x[g.head]);
+    try std.testing.expectEqual(@as(u8, 7),  g.snake_y[g.head]);
+    try std.testing.expectEqual(@as(u16, 3), g.len);
+}
+
+test "advance: hits right wall returns CollisionWall" {
+    var g = Game.init(.{ .x = PLAY_W, .y = 7 });
+    const r = g.advance();
+    try std.testing.expectEqual(AdvanceResult.CollisionWall, r);
+    try std.testing.expectEqual(State.GameOver, g.state);
+}
+
+test "advance: hits left wall" {
+    var g = Game.init(.{ .x = 5, .y = 7 });
+    g.dir = .Left;
+    _ = g.advance();
+    _ = g.advance();
+    _ = g.advance();
+    _ = g.advance();
+    const r = g.advance();
+    try std.testing.expectEqual(AdvanceResult.CollisionWall, r);
+}
+
+test "advance: hits top wall" {
+    var g = Game.init(.{ .x = 16, .y = 5 });
+    g.dir = .Up;
+    _ = g.advance();
+    _ = g.advance();
+    _ = g.advance();
+    _ = g.advance();
+    const r = g.advance();
+    try std.testing.expectEqual(AdvanceResult.CollisionWall, r);
+}
+
+test "advance: hits bottom wall" {
+    var g = Game.init(.{ .x = 16, .y = PLAY_H - 1 });
+    g.dir = .Down;
+    _ = g.advance();
+    const r = g.advance();
+    try std.testing.expectEqual(AdvanceResult.CollisionWall, r);
 }
