@@ -10,6 +10,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            // Link libc on the native build so devices/clint.zig's
+            // std.c.clock_gettime + cpu.zig's std.c.nanosleep resolve.
+            // macOS's libSystem auto-links so the omission was invisible
+            // there; Linux needs the explicit opt-in. The wasm build uses
+            // a separate module rooted at demo/web_main.zig and stays
+            // libc-free via the comptime branches in cpu.zig + clint.zig.
+            .link_libc = true,
         }),
     });
     // Expose tests/fixtures/minimal.elf as an importable module so that
