@@ -2,6 +2,7 @@ const std = @import("std");
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
+const plic_dev = @import("devices/plic.zig");
 const cpu_mod = @import("cpu.zig");
 pub const PrivilegeMode = cpu_mod.PrivilegeMode;
 const Cpu = cpu_mod.Cpu;
@@ -54,6 +55,7 @@ pub const Memory = struct {
     halt: *halt_dev.Halt,
     uart: *uart_dev.Uart,
     clint: *clint_dev.Clint,
+    plic: *plic_dev.Plic,
     /// If set, writes inside [tohost_addr, tohost_addr+8) terminate the run
     /// via `MemoryError.Halt`. Used by riscv-tests which signal pass/fail by
     /// writing to a `tohost` symbol.
@@ -65,6 +67,7 @@ pub const Memory = struct {
         halt: *halt_dev.Halt,
         uart: *uart_dev.Uart,
         clint: *clint_dev.Clint,
+        plic: *plic_dev.Plic,
         tohost_addr: ?u32,
         ram_size: usize,
     ) !Memory {
@@ -75,6 +78,7 @@ pub const Memory = struct {
             .halt = halt,
             .uart = uart,
             .clint = clint,
+            .plic = plic,
             .tohost_addr = tohost_addr,
             .allocator = allocator,
         };
@@ -112,6 +116,11 @@ pub const Memory = struct {
         }
         if (inRange(addr, clint_dev.CLINT_BASE, clint_dev.CLINT_SIZE)) {
             return self.clint.readByte(addr - clint_dev.CLINT_BASE) catch |e| switch (e) {
+                error.UnexpectedRegister => MemoryError.UnexpectedRegister,
+            };
+        }
+        if (inRange(addr, plic_dev.PLIC_BASE, plic_dev.PLIC_SIZE)) {
+            return self.plic.readByte(addr - plic_dev.PLIC_BASE) catch |e| switch (e) {
                 error.UnexpectedRegister => MemoryError.UnexpectedRegister,
             };
         }
@@ -159,6 +168,12 @@ pub const Memory = struct {
         }
         if (inRange(addr, clint_dev.CLINT_BASE, clint_dev.CLINT_SIZE)) {
             self.clint.writeByte(addr - clint_dev.CLINT_BASE, value) catch |e| switch (e) {
+                error.UnexpectedRegister => return MemoryError.UnexpectedRegister,
+            };
+            return;
+        }
+        if (inRange(addr, plic_dev.PLIC_BASE, plic_dev.PLIC_SIZE)) {
+            self.plic.writeByte(addr - plic_dev.PLIC_BASE, value) catch |e| switch (e) {
                 error.UnexpectedRegister => return MemoryError.UnexpectedRegister,
             };
             return;
@@ -366,6 +381,7 @@ const TestRig = struct {
     halt: halt_dev.Halt,
     uart: uart_dev.Uart,
     clint: clint_dev.Clint,
+    plic: plic_dev.Plic,
     aw: std.Io.Writer.Allocating,
     mem: Memory,
     cpu: Cpu,
@@ -375,7 +391,8 @@ const TestRig = struct {
         self.aw = .init(allocator);
         self.uart = uart_dev.Uart.init(&self.aw.writer);
         self.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
-        self.mem = try Memory.init(allocator, &self.halt, &self.uart, &self.clint, null, RAM_SIZE_DEFAULT);
+        self.plic = plic_dev.Plic.init();
+        self.mem = try Memory.init(allocator, &self.halt, &self.uart, &self.clint, &self.plic, null, RAM_SIZE_DEFAULT);
         self.cpu = Cpu.init(&self.mem, RAM_BASE);
     }
 
@@ -737,4 +754,37 @@ test "MPRV has no effect on instruction fetch" {
     // M-mode fetch: should NOT translate even with MPRV. Expect identity pass-through.
     const pa = try rig.mem.translate(0x8000_0000, .fetch, .M, &rig.cpu);
     try std.testing.expectEqual(@as(u32, 0x8000_0000), pa);
+}
+
+test "MMIO load at PLIC base reads from PLIC" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    // Set src 1 priority via direct PLIC API, then read via MMIO.
+    rig.plic.priority[1] = 5;
+    const v = try rig.mem.loadBytePhysical(0x0c00_0004);
+    try std.testing.expectEqual(@as(u8, 5), v);
+}
+
+test "MMIO store at PLIC priority offset routes to PLIC" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    try rig.mem.storeBytePhysical(0x0c00_0004, 3);
+    try std.testing.expectEqual(@as(u3, 3), rig.plic.priority[1]);
+}
+
+test "MMIO assertSource path: pending visible via MMIO read" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+    rig.plic.assertSource(5);
+    // 0x1000_1000 is not in any device range and not in RAM — confirm it
+    // returns OutOfBounds, demonstrating that the PLIC arm only catches
+    // its own range (0x0c00_0000..).
+    try std.testing.expectError(MemoryError.OutOfBounds, rig.mem.loadBytePhysical(0x1000_1000));
+    const correct = try rig.mem.loadBytePhysical(0x0c00_1000);
+    try std.testing.expectEqual(@as(u8, 1 << 5), correct);
 }

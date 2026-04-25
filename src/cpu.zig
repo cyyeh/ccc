@@ -6,6 +6,7 @@ const mem_mod = @import("memory.zig");
 const Memory = mem_mod.Memory;
 const MemoryError = mem_mod.MemoryError;
 const clint_dev = @import("devices/clint.zig");
+const plic_dev = @import("devices/plic.zig");
 
 pub const StepError = error{
     Halt,
@@ -276,7 +277,8 @@ test "Cpu.run halts cleanly when program writes to halt MMIO" {
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
+    var plic = plic_dev.Plic.init();
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
 
     // Hand-encoded program at RAM_BASE:
@@ -318,7 +320,8 @@ test "instruction page fault: step() from unmapped PC in U-mode updates mcause a
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
+    var plic = plic_dev.Plic.init();
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
 
     // Point satp at an empty root page (all zero RAM → L1 PTE.V=0 → fetch fault).
@@ -360,6 +363,7 @@ const CpuRig = struct {
     aw: std.Io.Writer.Allocating,
     uart: uart_dev_t.Uart,
     clint: clint_dev.Clint,
+    plic: plic_dev.Plic,
     mem: Memory,
     cpu: Cpu,
     fn deinit(self: *CpuRig) void {
@@ -379,8 +383,9 @@ fn cpuRig() !*CpuRig {
     rig.aw = std.Io.Writer.Allocating.init(std.testing.allocator);
     rig.uart = uart_dev_t.Uart.init(&rig.aw.writer);
     rig.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    rig.plic = plic_dev.Plic.init();
     rig.mem = try Memory.init(
-        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, null,
+        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, &rig.plic, null,
         mem_mod.RAM_SIZE_DEFAULT,
     );
     rig.cpu = Cpu.init(&rig.mem, mem_mod.RAM_BASE);
@@ -516,8 +521,9 @@ test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    var plic = plic_dev.Plic.init();
     var mem = try Memory.init(
-        std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator, &halt, &uart, &clint, &plic, null, mem_mod.RAM_SIZE_DEFAULT,
     );
     defer mem.deinit();
 

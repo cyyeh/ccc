@@ -124,7 +124,8 @@ test "reject files smaller than an ELF header" {
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = @import("devices/clint.zig").Clint.init(&@import("devices/clint.zig").zeroClock);
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, 1024);
+    var plic = @import("devices/plic.zig").Plic.init();
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, null, 1024);
     defer mem.deinit();
     try std.testing.expectError(ElfError.FileTooSmall, parseAndLoad(&[_]u8{0}, &mem));
 }
@@ -135,7 +136,8 @@ test "reject wrong magic" {
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = @import("devices/clint.zig").Clint.init(&@import("devices/clint.zig").zeroClock);
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, 1024);
+    var plic = @import("devices/plic.zig").Plic.init();
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, null, 1024);
     defer mem.deinit();
     var bogus = [_]u8{0} ** 64;
     bogus[0] = 'Z';
@@ -152,8 +154,9 @@ test "load minimal.elf fixture, extract entry and tohost" {
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = @import("devices/clint.zig").Clint.init(&@import("devices/clint.zig").zeroClock);
+    var plic = @import("devices/plic.zig").Plic.init();
     const mem_mod = @import("memory.zig");
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
     const result = try parseAndLoad(fixture, &mem);
     try std.testing.expectEqual(mem_mod.RAM_BASE, result.entry);

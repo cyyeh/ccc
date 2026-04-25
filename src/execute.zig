@@ -456,6 +456,7 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
+const plic_dev = @import("devices/plic.zig");
 
 // Test fixture: Uart holds `*std.Io.Writer` pointing into the rig's `aw`,
 // so the rig MUST NOT be moved/copied after init. Fill-in-place pattern
@@ -464,6 +465,7 @@ const Rig = struct {
     halt: halt_dev.Halt,
     uart: uart_dev.Uart,
     clint: clint_dev.Clint,
+    plic: plic_dev.Plic,
     aw: std.Io.Writer.Allocating,
     mem: mem_mod.Memory,
     cpu: cpu_mod.Cpu,
@@ -473,7 +475,8 @@ const Rig = struct {
         self.aw = .init(allocator);
         self.uart = uart_dev.Uart.init(&self.aw.writer);
         self.clint = clint_dev.Clint.init(&clint_dev.zeroClock);
-        self.mem = try mem_mod.Memory.init(allocator, &self.halt, &self.uart, &self.clint, null, mem_mod.RAM_SIZE_DEFAULT);
+        self.plic = plic_dev.Plic.init();
+        self.mem = try mem_mod.Memory.init(allocator, &self.halt, &self.uart, &self.clint, &self.plic, null, mem_mod.RAM_SIZE_DEFAULT);
         self.cpu = cpu_mod.Cpu.init(&self.mem, entry);
     }
 
