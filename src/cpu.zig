@@ -132,6 +132,16 @@ pub const Cpu = struct {
     }
 
     pub fn step(self: *Cpu) StepError!void {
+        // Plan 3.A Task 12: service deferred device IRQs from the previous
+        // instruction's MMIO writes. The block device sets pending_irq inside
+        // performTransfer; we drain it here at the next instruction boundary
+        // so the PLIC sees the source-1 assertion atomically with respect to
+        // the instruction stream.
+        if (self.memory.block.pending_irq) {
+            self.memory.plic.assertSource(1);
+            self.memory.block.pending_irq = false;
+        }
+
         // Plan 2.B: check for deliverable async interrupts BEFORE fetching.
         // If one is taken, the PC has been redirected to the trap vector
         // and the instruction that would have been fetched this cycle is
@@ -280,7 +290,8 @@ test "Cpu.run halts cleanly when program writes to halt MMIO" {
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
     var plic = plic_dev.Plic.init();
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, null, mem_mod.RAM_SIZE_DEFAULT);
+    var block = @import("devices/block.zig").Block.init();
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, &block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
 
     // Hand-encoded program at RAM_BASE:
@@ -323,7 +334,8 @@ test "instruction page fault: step() from unmapped PC in U-mode updates mcause a
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
     var plic = plic_dev.Plic.init();
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, null, mem_mod.RAM_SIZE_DEFAULT);
+    var block = @import("devices/block.zig").Block.init();
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, &block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
 
     // Point satp at an empty root page (all zero RAM → L1 PTE.V=0 → fetch fault).
@@ -359,6 +371,7 @@ test "CsrFile default has zero medeleg and mideleg" {
 const trap_mod = @import("trap.zig");
 const halt_dev_t = @import("devices/halt.zig");
 const uart_dev_t = @import("devices/uart.zig");
+const block_dev_t = @import("devices/block.zig");
 
 const CpuRig = struct {
     halt: halt_dev_t.Halt,
@@ -366,6 +379,7 @@ const CpuRig = struct {
     uart: uart_dev_t.Uart,
     clint: clint_dev.Clint,
     plic: plic_dev.Plic,
+    block: block_dev_t.Block,
     mem: Memory,
     cpu: Cpu,
     fn deinit(self: *CpuRig) void {
@@ -386,9 +400,10 @@ fn cpuRig() !*CpuRig {
     rig.uart = uart_dev_t.Uart.init(&rig.aw.writer);
     rig.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
     rig.plic = plic_dev.Plic.init();
+    rig.block = block_dev_t.Block.init();
     rig.mem = try Memory.init(
-        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, &rig.plic, null,
-        mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, &rig.plic, &rig.block,
+        std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT,
     );
     rig.cpu = Cpu.init(&rig.mem, mem_mod.RAM_BASE);
     return rig;
@@ -524,8 +539,9 @@ test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
     var plic = plic_dev.Plic.init();
+    var block = @import("devices/block.zig").Block.init();
     var mem = try Memory.init(
-        std.testing.allocator, &halt, &uart, &clint, &plic, null, mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator, &halt, &uart, &clint, &plic, &block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT,
     );
     defer mem.deinit();
 
@@ -625,4 +641,18 @@ test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
     try std.testing.expectEqual(@as(u32, 1), sentinel);
     // Final privilege should be S (SSI ISR loops there).
     try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
+}
+
+test "step asserts PLIC IRQ #1 when block has pending_irq set, then clears the flag" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+
+    // Manually set pending_irq as if performTransfer just ran.
+    rig.cpu.memory.block.pending_irq = true;
+    // Place a NOP at PC so step proceeds normally after IRQ delivery.
+    try rig.mem.storeWordPhysical(rig.cpu.pc, 0x00000013); // addi x0,x0,0 (nop)
+
+    _ = rig.cpu.step() catch {};
+    try std.testing.expect((rig.cpu.memory.plic.pending & (1 << 1)) != 0);
+    try std.testing.expect(!rig.cpu.memory.block.pending_irq);
 }

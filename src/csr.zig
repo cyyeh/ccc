@@ -778,6 +778,7 @@ const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
 const plic_dev = @import("devices/plic.zig");
+const block_dev = @import("devices/block.zig");
 const mem_mod = @import("memory.zig");
 
 /// Test rig that stands up a fully-wired Cpu + Memory + CLINT, needed by
@@ -790,6 +791,7 @@ const CsrRig = struct {
     uart: uart_dev.Uart,
     clint: clint_dev.Clint,
     plic: plic_dev.Plic,
+    block: block_dev.Block,
     mem: mem_mod.Memory,
     cpu: Cpu,
 
@@ -808,9 +810,10 @@ fn csrRigWithMtimecmp(mtimecmp: u64) !CsrRig {
     rig.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
     rig.clint.mtimecmp = mtimecmp;
     rig.plic = plic_dev.Plic.init();
+    rig.block = block_dev.Block.init();
     rig.mem = try mem_mod.Memory.init(
-        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, &rig.plic, null,
-        mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, &rig.plic, &rig.block,
+        std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT,
     );
     rig.cpu = Cpu.init(&rig.mem, 0);
     return rig;

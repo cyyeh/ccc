@@ -457,6 +457,7 @@ const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
 const plic_dev = @import("devices/plic.zig");
+const block_dev = @import("devices/block.zig");
 
 // Test fixture: Uart holds `*std.Io.Writer` pointing into the rig's `aw`,
 // so the rig MUST NOT be moved/copied after init. Fill-in-place pattern
@@ -466,6 +467,7 @@ const Rig = struct {
     uart: uart_dev.Uart,
     clint: clint_dev.Clint,
     plic: plic_dev.Plic,
+    block: block_dev.Block,
     aw: std.Io.Writer.Allocating,
     mem: mem_mod.Memory,
     cpu: cpu_mod.Cpu,
@@ -476,7 +478,8 @@ const Rig = struct {
         self.uart = uart_dev.Uart.init(&self.aw.writer);
         self.clint = clint_dev.Clint.init(&clint_dev.zeroClock);
         self.plic = plic_dev.Plic.init();
-        self.mem = try mem_mod.Memory.init(allocator, &self.halt, &self.uart, &self.clint, &self.plic, null, mem_mod.RAM_SIZE_DEFAULT);
+        self.block = block_dev.Block.init();
+        self.mem = try mem_mod.Memory.init(allocator, &self.halt, &self.uart, &self.clint, &self.plic, &self.block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT);
         self.cpu = cpu_mod.Cpu.init(&self.mem, entry);
     }
 

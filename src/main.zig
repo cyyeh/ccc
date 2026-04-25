@@ -7,6 +7,7 @@ const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
 const plic_dev = @import("devices/plic.zig");
+const block_dev = @import("devices/block.zig");
 const elf_mod = @import("elf.zig");
 
 comptime {
@@ -155,13 +156,14 @@ pub fn main(init: std.process.Init) !void {
     var uart = uart_dev.Uart.init(stdout);
     var clint = clint_dev.Clint.initDefault();
     var plic = plic_dev.Plic.init();
+    var block = block_dev.Block.init();
 
     const ram_size: usize = @as(usize, args.memory_mb) * 1024 * 1024;
 
     // Default boot: ELF. Fallback: --raw <addr>.
     // Construct Memory with tohost_addr=null initially; the ELF path will
     // set mem.tohost_addr post-hoc after parseAndLoad resolves the symbol.
-    var mem = try mem_mod.Memory.init(a, &halt, &uart, &clint, &plic, null, ram_size);
+    var mem = try mem_mod.Memory.init(a, &halt, &uart, &clint, &plic, &block, io, null, ram_size);
     defer mem.deinit();
 
     var entry: u32 = 0;

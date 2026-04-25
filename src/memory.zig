@@ -3,6 +3,7 @@ const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
 const plic_dev = @import("devices/plic.zig");
+const block_dev = @import("devices/block.zig");
 const cpu_mod = @import("cpu.zig");
 pub const PrivilegeMode = cpu_mod.PrivilegeMode;
 const Cpu = cpu_mod.Cpu;
@@ -56,6 +57,13 @@ pub const Memory = struct {
     uart: *uart_dev.Uart,
     clint: *clint_dev.Clint,
     plic: *plic_dev.Plic,
+    block: *block_dev.Block,
+    /// Host I/O dispatcher (Zig 0.16's `std.Io`), threaded through to the
+    /// block device's `performTransfer` for file I/O. Stored on Memory rather
+    /// than passed to every `storeBytePhysical` because only the block CMD
+    /// arm needs it — making it a Memory field keeps the storeBytePhysical
+    /// signature unchanged.
+    io: std.Io,
     /// If set, writes inside [tohost_addr, tohost_addr+8) terminate the run
     /// via `MemoryError.Halt`. Used by riscv-tests which signal pass/fail by
     /// writing to a `tohost` symbol.
@@ -68,6 +76,8 @@ pub const Memory = struct {
         uart: *uart_dev.Uart,
         clint: *clint_dev.Clint,
         plic: *plic_dev.Plic,
+        block: *block_dev.Block,
+        io: std.Io,
         tohost_addr: ?u32,
         ram_size: usize,
     ) !Memory {
@@ -79,6 +89,8 @@ pub const Memory = struct {
             .uart = uart,
             .clint = clint,
             .plic = plic,
+            .block = block,
+            .io = io,
             .tohost_addr = tohost_addr,
             .allocator = allocator,
         };
@@ -121,6 +133,11 @@ pub const Memory = struct {
         }
         if (inRange(addr, plic_dev.PLIC_BASE, plic_dev.PLIC_SIZE)) {
             return self.plic.readByte(addr - plic_dev.PLIC_BASE) catch |e| switch (e) {
+                error.UnexpectedRegister => MemoryError.UnexpectedRegister,
+            };
+        }
+        if (inRange(addr, block_dev.BLOCK_BASE, block_dev.BLOCK_SIZE)) {
+            return self.block.readByte(addr - block_dev.BLOCK_BASE) catch |e| switch (e) {
                 error.UnexpectedRegister => MemoryError.UnexpectedRegister,
             };
         }
@@ -176,6 +193,21 @@ pub const Memory = struct {
             self.plic.writeByte(addr - plic_dev.PLIC_BASE, value) catch |e| switch (e) {
                 error.UnexpectedRegister => return MemoryError.UnexpectedRegister,
             };
+            return;
+        }
+        if (inRange(addr, block_dev.BLOCK_BASE, block_dev.BLOCK_SIZE)) {
+            const off = addr - block_dev.BLOCK_BASE;
+            self.block.writeByte(off, value) catch |e| switch (e) {
+                error.UnexpectedRegister => return MemoryError.UnexpectedRegister,
+            };
+            // CMD register lives at offsets 0x8..0xB. The kernel writes the
+            // CMD word as four byte-stores (or a single sw, which devolves
+            // to four storeBytePhysical calls via the MMIO byte path). We
+            // trigger the transfer once per CMD byte 3 (high byte) write,
+            // by which time all four bytes of pending_cmd are set.
+            if (off == 0xB) {
+                self.block.performTransfer(self.io, self.ram);
+            }
             return;
         }
         // tohost: any write inside the 8-byte region halts the run. We still
@@ -382,6 +414,7 @@ const TestRig = struct {
     uart: uart_dev.Uart,
     clint: clint_dev.Clint,
     plic: plic_dev.Plic,
+    block: block_dev.Block,
     aw: std.Io.Writer.Allocating,
     mem: Memory,
     cpu: Cpu,
@@ -392,7 +425,8 @@ const TestRig = struct {
         self.uart = uart_dev.Uart.init(&self.aw.writer);
         self.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
         self.plic = plic_dev.Plic.init();
-        self.mem = try Memory.init(allocator, &self.halt, &self.uart, &self.clint, &self.plic, null, RAM_SIZE_DEFAULT);
+        self.block = block_dev.Block.init();
+        self.mem = try Memory.init(allocator, &self.halt, &self.uart, &self.clint, &self.plic, &self.block, std.testing.io, null, RAM_SIZE_DEFAULT);
         self.cpu = Cpu.init(&self.mem, RAM_BASE);
     }
 
@@ -781,10 +815,24 @@ test "MMIO assertSource path: pending visible via MMIO read" {
     try rig.init(std.testing.allocator);
     defer rig.deinit();
     rig.plic.assertSource(5);
-    // 0x1000_1000 is not in any device range and not in RAM — confirm it
+    // 0x0a00_0000 is not in any device range and not in RAM — confirm it
     // returns OutOfBounds, demonstrating that the PLIC arm only catches
     // its own range (0x0c00_0000..).
-    try std.testing.expectError(MemoryError.OutOfBounds, rig.mem.loadBytePhysical(0x1000_1000));
+    try std.testing.expectError(MemoryError.OutOfBounds, rig.mem.loadBytePhysical(0x0a00_0000));
     const correct = try rig.mem.loadBytePhysical(0x0c00_1000);
     try std.testing.expectEqual(@as(u8, 1 << 5), correct);
+}
+
+test "storeBytePhysical to CMD byte triggers performTransfer (no media path)" {
+    var rig: TestRig = undefined;
+    try rig.init(std.testing.allocator);
+    defer rig.deinit();
+
+    // Set CMD = 1 (read) via word-store: storeWordPhysical decomposes into
+    // four byte stores at offsets 0x8..0xB, with the 0xB write firing the
+    // trigger by which time pending_cmd has its full value latched.
+    try rig.mem.storeWordPhysical(0x1000_1008, 1);
+    // Without --disk, status becomes NoMedia and pending_irq is set.
+    try std.testing.expectEqual(@as(u8, 3), try rig.mem.loadBytePhysical(0x1000_100C));
+    try std.testing.expect(rig.mem.block.pending_irq);
 }
