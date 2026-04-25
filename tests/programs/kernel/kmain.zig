@@ -9,6 +9,7 @@ const std = @import("std");
 const uart = @import("uart.zig");
 const vm = @import("vm.zig");
 const page_alloc = @import("page_alloc.zig");
+const kprintf = @import("kprintf.zig");
 const trap = @import("trap.zig");
 const proc = @import("proc.zig");
 const user_blob = @import("user_blob");
@@ -29,7 +30,7 @@ extern const _kstack_top: u8;
 export fn kmain() callconv(.c) noreturn {
     page_alloc.init();
     proc.cpuInit();
-    const root_pa = vm.allocRoot();
+    const root_pa = vm.allocRoot() orelse kprintf.panic("allocRoot OOM", .{});
     vm.mapKernelAndMmio(root_pa);
     vm.mapUser(root_pa, USER_BLOB.ptr, @intCast(USER_BLOB.len));
 

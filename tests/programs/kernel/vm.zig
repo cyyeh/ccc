@@ -66,9 +66,8 @@ fn ptePtr(table_pa: u32, index: u32) *volatile u32 {
     return @ptrFromInt(table_pa + index * 4);
 }
 
-pub fn allocRoot() u32 {
-    // A fresh Sv32 L1 table is just a zeroed 4KB page.
-    return page_alloc.allocZeroPage();
+pub fn allocRoot() ?u32 {
+    return page_alloc.alloc();
 }
 
 /// Map a single 4KB page at `va` to physical page `pa` with the given flags.
@@ -224,4 +223,17 @@ pub fn mapUser(root_pa: u32, blob_ptr: [*]const u8, blob_len: u32) void {
         const va = USER_STACK_BOTTOM + s * PAGE_SIZE;
         mapPage(root_pa, va, stack_pa, USER_RW);
     }
+}
+
+/// Allocate USER_STACK_PAGES (2) zeroed frames, map them at
+/// USER_STACK_BOTTOM..USER_STACK_TOP with U+R+W. Returns false on OOM,
+/// in which case partial mappings remain in pgdir (caller frees).
+pub fn mapUserStack(root_pa: u32) bool {
+    var s: u32 = 0;
+    while (s < USER_STACK_PAGES) : (s += 1) {
+        const stack_pa = page_alloc.alloc() orelse return false;
+        const va = USER_STACK_BOTTOM + s * PAGE_SIZE;
+        mapPage(root_pa, va, stack_pa, USER_RW);
+    }
+    return true;
 }
