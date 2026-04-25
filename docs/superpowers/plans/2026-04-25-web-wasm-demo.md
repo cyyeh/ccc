@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Cross-compile `ccc` to `wasm32-wasi`, ship a single-page web demo to GitHub Pages that runs `hello.elf` in the browser, and add a CI workflow that gates Pages deploy on the existing test suite.
+**Goal:** Cross-compile the `ccc` emulator core to `wasm32-freestanding` via a new thin entry point (`src/web_main.zig`), ship a single-page web demo to GitHub Pages that runs `hello.elf` in the browser, and add a CI workflow that gates Pages deploy on the existing test suite.
 
-**Architecture:** Same `src/main.zig` source compiled twice — native CLI and `wasm32-wasi`. A vendored browser WASI polyfill (bjorn3's `browser_wasi_shim`, ~10KB MIT) wires WASI imports to a JS runtime that captures stdout/stderr into a terminal-style `<pre>` and exposes `hello.elf` through a virtual preopen dir. A single GitHub Actions workflow runs the existing test suite and (on `main`) deploys the deck + demo to Pages.
+**Architecture:** New `src/web_main.zig` (~80 lines) imports the existing emulator modules (`cpu.zig`, `memory.zig`, `elf.zig`, `devices/*.zig`) verbatim. `hello.elf` is embedded at compile time via `@embedFile`. UART output is captured into a fixed in-wasm buffer; JS reads it via exported `outputPtr()` / `outputLen()` after calling `run() -> i32`. No WASI, no vendored JS shim. Single GitHub Actions workflow runs the existing test suite and (on `main`) deploys the deck + demo to Pages.
 
-**Tech Stack:** Zig 0.16 (`wasm32-wasi` target, `ReleaseSmall`), `@bjorn3/browser_wasi_shim` (vendored ESM), GitHub Actions (`actions/setup-zig`, `actions/upload-pages-artifact@v3`, `actions/deploy-pages@v4`).
+**Tech Stack:** Zig 0.16 (`wasm32-freestanding` target, `ReleaseSmall`, `std.heap.wasm_allocator`, `std.Io.Writer.fixed`), GitHub Actions (`mlugg/setup-zig`, `actions/upload-pages-artifact@v3`, `actions/deploy-pages@v4`).
 
 **Spec:** `docs/superpowers/specs/2026-04-25-web-wasm-demo-design.md`
 
@@ -17,179 +17,306 @@
 ## File Structure
 
 **New files:**
+- `src/web_main.zig` — freestanding wasm entry point
 - `web/index.html` — demo page
-- `web/demo.js` — WASI shim glue + run loop
+- `web/demo.js` — ~30 lines: instantiate, call run(), read output buffer
 - `web/demo.css` — terminal styling matching deck palette
-- `web/vendor/browser_wasi_shim.js` — vendored shim (single ESM file)
 - `web/README.md` — how the demo works + how to add another ELF
-- `scripts/stage-web.sh` — local dev: build wasm + hello.elf, copy into `web/`
+- `scripts/stage-web.sh` — local dev: build wasm, copy into `web/`
 - `.github/workflows/pages.yml` — single workflow with test + deploy jobs
-- `docs/superpowers/plans/2026-04-25-web-wasm-demo.md` — this file
 
 **Modified files:**
-- `build.zig` — add `wasm` step (cross-compile `src/main.zig` to `wasm32-wasi`, install to `zig-out/web/`)
+- `build.zig` — add `wasm` step (cross-compile `src/web_main.zig` to `wasm32-freestanding`, install to `zig-out/web/`, depends on `hello-elf`)
+- `src/devices/clint.zig` — wrap `defaultClockSource` in a comptime switch on `builtin.os.tag` so the freestanding branch returns 0 (no libc symbols). Native and wasi branches preserved.
 - `index.html` (deck) — add `.demo-link` CSS class + two link sites (title slide + prologue slide)
 - `README.md` — mention the live web demo
-- `.gitignore` — ignore `web/ccc.wasm`, `web/hello.elf`
+- `.gitignore` — ignore `web/ccc.wasm`
+
+**Notes vs. the prior wasi-flavored plan:**
+- No `web/vendor/` directory and no vendored `browser_wasi_shim`. The freestanding wasm has zero JS-side dependencies.
+- No separate `web/hello.elf` file. The ELF is embedded at compile time via `@embedFile` in `web_main.zig`.
+- Tasks 1–2 of the prior plan are now Task 1 (combined: build.zig + web_main.zig + clint.zig comptime switch).
 
 ---
 
 ## Task ordering rationale
 
-1. Tasks 1–2 prove the wasm build works (cheapest blocker — if `wasm32-wasi` fails on `main.zig`, everything else needs revisiting).
-2. Tasks 3–7 build the demo page bottom-up (vendor → CSS → HTML → JS → stage script).
-3. Task 8 is the manual local-browser verification gate before touching the deck.
-4. Tasks 9–10 wire the deck links.
-5. Tasks 11–13 finalize artifacts (web README, .gitignore, project README).
-6. Task 14 is the CI workflow — last because all the prior work needs to be in place for the deploy step to do anything meaningful.
-7. Task 15 documents the manual GH Pages settings flip.
+1. Tasks 1–2 prove the wasm build works end-to-end (cheapest blocker — if `wasm32-freestanding` fails on `web_main.zig`'s use of `std.Io.Writer.fixed` or `std.heap.wasm_allocator`, everything else needs revisiting).
+2. Tasks 3–6 build the demo page bottom-up (CSS → HTML → JS → stage script).
+3. Task 7 is the manual local-browser verification gate before touching the deck.
+4. Tasks 8–9 wire the deck links.
+5. Tasks 10–12 finalize artifacts (web README, .gitignore, project README).
+6. Task 13 is the CI workflow — last because all the prior work needs to be in place for the deploy step to do anything meaningful.
+7. Task 14 documents the manual GH Pages settings flip.
 
 ---
 
-## Task 1: Cross-compile `ccc` to `wasm32-wasi`
+## Task 1: build.zig wasm step + clint.zig comptime clock switch
 
 **Files:**
-- Modify: `build.zig` (append a new `wasm` step before the closing `}` of `build()`)
+- Modify: `build.zig` (append a new `wasm` step)
+- Modify: `src/devices/clint.zig` (wrap `defaultClockSource` in a comptime switch on `builtin.os.tag`)
 
-- [ ] **Step 1: Find the right insertion point in build.zig**
+This task only sets up the build infrastructure. It does NOT yet write `src/web_main.zig` (Task 2). After this task, `zig build wasm` will fail because `src/web_main.zig` doesn't exist — that's expected; the failing build is wired up so Task 2 just needs to add the file.
 
-Read the end of `build.zig` to confirm where to add the new step. The new block goes after the last existing `b.step(...)` call but before the closing `}` of the `build` function.
+**Actually, since the build target file doesn't exist yet, doing only Task 1's edits would leave the build broken. So Task 1 below adds a placeholder `src/web_main.zig` that just exports `run() -> i32 { return 0; }` to prove the cross-compile works in isolation, then Task 2 fills it in with the real emulator wiring.**
 
-Run: `tail -30 build.zig`
+- [ ] **Step 1: Add the comptime switch to clint.zig**
 
-Expected: see the closing `}` of `pub fn build(b: *std.Build) void { ... }`. Add the new code immediately above it.
+Read `src/devices/clint.zig` lines 1-25 first to confirm the current state.
 
-- [ ] **Step 2: Append the wasm step**
+The current `defaultClockSource` (lines ~14–24) calls `std.c.clock_gettime`. Wrap it in a comptime switch on `builtin.os.tag`. Add `const builtin = @import("builtin");` near the top of the file (after `const std = @import("std");`).
 
-Add this block at the bottom of `build()` (just above the closing `}`):
+New `defaultClockSource`:
 
 ```zig
-    // === Phase 1.W — Web demo: cross-compile ccc to wasm32-wasi ===
-    // Same src/main.zig as the native CLI; a browser WASI shim
-    // provides stdin/stdout, args, and a virtual preopen dir.
+fn defaultClockSource() i128 {
+    // Comptime branch on target. Native uses libc; WASI uses the WASI
+    // ABI directly; wasm32-freestanding (web demo) returns 0 — the
+    // browser-side entry point passes a custom clock source instead,
+    // and a constant default is fine because hello.elf doesn't poll
+    // mtime. Keeping this branch with no libc references guarantees
+    // the freestanding link succeeds even if Zig's DCE doesn't remove
+    // this function.
+    switch (comptime builtin.os.tag) {
+        .freestanding => return 0,
+        .wasi => {
+            var ns: u64 = undefined;
+            _ = std.os.wasi.clock_time_get(.MONOTONIC, 1, &ns);
+            return @intCast(ns);
+        },
+        else => {
+            var ts: std.c.timespec = undefined;
+            if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
+            const sec: i128 = @intCast(ts.sec);
+            const nsec: i128 = @intCast(ts.nsec);
+            return sec * 1_000_000_000 + nsec;
+        },
+    }
+}
+```
+
+- [ ] **Step 2: Add the wasm step to build.zig**
+
+Read the end of `build.zig` to find the insertion point. Find the existing `install_hello_elf` variable (it's the `b.addInstallArtifact` for `hello.elf` — used by the `hello-elf` step). The new wasm step needs `install_hello_elf` to run first because `web_main.zig` will `@embedFile` it.
+
+Append to the bottom of `build()` (just above the closing `}`):
+
+```zig
+    // === Phase 1.W — Web demo: cross-compile ccc to wasm32-freestanding ===
+    // Thin entry point in src/web_main.zig that imports the existing
+    // emulator modules and exports a minimal run/outputPtr/outputLen
+    // interface for the browser. The web_main.zig file embeds hello.elf
+    // at compile time, so this step depends on the hello-elf build.
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
-        .os_tag = .wasi,
+        .os_tag = .freestanding,
     });
     const wasm_exe = b.addExecutable(.{
         .name = "ccc",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/web_main.zig"),
             .target = wasm_target,
             .optimize = .ReleaseSmall,
         }),
     });
-    // The minimal_elf_fixture import is test-only and harmless here.
-    wasm_exe.root_module.addAnonymousImport("minimal_elf_fixture", .{
-        .root_source_file = b.path("tests/fixtures/minimal_elf.zig"),
-    });
-    // wasm32-wasi exports `_start` per the WASI ABI; no separate entry.
-    wasm_exe.entry = .disabled;
-    wasm_exe.rdynamic = true;
+    wasm_exe.entry = .disabled;        // we call our own export, not _start
+    wasm_exe.rdynamic = true;          // expose `export fn` symbols
     const install_wasm = b.addInstallArtifact(wasm_exe, .{
         .dest_dir = .{ .override = .{ .custom = "web" } },
     });
-    const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-wasi");
+    // Make sure hello.elf is built before we try to @embedFile it.
+    install_wasm.step.dependOn(&install_hello_elf.step);
+    const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-freestanding");
     wasm_step.dependOn(&install_wasm.step);
 ```
 
-- [ ] **Step 3: Run the wasm build**
+If the existing variable is named differently (e.g., `install_hello`), use the actual name. Confirm by `grep -n "install.*hello.*elf\b" build.zig`.
+
+- [ ] **Step 3: Create a placeholder src/web_main.zig**
+
+Just enough to prove the cross-compile works. Real wiring is Task 2.
+
+```zig
+const std = @import("std");
+
+export fn run() i32 {
+    return 0;
+}
+
+export fn outputPtr() [*]const u8 {
+    return &output_buf;
+}
+
+export fn outputLen() u32 {
+    return 0;
+}
+
+var output_buf: [16 * 1024]u8 = undefined;
+```
+
+- [ ] **Step 4: Run the wasm build**
 
 Run: `zig build wasm`
 
-Expected: exits 0, no output, produces `zig-out/web/ccc.wasm`. Verify:
+Expected: exits 0. Verify:
 
 ```bash
 ls -lh zig-out/web/ccc.wasm
 file zig-out/web/ccc.wasm
 ```
 
-Expected `file` output contains: `WebAssembly (wasm) binary module`.
+Expected: `ccc.wasm` exists, very small (likely <10KB for the placeholder); `file` reports `WebAssembly (wasm) binary module`.
 
 If the build fails:
-- If error is "entry point not found" → remove `wasm_exe.entry = .disabled;` (older Zig versions don't have it as a property; setting `wasm_exe.entry_point = ...` instead)
-- If error mentions `_start` not exported → set `wasm_exe.rdynamic = true;` (already in the snippet) and re-check
-- If error is about a stdlib API (e.g., `std.Io.Dir`, `std.process.Init`) being unavailable on `wasm32-wasi` → STOP. The `wasm32-wasi` Zig target doesn't support that API. Switch to plan B (freestanding + `src/web_main.zig`). Report the error and ask before changing direction.
+- "entry point not found" → the `entry = .disabled` flag may have a different name in this Zig version; check `b.addExecutable` doc (`grep -A 30 "fn addExecutable" /opt/homebrew/Cellar/zig/0.16.0_1/lib/zig/std/Build.zig | head -50`). Likely `entry` is correct in 0.16.
+- libc reference error from `clint.zig` → the comptime switch in Step 1 didn't take. Re-check the edit landed and that `builtin.os.tag` is being matched correctly.
+- "wasm_allocator not found" or similar → these come up in Task 2; for Task 1's placeholder, you shouldn't hit them.
 
-- [ ] **Step 4: Verify the native build still works**
-
-Run: `zig build`
-
-Expected: exits 0, produces `zig-out/bin/ccc` as before. (Sanity check — adding the wasm step must not have broken anything.)
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Verify native + tests still pass**
 
 ```bash
-git add build.zig
-git commit -m "$(cat <<'EOF'
-build: add zig build wasm step for wasm32-wasi cross-compile
+zig build
+zig build test
+zig build e2e-hello-elf
+```
 
-Same src/main.zig source as the native CLI, ReleaseSmall, installed
-to zig-out/web/ccc.wasm. Foundation for the browser demo.
+All exit 0. The `clint.zig` change must not break native — the `else` branch is byte-equivalent to the original.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add build.zig src/devices/clint.zig src/web_main.zig
+git commit -m "$(cat <<'EOF'
+build: add zig build wasm (freestanding) + comptime clock switch
+
+Cross-compile to wasm32-freestanding, ReleaseSmall, installed to
+zig-out/web/ccc.wasm. Depends on hello-elf so a future @embedFile
+sees a fresh ELF. Wraps clint.zig's defaultClockSource in a
+comptime switch on builtin.os.tag — freestanding returns 0
+(no libc), native path is byte-equivalent.
+
+Adds a placeholder src/web_main.zig (real wiring in next commit)
+to validate the cross-compile in isolation.
 EOF
 )"
 ```
 
 ---
 
-## Task 2: Vendor `browser_wasi_shim`
+## Task 2: Real `src/web_main.zig` wiring
 
 **Files:**
-- Create: `web/vendor/browser_wasi_shim.js` (single ESM bundle, ~10KB)
-- Create: `web/vendor/.gitkeep` is unnecessary — the shim file is the directory's reason to exist
+- Modify: `src/web_main.zig` (replace placeholder with real emulator wiring)
 
-- [ ] **Step 1: Create the directory**
+- [ ] **Step 1: Replace the placeholder**
 
-Run: `mkdir -p web/vendor`
+Overwrite `src/web_main.zig` with:
 
-Expected: directory exists. (No file inside yet.)
+```zig
+const std = @import("std");
+const cpu_mod = @import("cpu.zig");
+const mem_mod = @import("memory.zig");
+const halt_dev = @import("devices/halt.zig");
+const uart_dev = @import("devices/uart.zig");
+const clint_dev = @import("devices/clint.zig");
+const elf_mod = @import("elf.zig");
 
-- [ ] **Step 2: Download the shim from npm via esm.sh**
+// hello.elf is embedded at compile time. The build graph guarantees
+// this file is fresh before the wasm build runs (build.zig wires
+// install_wasm to depend on install_hello_elf).
+const hello_elf = @embedFile("../zig-out/bin/hello.elf");
 
-Run:
+// 16 KB is comfortable headroom for a "hello world" run.
+var output_buf: [16 * 1024]u8 = undefined;
+var output_writer: std.Io.Writer = .fixed(&output_buf);
 
-```bash
-curl -fsSL "https://esm.sh/@bjorn3/browser_wasi_shim@0.4.1?bundle&target=es2022" -o web/vendor/browser_wasi_shim.js
+// hello.elf doesn't poll mtime, so a constant clock is sufficient.
+fn zeroClock() i128 {
+    return 0;
+}
+
+// 16 MiB of guest RAM is plenty for hello.elf.
+const RAM_SIZE: usize = 16 * 1024 * 1024;
+
+export fn outputPtr() [*]const u8 {
+    return &output_buf;
+}
+
+export fn outputLen() u32 {
+    return @intCast(output_writer.end);
+}
+
+export fn run() i32 {
+    output_writer.end = 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.wasm_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var halt = halt_dev.Halt.init();
+    var uart = uart_dev.Uart.init(&output_writer);
+    var clint = clint_dev.Clint.init(zeroClock);
+
+    var mem = mem_mod.Memory.init(a, &halt, &uart, &clint, null, RAM_SIZE) catch return -1;
+    defer mem.deinit();
+
+    const result = elf_mod.parseAndLoad(hello_elf, &mem) catch return -2;
+    mem.tohost_addr = result.tohost_addr;
+
+    var cpu = cpu_mod.Cpu.init(&mem, result.entry);
+    cpu.run() catch return -3;
+
+    output_writer.flush() catch {};
+    return @intCast(halt.exit_code orelse 0);
+}
 ```
 
-Expected: file exists, ~10–30KB. Verify:
+**API uncertainty handling:** if any of the following Zig 0.16 APIs differ from what's used above, **adapt to the actual API and report the deviation in the self-review** (don't silently rewrite the design):
+
+- `std.heap.wasm_allocator` — should be a `std.mem.Allocator` value usable as an arena backing allocator
+- `std.Io.Writer.fixed(&buf)` — should return a `std.Io.Writer` that writes into a fixed buffer; if the constructor name differs (e.g., `.initFixed`), use the real name
+- `output_writer.end` — should expose how many bytes have been written; if the field is named differently (e.g., `pos`, `len`, `count`), use the real name
+- `output_writer.flush()` — may not exist on a `fixed` writer (since it has nowhere to drain to); if so, drop the call — bytes written via `print`/`writeAll` already land in the buffer
+
+If any API is missing entirely (e.g., `std.heap.wasm_allocator` was removed), STOP and report.
+
+- [ ] **Step 2: Run the wasm build**
+
+Run: `zig build wasm`
+
+Expected: exits 0. Wasm size will jump from a few KB to ~50–150KB (now contains the emulator code + embedded ELF).
 
 ```bash
-ls -lh web/vendor/browser_wasi_shim.js
-head -5 web/vendor/browser_wasi_shim.js
+ls -lh zig-out/web/ccc.wasm
+file zig-out/web/ccc.wasm
 ```
 
-Expected `head` output: looks like a JS module (starts with `/* esm.sh ... */` or similar comment header).
+If it fails on a Zig stdlib API, see Step 1's "API uncertainty handling" — adapt and re-run.
 
-If the download fails or the version is unavailable, fall back to:
+- [ ] **Step 3: Sanity-check the wasm with wasm-objdump (if available)**
+
+If `wasm-objdump` is on PATH (`which wasm-objdump`), run:
 
 ```bash
-# Alternate: latest version
-curl -fsSL "https://esm.sh/@bjorn3/browser_wasi_shim?bundle&target=es2022" -o web/vendor/browser_wasi_shim.js
+wasm-objdump -x zig-out/web/ccc.wasm | grep -E "^\s*export\[|memory\[" | head -20
 ```
 
-If that also fails, the implementer should `npm install @bjorn3/browser_wasi_shim` in a temporary directory and bundle the dist file manually with `esbuild` or just concatenate the dist files. Report and ask if no quick path works.
+Expected: see `export[0..N]` entries including `run`, `outputPtr`, `outputLen`, and `memory`. No imports (other than possibly Zig runtime stuff).
 
-- [ ] **Step 3: Verify the shim's exported names**
-
-The demo.js (Task 5) imports specific names from the shim. Confirm what's exported:
-
-```bash
-grep -E '^export ' web/vendor/browser_wasi_shim.js | head -20
-```
-
-Expected: see exports including (at least) `WASI`, `File`, `OpenFile`, `PreopenDirectory`, `ConsoleStdout`. **Write down the exact names** — Task 5's demo.js imports must match. If any name differs (e.g., `Directory` vs `MemoryDirectory`), use the actual exported name in Task 5.
+If `wasm-objdump` isn't installed, skip — the real check is the browser test in Task 7.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add web/vendor/browser_wasi_shim.js
+git add src/web_main.zig
 git commit -m "$(cat <<'EOF'
-web: vendor @bjorn3/browser_wasi_shim (MIT)
+src: real web_main.zig — embed hello.elf, run emulator, capture output
 
-ES module shim that maps wasi_snapshot_preview1 imports to a JS
-runtime — used by the browser demo to provide stdout/stderr capture
-and a virtual preopen dir containing hello.elf.
+Replaces the Task 1 placeholder. Imports cpu/memory/elf/devices
+modules verbatim from the existing emulator core. Captures UART
+output into a fixed in-wasm buffer; JS reads it via outputPtr() +
+outputLen() after calling run() -> exit_code.
 EOF
 )"
 ```
@@ -203,7 +330,7 @@ EOF
 
 - [ ] **Step 1: Write demo.css**
 
-Create `web/demo.css` with this content (palette mirrors the deck's `--bg` / `--fg` / `--accent`):
+Create `web/demo.css`:
 
 ```css
 :root {
@@ -345,7 +472,7 @@ git commit -m "web: terminal-style CSS for the demo page"
 
 ---
 
-## Task 4: Demo page HTML skeleton
+## Task 4: Demo page HTML
 
 **Files:**
 - Create: `web/index.html`
@@ -360,25 +487,28 @@ git commit -m "web: terminal-style CSS for the demo page"
   <title>ccc — hello world, in your browser</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="demo.css">
-  <script type="module" src="demo.js" defer></script>
+  <script src="demo.js" defer></script>
 </head>
 <body>
   <div class="page">
     <div class="brand">ccc</div>
     <h1>hello world, in your browser</h1>
-    <div class="subtitle">the same Zig source as <code>./ccc</code> — compiled to <code>wasm32-wasi</code></div>
+    <div class="subtitle">the same Zig core as <code>./ccc</code> — compiled to <code>wasm32-freestanding</code></div>
 
     <div class="controls">
       <button class="run" id="run-btn" disabled>loading…</button>
     </div>
-    <div class="status" id="status">fetching ccc.wasm and hello.elf…</div>
+    <div class="status" id="status">fetching ccc.wasm…</div>
     <pre class="output" id="output"></pre>
 
     <p class="explain">
-      This page fetched <code>ccc.wasm</code> (a few hundred KB of WebAssembly)
-      and <code>hello.elf</code> (a few KB of RISC-V), then ran them with
-      <a href="vendor/browser_wasi_shim.js">a small WASI shim</a>.
-      No server, no remote execution — your browser is the RISC-V machine.
+      This page fetched <code>ccc.wasm</code> (a few hundred KB of WebAssembly
+      with <code>hello.elf</code> embedded at compile time), instantiated it
+      with no imports, and called the wasm <code>run()</code> export. UART
+      output was captured into a buffer inside wasm linear memory; this page
+      copied it out via <code>outputPtr()</code> and <code>outputLen()</code>.
+      No server, no remote execution, no JavaScript dependencies — your
+      browser is the RISC-V machine.
     </p>
 
     <div class="footer-links">
@@ -390,6 +520,8 @@ git commit -m "web: terminal-style CSS for the demo page"
 </html>
 ```
 
+(Note: no `type="module"` on the script tag — `web/demo.js` doesn't import anything, so plain `defer` is enough.)
+
 - [ ] **Step 2: Commit**
 
 ```bash
@@ -399,29 +531,20 @@ git commit -m "web: demo page skeleton (HTML + script wiring)"
 
 ---
 
-## Task 5: WASI runtime glue (`web/demo.js`)
+## Task 5: Browser glue (`web/demo.js`)
 
 **Files:**
 - Create: `web/demo.js`
 
-> **Note:** the imports below assume the names you confirmed in Task 2 Step 3. If your shim version exports different names (e.g., `Directory` vs `PreopenDirectory`, or no `ConsoleStdout`), substitute the real names. The functional logic (preopen `/`, capture stdout/stderr, instantiate, call `start`) is the same.
-
 - [ ] **Step 1: Write demo.js**
 
 ```js
-import {
-  WASI,
-  File,
-  OpenFile,
-  PreopenDirectory,
-  ConsoleStdout,
-} from "./vendor/browser_wasi_shim.js";
-
 const outputEl = document.getElementById("output");
 const statusEl = document.getElementById("status");
 const runBtn   = document.getElementById("run-btn");
 
 function appendOutput(text, cls) {
+  if (!text) return;
   const span = document.createElement("span");
   if (cls) span.className = cls;
   span.textContent = text;
@@ -432,72 +555,50 @@ function appendOutput(text, cls) {
 function setStatus(text) { statusEl.textContent = text; }
 function clearOutput() { outputEl.textContent = ""; }
 
-// Cache fetched bytes so "run again" doesn't re-fetch.
-let wasmBytes = null;
-let elfBytes  = null;
+let instance = null;
+let wasmSizeKB = 0;
 
-async function preload() {
-  setStatus("fetching ccc.wasm and hello.elf…");
-  const [wasmResp, elfResp] = await Promise.all([
-    fetch("ccc.wasm"),
-    fetch("hello.elf"),
-  ]);
-  if (!wasmResp.ok) throw new Error(`ccc.wasm: ${wasmResp.status}`);
-  if (!elfResp.ok)  throw new Error(`hello.elf: ${elfResp.status}`);
-  wasmBytes = await wasmResp.arrayBuffer();
-  elfBytes  = new Uint8Array(await elfResp.arrayBuffer());
-  setStatus(`loaded · wasm ${(wasmBytes.byteLength / 1024).toFixed(1)} KB · elf ${elfBytes.byteLength} B`);
+async function load() {
+  setStatus("fetching ccc.wasm…");
+  const resp = await fetch("ccc.wasm");
+  if (!resp.ok) throw new Error(`ccc.wasm: HTTP ${resp.status}`);
+  const bytes = await resp.arrayBuffer();
+  wasmSizeKB = (bytes.byteLength / 1024).toFixed(1);
+  const result = await WebAssembly.instantiate(bytes, {});
+  instance = result.instance;
+  setStatus(`loaded · wasm ${wasmSizeKB} KB`);
   runBtn.disabled = false;
   runBtn.textContent = "▶ run ccc hello.elf";
 }
 
-async function runDemo(elfPath = "hello.elf") {
-  if (!wasmBytes || !elfBytes) await preload();
+function runDemo() {
+  if (!instance) return;
   clearOutput();
-  setStatus(`running ccc /${elfPath}…`);
+  setStatus("running ccc /hello.elf…");
   runBtn.disabled = true;
 
-  const fds = [
-    new OpenFile(new File([])),                             // 0: stdin (empty)
-    ConsoleStdout.lineBuffered((line) => appendOutput(line + "\n")),         // 1: stdout
-    ConsoleStdout.lineBuffered((line) => appendOutput(line + "\n", "stderr")), // 2: stderr
-    new PreopenDirectory("/", new Map([
-      [elfPath, new File(elfBytes)],
-    ])),                                                    // 3: preopen "/"
-  ];
-
-  const wasi = new WASI(["ccc", "/" + elfPath], [], fds);
-  const { instance } = await WebAssembly.instantiate(wasmBytes, {
-    wasi_snapshot_preview1: wasi.wasiImport,
-  });
-
-  let exitCode = 0;
+  let exitCode = -100;
   try {
-    wasi.start(instance);
+    exitCode = instance.exports.run();
   } catch (e) {
-    // The shim throws to unwind on proc_exit; check for an exit code.
-    if (typeof e === "object" && e !== null && "code" in e) {
-      exitCode = e.code;
-    } else if (e && e.message && /exit code: (\d+)/.test(e.message)) {
-      exitCode = Number(RegExp.$1);
-    } else {
-      appendOutput(`\n[runtime error] ${e}\n`, "stderr");
-      exitCode = -1;
-    }
+    appendOutput(`runtime error: ${e}\n`, "stderr");
   }
 
-  appendOutput(`\n`, "meta");
-  appendOutput(`[exit ${exitCode}]\n`, "meta");
+  const ptr = instance.exports.outputPtr();
+  const len = instance.exports.outputLen();
+  const bytes = new Uint8Array(instance.exports.memory.buffer, ptr, len);
+  appendOutput(new TextDecoder().decode(bytes));
+  appendOutput(`\n[exit ${exitCode}]\n`, "meta");
+
   setStatus(`done · exit ${exitCode}`);
   runBtn.disabled = false;
   runBtn.textContent = "▶ run again";
 }
 
-runBtn.addEventListener("click", () => runDemo());
+runBtn.addEventListener("click", runDemo);
 
-// Auto-run on first load so visitors see output without clicking.
-preload()
-  .then(() => runDemo())
+load()
+  .then(runDemo)
   .catch((e) => {
     setStatus(`error: ${e.message}`);
     appendOutput(`failed to load demo: ${e.message}\n`, "stderr");
@@ -508,12 +609,12 @@ preload()
 
 ```bash
 git add web/demo.js
-git commit -m "web: WASI runtime glue — fetch wasm+elf, capture stdio, run"
+git commit -m "web: demo glue — instantiate, call run(), copy out output buffer"
 ```
 
 ---
 
-## Task 6: Local dev stage script
+## Task 6: Local stage script
 
 **Files:**
 - Create: `scripts/stage-web.sh`
@@ -530,12 +631,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-zig build wasm hello-elf
+zig build wasm
 
 cp zig-out/web/ccc.wasm web/ccc.wasm
-cp zig-out/bin/hello.elf web/hello.elf
 
-echo "staged: web/ccc.wasm ($(wc -c <web/ccc.wasm) bytes), web/hello.elf ($(wc -c <web/hello.elf) bytes)"
+echo "staged: web/ccc.wasm ($(wc -c <web/ccc.wasm) bytes)"
 ```
 
 - [ ] **Step 2: Make it executable**
@@ -546,63 +646,22 @@ Run: `chmod +x scripts/stage-web.sh`
 
 Run: `./scripts/stage-web.sh`
 
-Expected: builds succeed, prints `staged: web/ccc.wasm (NNNNN bytes), web/hello.elf (MMM bytes)`. Verify:
+Expected: builds succeed, prints `staged: web/ccc.wasm (NNNNN bytes)`. Verify:
 
 ```bash
-ls -lh web/ccc.wasm web/hello.elf
+ls -lh web/ccc.wasm
 ```
 
-Both files present.
-
-- [ ] **Step 4: Commit (script only — artifacts are gitignored next task)**
+- [ ] **Step 4: Commit (script only — artifact is gitignored next task)**
 
 ```bash
 git add scripts/stage-web.sh
-git commit -m "scripts: stage-web.sh — build wasm+hello.elf into web/ for local serving"
+git commit -m "scripts: stage-web.sh — build wasm into web/ for local serving"
 ```
 
 ---
 
-## Task 7: Ignore staged web artifacts
-
-**Files:**
-- Modify: `.gitignore`
-
-- [ ] **Step 1: Read current .gitignore**
-
-Run: `cat .gitignore`
-
-Expected output (from baseline): six lines — `zig-cache/`, `zig-out/`, `.zig-cache/`, `*.bin`, `.DS_Store`, `.worktrees/`.
-
-- [ ] **Step 2: Append two lines**
-
-Add to the end of `.gitignore`:
-
-```
-web/ccc.wasm
-web/hello.elf
-```
-
-- [ ] **Step 3: Verify the staged artifacts are now ignored**
-
-Run: `git status web/ -s`
-
-Expected: only the source files (`web/index.html`, `web/demo.js`, `web/demo.css`, `web/vendor/browser_wasi_shim.js`) should appear if they weren't already committed. `web/ccc.wasm` and `web/hello.elf` must NOT appear.
-
-Run: `git check-ignore web/ccc.wasm web/hello.elf`
-
-Expected output: both paths echoed (proves they're ignored).
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add .gitignore
-git commit -m "gitignore: web/ccc.wasm and web/hello.elf (built by zig)"
-```
-
----
-
-## Task 8: Local browser verification
+## Task 7: Local browser verification
 
 **No file changes — manual verification gate before touching the deck.**
 
@@ -614,17 +673,14 @@ Run (in a second terminal, or with `&` for background):
 python3 -m http.server -d . 8000
 ```
 
-Or, if `python3` isn't available, any other static-file server rooted at the worktree.
-
 - [ ] **Step 2: Open the demo in a browser**
 
 Open: `http://localhost:8000/web/`
 
 Expected:
 - The page loads with the `ccc` brand mark, "hello world, in your browser" heading, and a button.
-- Status shows `fetching ccc.wasm and hello.elf…` briefly.
-- Status updates to `loaded · wasm NNN KB · elf NN B`, then `running ccc /hello.elf…`, then `done · exit 0`.
-- The output `<pre>` shows: `hello world` (and a `[exit 0]` meta line).
+- Status shows `fetching ccc.wasm…` briefly, then `loaded · wasm NNN KB`, then `running ccc /hello.elf…`, then `done · exit 0`.
+- The output `<pre>` shows: `hello world` and a `[exit 0]` meta line.
 
 - [ ] **Step 3: Click "▶ run again"**
 
@@ -632,44 +688,40 @@ Expected: output clears, runs again, prints `hello world` and `[exit 0]`.
 
 - [ ] **Step 4: Open the browser devtools Network tab and reload**
 
-Expected: `ccc.wasm` and `hello.elf` are fetched. No 404s.
+Expected: only `ccc.wasm`, `demo.js`, `demo.css`, and `index.html` are fetched. No 404s. No fetch for `hello.elf` (it's embedded).
 
 - [ ] **Step 5: Open the devtools Console**
 
-Expected: no uncaught errors. (Some shim implementations log warnings about unsupported imports — those are fine as long as the run completes.)
+Expected: no uncaught errors.
 
 - [ ] **Step 6: Stop the server**
-
-Kill the `python3 -m http.server` process.
 
 - [ ] **Step 7: If anything failed, debug before continuing**
 
 Common issues:
-- Shim import names don't match (Task 5 imports vs Task 2 exports) → fix imports in `web/demo.js`, recommit
-- `proc_exit` not throwing → not all shim versions throw on exit; the demo's exit-code parsing falls back gracefully, but verify the output still appears
-- WASM compile error in browser → check console for `WebAssembly.instantiate` rejection; usually means wasm file is corrupted or not a wasm binary (re-run `zig build wasm`)
-- `path_open` for `/hello.elf` fails (no such file) → preopen dir wasn't set up correctly; check that `PreopenDirectory("/", ...)` is at index 3 in `fds` and the path the WASM passes matches `/hello.elf`
+- Output is empty but `[exit 0]` appears → the `output_writer.end` field is named differently in this Zig version (or the `fixed` writer doesn't track `end`); check the actual Writer struct in `/opt/homebrew/Cellar/zig/0.16.0_1/lib/zig/std/Io.zig` and adjust `outputLen()` accordingly
+- Garbled UTF-8 → `TextDecoder` should handle it; check that `outputLen()` returns bytes, not codepoints
+- `ccc.wasm` 404 → run `./scripts/stage-web.sh` to refresh the staged artifact
+- Wasm instantiation fails → check console for the error; usually means the wasm module has unexpected imports (it shouldn't have any). Run `wasm-objdump -x web/ccc.wasm | grep import` to confirm.
 
-Do not proceed to Task 9 until the demo prints `hello world` end-to-end.
+Do not proceed to Task 8 until the demo prints `hello world` end-to-end.
 
 ---
 
-## Task 9: Add `.demo-link` style to the deck
+## Task 8: Add `.demo-link` style to the deck
 
 **Files:**
 - Modify: `index.html` (deck) — append a CSS rule inside the existing `<style>` block
 
-- [ ] **Step 1: Find the right CSS block to append to**
+- [ ] **Step 1: Find the right CSS block**
 
 Run: `grep -n "site-footer a:hover" index.html`
 
-Expected: one match; this is the last rule before the print-media query and the closing `</style>`. Add the new rule immediately after the matched line's block ends.
+Expected: one match. The `.demo-link` rule goes immediately after the closing `}` of `.site-footer a:hover { color: #fff; }`, before the print-media query.
 
 - [ ] **Step 2: Append the .demo-link CSS rule**
 
-Find the line `.site-footer a:hover { color: #fff; }` and insert the new rule on the line below `}` that closes its block. Use the Edit tool to make this change with surrounding context.
-
-CSS rule to add:
+Use the Edit tool with surrounding context to insert this rule:
 
 ```css
     .demo-link {
@@ -694,7 +746,7 @@ CSS rule to add:
 
 Run: `python3 -c "from html.parser import HTMLParser; HTMLParser().feed(open('index.html').read()); print('ok')"`
 
-Expected: prints `ok`. (Sanity check that the edit didn't break the HTML.)
+Expected: prints `ok`.
 
 - [ ] **Step 4: Commit**
 
@@ -705,7 +757,7 @@ git commit -m "deck: add .demo-link style for web-demo links"
 
 ---
 
-## Task 10: Add demo links to title + prologue slides
+## Task 9: Add demo links to title + prologue slides
 
 **Files:**
 - Modify: `index.html` (deck) — two link insertions
@@ -723,27 +775,15 @@ Find this block in `index.html`:
   </section>
 ```
 
-Insert one new line right before `</section>`:
+Insert before `</section>`:
 
 ```html
     <a class="demo-link" href="web/">▶ try it in your browser</a>
-```
-
-The block becomes:
-
-```html
-  <section class="title" data-label="Title">
-    <div class="brand">ccc</div>
-    <div class="brand-rule"></div>
-    <div class="title-line-1">a web browser, from scratch</div>
-    <div class="title-line-2">a RISC-V computer in Zig · emulator → kernel → OS → network → browser</div>
-    <a class="demo-link" href="web/">▶ try it in your browser</a>
-  </section>
 ```
 
 - [ ] **Step 2: Add link to the prologue/demo slide**
 
-Find this block in `index.html`:
+Find this block:
 
 ```html
     <pre class="code">$ zig build hello-elf
@@ -754,42 +794,20 @@ $ echo $?
   </section>
 ```
 
-Insert one new line right after the closing `</pre>`, before `</section>`:
+Insert after the closing `</pre>` and before `</section>`:
 
 ```html
     <a class="demo-link" href="web/">▶ run this in your browser</a>
-```
-
-The block becomes:
-
-```html
-    <pre class="code">$ zig build hello-elf
-$ ./zig-out/bin/ccc zig-out/bin/hello.elf
-<span class="a">hello world</span>
-$ echo $?
-<span class="a">0</span></pre>
-    <a class="demo-link" href="web/">▶ run this in your browser</a>
-  </section>
 ```
 
 - [ ] **Step 3: Verify links exist**
 
-Run: `grep -c "demo-link" index.html`
+```bash
+grep -c "demo-link" index.html      # expect 4 (CSS rule + hover + 2 links)
+grep 'href="web/"' index.html       # expect 2 matches
+```
 
-Expected: `4` (CSS rule + hover rule + two link instances). If you see `2`, the CSS edit (Task 9) didn't land — check.
-
-Run: `grep 'href="web/"' index.html`
-
-Expected: two matches.
-
-- [ ] **Step 4: (Manual) refresh the deck in browser**
-
-If you still have a server running, open `http://localhost:8000/` and verify:
-- Title slide shows the "▶ try it in your browser" button under the subtitle.
-- Prologue slide shows the "▶ run this in your browser" button under the code block.
-- Clicking either navigates to `/web/` and the demo loads.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add index.html
@@ -798,7 +816,7 @@ git commit -m "deck: link title + prologue slides to web/ demo"
 
 ---
 
-## Task 11: Web demo README
+## Task 10: Web demo README
 
 **Files:**
 - Create: `web/README.md`
@@ -809,51 +827,52 @@ git commit -m "deck: link title + prologue slides to web/ demo"
 # ccc — web demo
 
 A single-page browser demo of [`ccc`](../), a from-scratch RISC-V CPU
-emulator written in Zig. The same `src/main.zig` source that produces the
-native CLI is cross-compiled to `wasm32-wasi` and loaded into your
-browser, where it runs `hello.elf` and prints `hello world`.
+emulator written in Zig. The same emulator modules that power the
+native CLI (`cpu.zig`, `memory.zig`, `elf.zig`, `devices/*.zig`) are
+cross-compiled to `wasm32-freestanding` via a thin entry point
+(`src/web_main.zig`) and loaded into your browser, where they run
+`hello.elf` and print `hello world`.
 
 **Live:** https://cyyeh.github.io/ccc/web/
 
 ## How it works
 
-1. `zig build wasm` cross-compiles `src/main.zig` to `wasm32-wasi`,
-   installed as `zig-out/web/ccc.wasm`.
-2. `vendor/browser_wasi_shim.js` (vendored
-   [`@bjorn3/browser_wasi_shim`](https://github.com/bjorn3/browser_wasi_shim),
-   MIT) implements `wasi_snapshot_preview1` in JavaScript: stdin/stdout,
-   args, environ, and a virtual file system.
-3. `demo.js` fetches `ccc.wasm` + `hello.elf`, builds a WASI instance with
-   `hello.elf` mounted at `/`, and calls `wasi.start(instance)`.
-4. UART output from inside the emulator becomes WASI `fd_write(1, ...)`,
-   which the shim hands to a callback that appends to the page's
-   `<pre>`.
+1. `zig build wasm` cross-compiles `src/web_main.zig` to
+   `wasm32-freestanding`, installed as `zig-out/web/ccc.wasm`.
+2. `web_main.zig` `@embedFile`s `hello.elf` at compile time, captures
+   UART output into a fixed in-wasm buffer, and exposes three exports:
+   `run() -> i32`, `outputPtr() -> [*]u8`, `outputLen() -> u32`.
+3. `demo.js` fetches `ccc.wasm`, calls `WebAssembly.instantiate(bytes, {})`
+   (no imports needed), invokes `run()`, then reads the captured bytes
+   from `instance.exports.memory.buffer` using `outputPtr()` + `outputLen()`.
 
-The browser is the RISC-V machine. There is no server execution.
+There are zero JavaScript dependencies and zero WASM imports. The
+browser is the RISC-V machine.
 
 ## Local development
 
 ```sh
-./scripts/stage-web.sh                    # build + copy artifacts into web/
+./scripts/stage-web.sh                    # build + copy ccc.wasm into web/
 python3 -m http.server -d . 8000          # any static server works
 open http://localhost:8000/web/
 ```
 
-`web/ccc.wasm` and `web/hello.elf` are gitignored — they are produced
-by `zig build` and overlaid into the Pages artifact in CI.
+`web/ccc.wasm` is gitignored — it is produced by `zig build wasm` and
+overlaid into the Pages artifact in CI.
 
 ## Adding another demo (e.g., kernel.elf)
 
-The page is structured so a second demo is a tiny addition:
+The page is structured so a second demo is a small additive change:
 
-1. Add a build step or use an existing one (e.g., `zig build kernel-elf`)
-   so the ELF lands somewhere copyable.
+1. In `src/web_main.zig`, add another `@embedFile` (e.g., for `kernel.elf`)
+   and an additional export (e.g., `run_kernel() -> i32`) that wires up
+   the same Memory/Cpu/etc. with the new ELF.
 2. Extend `scripts/stage-web.sh` and the `build-and-deploy` job in
-   `.github/workflows/pages.yml` to copy the second ELF into `web/`.
-3. Add a second `<button>` in `index.html`.
-4. In `demo.js`, fetch the second ELF and call `runDemo("kernel.elf")`.
-   The `runDemo(elfPath)` API was designed for this; no other changes
-   needed.
+   `.github/workflows/pages.yml` to ensure `kernel.elf` is built before
+   `zig build wasm`.
+3. Add a second `<button>` in `web/index.html` and a small handler in
+   `web/demo.js` that calls `instance.exports.run_kernel()` instead of
+   `run()`. The output-capture path is identical.
 ```
 
 - [ ] **Step 2: Commit**
@@ -861,6 +880,43 @@ The page is structured so a second demo is a tiny addition:
 ```bash
 git add web/README.md
 git commit -m "web: README explaining the demo + how to extend it"
+```
+
+---
+
+## Task 11: Gitignore web artifacts
+
+**Files:**
+- Modify: `.gitignore`
+
+- [ ] **Step 1: Read current .gitignore**
+
+Run: `cat .gitignore`
+
+Expected: six lines — `zig-cache/`, `zig-out/`, `.zig-cache/`, `*.bin`, `.DS_Store`, `.worktrees/`.
+
+- [ ] **Step 2: Append one line**
+
+Add to the end of `.gitignore`:
+
+```
+web/ccc.wasm
+```
+
+(Just one line — no `web/hello.elf` since the ELF is embedded into the wasm in this design, not a separate file.)
+
+- [ ] **Step 3: Verify**
+
+```bash
+git status web/ -s            # web/ccc.wasm must NOT appear if previously staged
+git check-ignore web/ccc.wasm # expect path echoed
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .gitignore
+git commit -m "gitignore: web/ccc.wasm (built by zig)"
 ```
 
 ---
@@ -888,8 +944,8 @@ Insert this block immediately after the intro paragraph (before `## Goal`):
 
 ```markdown
 **Live demo:** [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
-— `ccc` cross-compiled to `wasm32-wasi`, running `hello.elf` in your
-browser. Same Zig source as the CLI.
+— `ccc` cross-compiled to `wasm32-freestanding`, running `hello.elf` in your
+browser. Same Zig core as the CLI; new ~80-line entry point for the browser.
 
 ```
 
@@ -910,8 +966,6 @@ git commit -m "readme: link the live web demo"
 - [ ] **Step 1: Create the workflows directory**
 
 Run: `mkdir -p .github/workflows`
-
-Expected: directory exists.
 
 - [ ] **Step 2: Write pages.yml**
 
@@ -986,8 +1040,8 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Build wasm + hello.elf
-        run: zig build wasm hello-elf
+      - name: Build wasm
+        run: zig build wasm
 
       - name: Stage Pages artifact
         run: |
@@ -995,7 +1049,6 @@ jobs:
           cp index.html deck-stage.js .nojekyll _site/
           cp -r web/. _site/web/
           cp zig-out/web/ccc.wasm _site/web/ccc.wasm
-          cp zig-out/bin/hello.elf _site/web/hello.elf
           ls -lh _site _site/web
 
       - name: Configure Pages
@@ -1011,13 +1064,7 @@ jobs:
         uses: actions/deploy-pages@v4
 ```
 
-- [ ] **Step 3: Local syntax sanity check (optional but cheap)**
-
-If `actionlint` is installed, run: `actionlint .github/workflows/pages.yml`
-
-Expected: no errors. If `actionlint` is not installed, skip — the real check is in CI.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add .github/workflows/pages.yml
@@ -1032,9 +1079,7 @@ EOF
 
 ---
 
-## Task 14: Push the branch and verify CI
-
-**Files:** none — this is a verification + handoff step.
+## Task 14: Push the branch and open PR
 
 - [ ] **Step 1: Push the branch**
 
@@ -1042,17 +1087,17 @@ EOF
 git push -u origin web-wasm-demo
 ```
 
-Expected: branch published to `origin`. The PR will trigger the `test` job; the `build-and-deploy` job will be skipped (it's gated on `push to main`).
-
 - [ ] **Step 2: Open a PR**
 
 ```bash
 gh pr create --title "web wasm demo + CI" --body "$(cat <<'EOF'
 ## Summary
 
-- Cross-compile `ccc` to `wasm32-wasi` (new `zig build wasm` step).
+- Cross-compile ccc to `wasm32-freestanding` via a new ~80-line
+  `src/web_main.zig` entry point that imports the existing emulator
+  modules verbatim.
 - Add a single-page web demo in `web/` that runs `hello.elf` in the
-  browser via `@bjorn3/browser_wasi_shim` (vendored, MIT, ~10KB).
+  browser. Zero JS dependencies, zero WASM imports.
 - Link to the demo from the deck's title slide and prologue slide.
 - Add a GitHub Actions workflow that runs the existing test/e2e suite
   on every PR and (on `main`) deploys the deck + demo to GitHub Pages.
@@ -1070,38 +1115,17 @@ EOF
 )"
 ```
 
-- [ ] **Step 3: Watch the test job**
+- [ ] **Step 3: Watch the test job + wait for review**
 
-Wait for the `test` job to finish (or use `gh run watch`). Expected: green.
-
-If the `test` job fails:
-- `e2e-kernel` flaking due to tick-count nondeterminism → re-run; the test should be deterministic but check
-- `wasm` step failing on a Zig stdlib API → STOP. This is the same risk as Task 1 Step 3. Discuss before continuing.
-- Submodule checkout failing → confirm `submodules: recursive` is in the checkout step
-
-- [ ] **Step 4: Wait for review and merge**
-
-Once the user reviews and merges, the `build-and-deploy` job will run automatically.
+Wait for the `test` job (or use `gh run watch`). Expected: green. After review, the user merges and the `build-and-deploy` job auto-runs.
 
 ---
 
-## Task 15: One-time GitHub Pages settings flip (manual)
+## Task 15: One-time GitHub Pages settings flip (manual, for the user)
 
-**This task is for the user, not the implementer.** The CI workflow uses GitHub's "Pages from Actions" deployment, which requires a one-time settings change.
-
-- [ ] **Step 1: Open repo settings**
-
-Go to `https://github.com/cyyeh/ccc/settings/pages`.
-
-- [ ] **Step 2: Set source to "GitHub Actions"**
-
-Under "Build and deployment" → "Source", change from "Deploy from a branch" to "GitHub Actions". Save.
-
-- [ ] **Step 3: Verify after first deploy**
-
-After the next push to `main`, visit `https://cyyeh.github.io/ccc/web/`. Expected: the demo page loads and prints `hello world`.
-
-If the deploy job fails with `Get Pages site failed` or `Pages site not found`, the source flip wasn't saved — go back to Step 2.
+- [ ] **Step 1:** Go to `https://github.com/cyyeh/ccc/settings/pages`.
+- [ ] **Step 2:** Under "Build and deployment" → "Source", change from "Deploy from a branch" to "GitHub Actions". Save.
+- [ ] **Step 3:** After the next push to `main`, visit `https://cyyeh.github.io/ccc/web/`. Expected: the demo loads and prints `hello world`. If the deploy job fails with `Pages site not found`, the source flip wasn't saved — go back to Step 2.
 
 ---
 
