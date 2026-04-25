@@ -1,11 +1,12 @@
 # tests/programs/kernel/trampoline.S — S-mode trap entry/exit.
 #
-# On trap: stvec points here. sscratch holds &ptable[0] (kmain
-# initializes it before sret). Since tf is the first field of Process
-# (@offsetOf(Process,"tf")==0), &ptable[0] is also the TrapFrame pointer
-# used throughout this file. We swap sp with sscratch to land on the tf,
-# save all user GPRs at fixed offsets, then switch to the kernel stack
-# and call s_trap_dispatch (Zig, in trap.zig).
+# On trap: stvec points here. sscratch holds &cur_proc (the currently-
+# scheduled process); sched.zig writes sscratch before each swtch into a
+# process, and s_return_to_user re-arms it on the forkret first-entry
+# path. Since tf is the first field of Process (@offsetOf(Process,"tf")==0),
+# &cur_proc is also the TrapFrame pointer used throughout this file. We swap
+# sp with sscratch to land on the tf, save all user GPRs at fixed offsets,
+# then switch to the kernel stack and call s_trap_dispatch (Zig, in trap.zig).
 #
 # Return-to-user path: restore GPRs from the tf at a0, then sret. The
 # last two loads handle sp and a0 — a0 has been serving as the tf base
@@ -123,7 +124,13 @@ s_trap_entry:
 
 .globl s_return_to_user
 s_return_to_user:
-    # a0 = &ptable[0].tf (either from call return or kmain's initial jump via &ptable[0]).
+    # a0 = &cur_proc (== &cur_proc.tf, since tf is at offset 0 in Process).
+    # Re-arm sscratch so the NEXT trap entry swaps sp with the correct
+    # process's struct. Without this, multi-proc traps would read the
+    # stale sscratch left by the previous process's trap entry and corrupt
+    # its trapframe and kernel stack. Single-proc: sscratch == a0 always
+    # (only &ptable[0]), so this csrw is a no-op in that case.
+    csrw    sscratch, a0
 
     # Restore sepc first.
     lw      t0, TF_SEPC(a0)

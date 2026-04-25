@@ -14,17 +14,20 @@
 const proc = @import("proc.zig");
 
 pub fn scheduler() noreturn {
+    var start: u32 = 0; // round-robin start index: advances past last-picked slot
     while (true) {
         var picked: ?*proc.Process = null;
         var any_alive = false;
         var last_xstatus: i32 = 0;
 
-        var i: u32 = 0;
-        while (i < proc.NPROC) : (i += 1) {
+        var j: u32 = 0;
+        while (j < proc.NPROC) : (j += 1) {
+            const i = (start + j) % proc.NPROC;
             const p = &proc.ptable[i];
             switch (p.state) {
                 .Runnable => {
                     picked = p;
+                    start = (i + 1) % proc.NPROC; // next scan starts after this slot
                     any_alive = true;
                     break;
                 },
@@ -40,11 +43,20 @@ pub fn scheduler() noreturn {
         if (picked) |p| {
             proc.cpu.cur = p;
             p.state = .Running;
+            // Update sscratch to point at p's trapframe so that the next
+            // trap entry (csrrw sp,sscratch,sp) swaps with the right
+            // process's struct and the post-dispatch "csrr a0,sscratch"
+            // retrieves the correct tf pointer for s_return_to_user.
+            // This is critical for multi-proc: without it, a trap firing
+            // while process N is in U-mode would save/restore the wrong tf.
+            const p_addr: u32 = @intCast(@intFromPtr(p));
             asm volatile (
+                \\ csrw sscratch, %[pa]
                 \\ csrw satp, %[s]
                 \\ sfence.vma zero, zero
                 :
-                : [s] "r" (p.satp),
+                : [pa] "r" (p_addr),
+                  [s] "r" (p.satp),
                 : .{ .memory = true }
             );
             proc.swtch(&proc.cpu.sched_context, &p.context);

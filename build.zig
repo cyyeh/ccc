@@ -331,6 +331,17 @@ pub fn build(b: *std.Build) void {
     const userprog2_step = b.step("kernel-user2", "Build the Phase 3.B userprog2.elf");
     userprog2_step.dependOn(&install_userprog2_elf.step);
 
+    const multi_boot_config_stub_dir = b.addWriteFiles();
+    const multi_boot_config_zig = multi_boot_config_stub_dir.add(
+        "boot_config.zig",
+        \\pub const MULTI_PROC: bool = true;
+        \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
+        \\pub const USERPROG2_ELF: []const u8 = @embedFile("userprog2.elf");
+        \\
+    );
+    _ = multi_boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
+    _ = multi_boot_config_stub_dir.addCopyFile(userprog2_elf_bin, "userprog2.elf");
+
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
         .root_module = b.createModule(.{
@@ -343,6 +354,20 @@ pub fn build(b: *std.Build) void {
     });
     kernel_kmain_obj.root_module.addAnonymousImport("boot_config", .{
         .root_source_file = boot_config_zig,
+    });
+
+    const kernel_kmain_multi_obj = b.addObject(.{
+        .name = "kernel-kmain-multi",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_kmain_multi_obj.root_module.addAnonymousImport("boot_config", .{
+        .root_source_file = multi_boot_config_zig,
     });
 
     const kernel_elf = b.addExecutable(.{
@@ -369,6 +394,28 @@ pub fn build(b: *std.Build) void {
 
     const kernel_step = b.step("kernel", "Alias for kernel-elf");
     kernel_step.dependOn(&install_kernel_elf.step);
+
+    const kernel_multi_elf = b.addExecutable(.{
+        .name = "kernel-multi.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_multi_elf.root_module.addObject(kernel_boot_obj);
+    kernel_multi_elf.root_module.addObject(kernel_trampoline_obj);
+    kernel_multi_elf.root_module.addObject(kernel_mtimer_obj);
+    kernel_multi_elf.root_module.addObject(kernel_swtch_obj);
+    kernel_multi_elf.root_module.addObject(kernel_kmain_multi_obj);
+    kernel_multi_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_multi_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_kernel_multi_elf = b.addInstallArtifact(kernel_multi_elf, .{});
+    const kernel_multi_step = b.step("kernel-multi", "Build the Phase 3.B multi-proc kernel.elf");
+    kernel_multi_step.dependOn(&install_kernel_multi_elf.step);
 
     // End-to-end: Plan 2.D uses a host-compiled verifier that spawns ccc
     // on kernel.elf, captures stdout, and asserts the Phase 2 §Definition
