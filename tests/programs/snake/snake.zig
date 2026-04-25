@@ -1,14 +1,13 @@
 // tests/programs/snake/snake.zig
 //
-// Freestanding M-mode snake. Skeleton for now — game logic and trap
-// dispatch arrive in later tasks. monitor.S currently halts before
-// reaching any Zig code, so this file just needs to exist as a
-// linkable object.
+// Freestanding M-mode snake. Zig side of the program: trap dispatch,
+// I/O, and game state.
 
-comptime {
-    // Force a non-empty .bss so the linker emits the section
-    // and our `_bss_start`/`_bss_end` symbols resolve.
-    @export(&_placeholder, .{ .name = "_snake_placeholder" });
+const game_mod = @import("game.zig");
+
+export fn snakeTrap() callconv(.c) void {
+    // T11 fills this in. For now, just return — the trap_vector
+    // restores regs and mrets back to the wfi loop, where we'll
+    // immediately wfi again until the NEXT interrupt fires (which
+    // it won't, because we haven't reprogrammed mtimecmp).
 }
-
-var _placeholder: u8 = 0;
