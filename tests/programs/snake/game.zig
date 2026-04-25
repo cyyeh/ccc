@@ -71,17 +71,21 @@ pub const Game = struct {
             return .CollisionWall;
         }
 
-        // Self-collision: scan the current body for (nx, ny).
-        var i: u16 = 0;
-        var idx: u16 = self.tail;
-        while (i < self.len) : (i += 1) {
-            if (self.snake_x[idx] == @as(u8, @intCast(nx)) and
-                self.snake_y[idx] == @as(u8, @intCast(ny)))
-            {
-                self.state = .GameOver;
-                return .CollisionSelf;
+        // Self-collision: scan body cells [tail+1 .. head]. Skip the tail
+        // cell because it vacates its position this same tick — head moving
+        // INTO a vacating tail cell is a legal "chase-tail" move.
+        if (self.len > 1) {
+            var i: u16 = 0;
+            var idx: u16 = (self.tail + 1) % MAX_SNAKE;
+            while (i < self.len - 1) : (i += 1) {
+                if (self.snake_x[idx] == @as(u8, @intCast(nx)) and
+                    self.snake_y[idx] == @as(u8, @intCast(ny)))
+                {
+                    self.state = .GameOver;
+                    return .CollisionSelf;
+                }
+                idx = (idx + 1) % MAX_SNAKE;
             }
-            idx = (idx + 1) % MAX_SNAKE;
         }
 
         const new_head: u16 = (self.head + 1) % MAX_SNAKE;
@@ -217,4 +221,49 @@ test "advance: self-collision when head re-enters body" {
     const r = g.advance();
     try std.testing.expectEqual(AdvanceResult.CollisionSelf, r);
     try std.testing.expectEqual(State.GameOver, g.state);
+}
+
+test "advance: head into vacating tail cell is allowed (permissive variant)" {
+    // Length-4 snake forming an upside-down U:
+    //   H .          head at (1, 5) facing Down
+    //   # #          body[1] at (1, 6), body[2] at (2, 6)
+    //   # T          tail at (2, 5)
+    // Wait — that puts head and tail both at y=5; let me redo the geometry.
+    //
+    // Length-4 snake forming a tight loop:
+    //   H#       head at (1,5), body at (2,5)
+    //   T#       tail at (1,6), body at (2,6)
+    // Snake order tail→head: (1,6) → (2,6) → (2,5) → (1,5). Direction Up.
+    // Next move: head goes Up to (1,4). That's empty space — moves cleanly.
+    //
+    // Now what we WANT to test is "head moves into vacating tail cell."
+    // Length-3 in an L:
+    //   H        head at (5,5)
+    //   #        body at (5,6)
+    //   T        tail at (5,7), facing Up
+    // Head moves Up: new head at (5,4). Empty — no collision. Doesn't test it.
+    //
+    // The classic chase-tail setup: snake length 4 in a square turn:
+    //   T#       tail (1,5) → body (2,5)
+    //   #H       body (1,6) → head (2,6) facing Up? No, head at (2,6) facing Up
+    //            would go to (2,5) = body[1].
+    //
+    // Let me build it directly: snake order tail→...→head:
+    //   (5,5) (6,5) (6,6) (5,6)
+    // So tail at (5,5), head at (5,6), facing Up means head moves to (5,5) = tail.
+    // That's the move we want to allow.
+
+    var g = Game.init(.{ .x = 5, .y = 6 });
+    g.len = 4;
+    g.tail = 0;
+    g.head = 3;
+    g.snake_x[0] = 5; g.snake_y[0] = 5; // tail
+    g.snake_x[1] = 6; g.snake_y[1] = 5;
+    g.snake_x[2] = 6; g.snake_y[2] = 6;
+    g.snake_x[3] = 5; g.snake_y[3] = 6; // head
+    g.dir = .Up;
+    // Head (5,6) → (5,5) which IS the tail cell. Permissive rule allows.
+    const r = g.advance();
+    try std.testing.expectEqual(AdvanceResult.Moved, r);
+    try std.testing.expectEqual(State.Playing, g.state);
 }
