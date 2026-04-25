@@ -340,8 +340,8 @@
       <div class="toc-row">
         <div class="toc-num">3</div>
         <div class="toc-body">
-          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a done</span></div>
-          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plan 3.A landed:</strong> emulator PLIC + block device + UART RX + <code class="inline">--disk</code>.</div>
+          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a + 3.b done</span></div>
+          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plans 3.A + 3.B landed:</strong> emulator PLIC + block + UART RX, plus the kernel-side <code class="inline">ptable</code> / scheduler / <code class="inline">swtch</code> / ELF loader running two ELFs as PID 1 + PID 2.</div>
         </div>
       </div>
       <div class="toc-row">
@@ -359,7 +359,7 @@
         </div>
       </div>
     </div>
-    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plan 3.A</strong> — the emulator-side substrate Phase 3's kernel will drive.</div>
+    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A and 3.B</strong> — the emulator-side substrate and the kernel-side multi-process foundation that drives it.</div>
   </section>
 
   <!-- 3: Prologue · the demo -->
@@ -811,11 +811,74 @@ S   sys_exit:
     <div class="caption"><strong>e2e-plic-block:</strong> M-mode <code class="inline">boot.S</code> sets <code class="inline">mideleg.SEIP</code>, programs PLIC enables/threshold, drops to S. The S-mode test issues a block read, executes <code class="inline">wfi</code>, takes a delegated S-external interrupt, claims source 1, verifies sector 0's magic bytes, completes, halts 0. <code class="inline">wfi</code> sleeps via <code class="inline">poll(2)</code> until an interrupt-edge fires — no busy spin.</div>
   </section>
 
-  <!-- 18: Epilogue · where we are -->
+  <!-- 18: Chapter 3.B · building blocks -->
+  <section data-label="Ch 3.B · building blocks">
+    <div class="slide-label">chapter 3.b · ptable + swtch + elf loader</div>
+    <h2 class="slide-title">From <span class="accent">one process</span> to many</h2>
+    <p class="plain">Phase 2's kernel ran a single hard-coded <code>the_process</code>. Plan 3.B rebuilds the foundation: a free-list page allocator, a kernel context-switch primitive, a 16-slot process table, and a kernel-side ELF loader — every moving part a real round-robin scheduler needs. <strong>The emulator doesn't change</strong>: 3.B is kernel-side only.</p>
+    <div class="three-col">
+      <div class="panel">
+        <h4>page_alloc · free-list</h4>
+        <p style="font-size: 24px;">Replaces Phase 2's bump allocator. Each free 4 KB page stores a <code class="inline">*next</code> at offset 0; <code class="inline">alloc()</code> pops the head and zero-fills, <code class="inline">free(pa)</code> pushes. <strong>O(1)</strong>, plus <code class="inline">freeCount()</code> for debug.</p>
+      </div>
+      <div class="panel">
+        <h4>Context + swtch.S</h4>
+        <p style="font-size: 24px;"><strong>52-byte</strong> Context: <code class="inline">ra · sp · s0..s11</code>. <strong>30 lines</strong> of asm save callee-saved regs to <code class="inline">*old</code>, restore from <code class="inline">*new</code>, <code class="inline">ret</code> into the new caller's <code class="inline">ra</code>. The single primitive every yield, preempt, and (3.D) wakeup funnels through.</p>
+      </div>
+      <div class="panel">
+        <h4>ptable[16] + Cpu</h4>
+        <p style="font-size: 24px;"><code class="inline">Process</code> grows <code class="inline">pid · pgdir · sz · kstack · context</code> (<code class="inline">tf</code> stays at offset 0 — trampoline invariants survive). <code class="inline">Cpu</code> singleton holds <code class="inline">cur</code> + its own scheduler stack so 3.D's sleep machinery stays surgical.</p>
+      </div>
+    </div>
+    <div class="caption"><strong>elfload.zig</strong> — kernel-side ELF32 loader walks every <code class="inline">PT_LOAD</code> header, allocates <code class="inline">ceil(p_memsz / 4 KB)</code> zeroed user pages, copies <code class="inline">p_filesz</code> bytes, maps at <code class="inline">p_vaddr</code>. Replaces Phase 2's objcopy flatten — userprogs now embed as <strong>raw ELFs</strong>. New syscalls: <code class="inline">getpid</code> (#172) · <code class="inline">sbrk</code> (#214).</div>
+  </section>
+
+  <!-- 19: Chapter 3.B · the dance -->
+  <section data-label="Ch 3.B · the dance">
+    <div class="slide-label">chapter 3.b · the scheduler dance</div>
+    <h2 class="slide-title">PID 1 and PID 2, <span class="accent">interleaved</span></h2>
+    <p class="plain">The scheduler runs forever on its own kernel stack, scanning <code>ptable</code> for the first <code>Runnable</code> proc and <code>swtch</code>-ing in. Every timer tick the SSI handler bumps <code>cur.ticks_observed</code> and yields back; <code>swtch</code> saves the outgoing context, restores the next one, returns into its <code>ra</code>. A freshly-allocated process's first <code>ra</code> is <code>forkret</code> — a stub that drops it into U-mode.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="k">pub fn</span> scheduler() <span class="k">noreturn</span> {
+    <span class="k">while</span> (<span class="k">true</span>) {
+        <span class="k">const</span> p = pickRunnable()
+            <span class="k">orelse continue</span>;
+        cpu.cur = p;
+        p.state = .Running;
+        <span class="c">// re-arm sscratch + load pgdir</span>
+        <span class="c">// csrw sscratch,p · csrw satp,p.satp</span>
+        <span class="c">// sfence.vma</span>
+        switchTo(p);
+        <span class="a">swtch</span>(&amp;cpu.sched_context,
+              &amp;p.context);
+        <span class="c">// p yielded back; pick another</span>
+        cpu.cur = <span class="k">null</span>;
+    }
+}</pre>
+      <pre class="flow" style="margin: 0; font-size: 20px; line-height: 1.45;">kmain   alloc PID 1 + PID 2
+kmain   scheduler() ───────► loop
+sched   pick PID 1
+sched   <span class="arrow">swtch</span> ─► forkret ─► U-mode
+U       PID 1 prints <span class="dim">"hello…"</span>
+U       (timer) ecall yield
+S       cur.ticks_observed += 1
+S       <span class="arrow">swtch</span> back to sched_context
+sched   pick PID 2
+U       PID 2 prints <span class="dim">"[2] hello…"</span>
+U       PID 2  exit(0) → Zombie
+sched   pick PID 1 → exit
+sysExit pid == 1?
+          kprintf <span class="dim">"ticks observed: N\n"</span>
+          halt MMIO ← <span class="n">0</span></pre>
+    </div>
+    <div class="caption"><strong>e2e-multiproc-stub:</strong> spawns <code class="inline">ccc kernel-multi.elf</code> (two embedded ELFs), asserts stdout contains both <code class="inline">hello from u-mode\n</code> and <code class="inline">[2] hello from u-mode\n</code> plus a <code class="inline">ticks observed: N\n</code> trailer (any N), exit 0. Interleaving is non-deterministic — verifier checks substrings, not byte-for-byte. <strong>Phase 2's <code class="inline">e2e-kernel</code> stays green:</strong> <code class="inline">sysExit</code> halts only when <code class="inline">cur.pid == 1</code>.</div>
+  </section>
+
+  <!-- 20: Epilogue · where we are -->
   <section data-label="Where we are">
     <div class="slide-label">epilogue · where we are</div>
     <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">complete</span>. Phase 3 · <span class="accent">underway</span>.</h2>
-    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> just landed the emulator-side hardware (PLIC, block device, UART RX) the kernel will drive.</p>
+    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> landed the emulator-side hardware (PLIC, block device, UART RX); <strong>Plan 3.B</strong> just landed the kernel-side multi-process foundation: a free-list page allocator, a 16-slot <code>ptable</code>, a round-robin scheduler with <code>swtch</code>, and a kernel-side ELF loader running two embedded ELFs as PID 1 + PID 2.</p>
     <div class="two-col" style="grid-template-columns: 1.25fr 1fr; gap: 64px;">
       <div class="check-list">
         <div class="row">
@@ -854,12 +917,16 @@ S   sys_exit:
           <div class="head">✓ 3.A · PLIC + block + UART RX</div>
           <div class="sub">Emulator-only · 32-source PLIC · 4 KB block device · 256-byte RX FIFO · real <code class="inline">wfi</code> idle · <code class="inline">--disk</code>/<code class="inline">--input</code> · <code class="inline">e2e-plic-block</code></div>
         </div>
+        <div class="row">
+          <div class="head">✓ 3.B · ptable + scheduler + ELF loader</div>
+          <div class="sub">Free-list <code class="inline">page_alloc</code> · <code class="inline">Context</code> + <code class="inline">swtch.S</code> · <code class="inline">ptable[16]</code> + <code class="inline">Cpu</code> · round-robin scheduler · kernel-side ELF loader · <code class="inline">getpid</code>/<code class="inline">sbrk</code>/<code class="inline">yield</code> · PID 1 + PID 2 · <code class="inline">e2e-multiproc-stub</code></div>
+        </div>
       </div>
       <div class="panel" style="align-self: center;">
-        <h4>Next · plan 3.b</h4>
+        <h4>Next · plan 3.c</h4>
         <p style="font-size: 28px; line-height: 1.5;">
-          Kernel multi-process foundation.<br><br>
-          Free-list page allocator, static <code class="inline">ptable[16]</code>, round-robin scheduler with <code class="inline">swtch</code>, kernel-side ELF loader. Two embedded ELFs running as PID 1 + PID 2.
+          Full process lifecycle.<br><br>
+          <code class="inline">fork</code> · <code class="inline">exec</code> · <code class="inline">wait</code> · <code class="inline">exit</code> · kill flag. <code class="inline">init</code> becomes an embedded ELF that <code class="inline">fork</code>s an embedded <code class="inline">hello</code>, parent reaps the child, both exit cleanly. Milestone: <code class="inline">e2e-fork</code>.
         </p>
       </div>
     </div>
