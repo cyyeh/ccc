@@ -103,3 +103,50 @@ pub export var ptable: [NPROC]Process = undefined;
 pub fn cur() *Process {
     return &ptable[0];
 }
+
+const page_alloc = @import("page_alloc.zig");
+
+pub fn alloc() ?*Process {
+    var i: u32 = 0;
+    while (i < NPROC) : (i += 1) {
+        const p = &ptable[i];
+        if (p.state == .Unused) {
+            p.* = std.mem.zeroes(Process);
+            p.state = .Embryo;
+            p.pid = nextPid();
+            const ks = page_alloc.alloc() orelse {
+                p.* = std.mem.zeroes(Process); // restore Unused state (.Unused == 0)
+                return null;
+            };
+            p.kstack = ks;
+            p.kstack_top = ks + page_alloc.PAGE_SIZE;
+            p.context.ra = @intCast(@intFromPtr(&forkret));
+            p.context.sp = p.kstack_top - 16; // 16-byte aligned first frame
+            return p;
+        }
+    }
+    return null;
+}
+
+pub fn free(p: *Process) void {
+    if (p.kstack != 0) {
+        page_alloc.free(p.kstack);
+        p.kstack = 0;
+    }
+    // pgdir teardown deferred to 3.C; 3.B never calls free() in
+    // expected paths.
+    p.* = std.mem.zeroes(Process);
+}
+
+var next_pid: u32 = 1;
+fn nextPid() u32 {
+    const p = next_pid;
+    next_pid += 1;
+    return p;
+}
+
+// Placeholder; real body lands in Task 8. We need this to satisfy the
+// linker for now. Task 8 replaces it.
+export fn forkret() callconv(.c) noreturn {
+    @import("kprintf.zig").panic("forkret called before Task 8 wired it up", .{});
+}
