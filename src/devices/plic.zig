@@ -12,6 +12,9 @@ pub const Plic = struct {
     /// Pending bits. Bit N pending for source N. Bit 0 hardwired 0.
     /// Mutated via assertSource/deassertSource and (later) cleared on claim.
     pending: u32 = 0,
+    /// S-mode hart context enable bits. Bit N permits source N to drive
+    /// the S-context's claim/threshold gate. Bit 0 hardwired 0.
+    enable_s: u32 = 0,
 
     pub fn init() Plic {
         return .{};
@@ -39,6 +42,11 @@ pub const Plic = struct {
             const shift: u5 = @intCast((offset - 0x1000) * 8);
             return @truncate(self.pending >> shift);
         }
+        // S-context enables: 0x2080..0x2083.
+        if (offset >= 0x2080 and offset < 0x2084) {
+            const shift: u5 = @intCast((offset - 0x2080) * 8);
+            return @truncate(self.enable_s >> shift);
+        }
         return 0;
     }
 
@@ -54,6 +62,16 @@ pub const Plic = struct {
         }
         // Pending register is read-only.
         if (offset >= 0x1000 and offset < 0x1004) return;
+        // S-context enables.
+        if (offset >= 0x2080 and offset < 0x2084) {
+            const off: u5 = @intCast((offset - 0x2080) * 8);
+            const mask: u32 = @as(u32, 0xFF) << off;
+            const new_byte: u32 = @as(u32, value) << off;
+            self.enable_s = (self.enable_s & ~mask) | new_byte;
+            // Bit 0 hardwired zero.
+            self.enable_s &= ~@as(u32, 1);
+            return;
+        }
         // Out-of-range writes silently dropped.
     }
 };
@@ -130,4 +148,28 @@ test "assertSource(31) reaches byte 3" {
     var p = Plic.init();
     p.assertSource(31);
     try std.testing.expectEqual(@as(u8, 0x80), try p.readByte(0x1003)); // bit 7 of byte 3
+}
+
+test "S-context enable register byte round-trip" {
+    var p = Plic.init();
+    try p.writeByte(0x2080, 0xFE); // enable srcs 1..7
+    try std.testing.expectEqual(@as(u8, 0xFE), try p.readByte(0x2080));
+}
+
+test "S-context enable bit 0 is hardwired zero (writes dropped)" {
+    var p = Plic.init();
+    try p.writeByte(0x2080, 0xFF);
+    // Bit 0 stays 0; bits 1..7 honored.
+    try std.testing.expectEqual(@as(u8, 0xFE), try p.readByte(0x2080));
+}
+
+test "S-context enable spans all 4 bytes (sources 0..31)" {
+    var p = Plic.init();
+    try p.writeByte(0x2080, 0x02); // src 1
+    try p.writeByte(0x2081, 0x04); // src 10
+    try p.writeByte(0x2082, 0x00);
+    try p.writeByte(0x2083, 0x80); // src 31
+    try std.testing.expectEqual(@as(u8, 0x02), try p.readByte(0x2080));
+    try std.testing.expectEqual(@as(u8, 0x04), try p.readByte(0x2081));
+    try std.testing.expectEqual(@as(u8, 0x80), try p.readByte(0x2083));
 }
