@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const CLINT_BASE: u32 = 0x0200_0000;
 pub const CLINT_SIZE: u32 = 0x1_0000; // 64 KB, matches spec memory map
@@ -12,10 +13,18 @@ pub const ClintError = error{UnexpectedRegister};
 pub const ClockSourceFn = *const fn () i128;
 
 fn defaultClockSource() i128 {
-    // Zig 0.16 removed `std.time.nanoTimestamp`; fall back to a direct
-    // `clock_gettime(MONOTONIC, ...)` via libc. Any failure (unlikely on
+    // Zig 0.16 removed `std.time.nanoTimestamp`; reach for the most
+    // portable monotonic clock available without dragging in libc. On
+    // wasm32-wasi we call the WASI ABI import `clock_time_get` directly
+    // (no libc dependency); on every other host we fall back to
+    // `std.c.clock_gettime(MONOTONIC, ...)`. Any failure (unlikely on
     // supported hosts) collapses to 0 — mtime just freezes until the next
     // successful read.
+    if (builtin.os.tag == .wasi) {
+        var ns: std.os.wasi.timestamp_t = undefined;
+        if (std.os.wasi.clock_time_get(.MONOTONIC, 1, &ns) != .SUCCESS) return 0;
+        return @intCast(ns);
+    }
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
     const sec: i128 = @intCast(ts.sec);

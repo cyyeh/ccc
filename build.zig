@@ -495,4 +495,32 @@ pub fn build(b: *std.Build) void {
             rv_step.dependOn(&run_it.step);
         }
     }
+
+    // === Phase 1.W — Web demo: cross-compile ccc to wasm32-wasi ===
+    // Same src/main.zig as the native CLI; a browser WASI shim
+    // provides stdin/stdout, args, and a virtual preopen dir.
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .wasi,
+    });
+    const wasm_exe = b.addExecutable(.{
+        .name = "ccc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    // The minimal_elf_fixture import is test-only and harmless here.
+    wasm_exe.root_module.addAnonymousImport("minimal_elf_fixture", .{
+        .root_source_file = b.path("tests/fixtures/minimal_elf.zig"),
+    });
+    // wasm32-wasi exports `_start` per the WASI ABI; no separate entry.
+    wasm_exe.entry = .disabled;
+    wasm_exe.rdynamic = true;
+    const install_wasm = b.addInstallArtifact(wasm_exe, .{
+        .dest_dir = .{ .override = .{ .custom = "web" } },
+    });
+    const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-wasi");
+    wasm_step.dependOn(&install_wasm.step);
 }
