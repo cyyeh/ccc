@@ -62,9 +62,12 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build e2e-trap` | M→U→ecall→M→UART→halt round-trip; stdout equals `trap ok\n` |
 | `zig build hello-elf` | Build the Zig-compiled `hello.elf` (M-mode monitor + U-mode Zig payload) |
 | `zig build e2e-hello-elf` | Run `ccc hello.elf` and assert stdout equals `hello world\n` (Phase 1 §Definition of done) |
-| `zig build kernel-user` | Build the Plan 2.C user payload to a flat binary (`zig-out/userprog.bin`) |
-| `zig build kernel-elf` (or `kernel`) | Build the Plan 2.C `kernel.elf` (M-mode boot shim + S-mode kernel + embedded user blob) |
+| `zig build kernel-user` | Build the Phase 3.B user payload (`zig-out/userprog.elf`, embedded by the kernel) |
+| `zig build kernel-user2` | Build the Phase 3.B PID 2 user payload (`zig-out/userprog2.elf`, embedded by `kernel-multi.elf`) |
+| `zig build kernel-elf` (or `kernel`) | Build the single-proc `kernel.elf` (M-mode boot shim + S-mode kernel + embedded `userprog.elf`) |
+| `zig build kernel-multi` | Build the multi-proc `kernel-multi.elf` (same kernel objects + both `userprog*.elf`) |
 | `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout matches `hello from u-mode\nticks observed: N\n` with N > 0 (Phase 2 §Definition of done) |
+| `zig build e2e-multiproc-stub` | Run `ccc kernel-multi.elf` and assert stdout contains both `hello from u-mode\n` and `[2] hello from u-mode\n`, plus a `ticks observed: N\n` trailer (Plan 3.B milestone) |
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
@@ -136,7 +139,10 @@ to "GitHub Actions" in repo settings (one-time manual step).
 ## Status
 
 **Phase 3 in progress.** Plan 3.A merged: PLIC, simple block device, UART RX,
-`--disk` and `--input` flags, real `wfi` idle.
+`--disk` and `--input` flags, real `wfi` idle. Plan 3.B merged: free-list
+page allocator, `ptable[NPROC=16]`, round-robin scheduler with `swtch`,
+kernel-side ELF32 loader, `getpid`/`sbrk`/`yield` syscalls, second
+embedded user ELF, `e2e-multiproc-stub` running PID 1 + PID 2.
 
 **Phase 1 — RISC-V CPU emulator — complete.**
 
@@ -187,7 +193,26 @@ async interrupt is pending; the PLIC routes UART RX (source 10) and block
 completion (source 1) into S-mode external interrupts; the block device
 serves 4 KB sectors out of a host-backed file at `0x1000_1000`.
 
-Next: Plan 3.B — kernel-side drivers, syscalls, and a tiny FS + shell.
+Plan 3.B (kernel-side multi-process foundation) is merged. `page_alloc.zig`
+is now a free-list (`alloc`/`free`/`freeCount`); the kernel keeps a static
+`ptable[NPROC=16]` of `Process` records with per-proc kernel stacks and saved
+`Context` (callee-saved kernel regs); a round-robin scheduler runs on its
+own kernel stack and `swtch`-es into the next `Runnable` proc; a kernel-side
+ELF32 loader (`elfload.zig`) walks `PT_LOAD` segments and installs user
+PTEs via callback. New syscalls land: `getpid` (#172), `sbrk` (#214), and
+real `yield` (#124, now drives the scheduler). A second `kernel-multi.elf`
+build embeds two user ELFs (`userprog.elf` + `userprog2.elf`) and hand-creates
+PID 1 + PID 2 at boot; `e2e-multiproc-stub` runs both processes through the
+scheduler interleaving:
+
+    $ zig build kernel-multi && zig build run -- zig-out/bin/kernel-multi.elf
+    [2] hello from u-mode
+    hello from u-mode
+    ticks observed: 23
+
+Single-proc `e2e-kernel` regression continues to pass byte-for-byte.
+
+Next: Plan 3.C — `fork` / `exec` / `wait` / `exit` / kill-flag (`^C`).
 
 ## Layout
 
@@ -221,7 +246,7 @@ tests/
     hello/             # Phase 1: RV32I hello-world encoder + Phase 1.D Zig-compiled hello.elf
     mul_demo/          # Phase 1: RV32IMA demo encoder (prints "42\n")
     trap_demo/         # Phase 1.C: privilege demo (prints "trap ok\n")
-    kernel/            # Phase 2: M-mode boot + S-mode kernel + embedded U-mode userprog
+    kernel/            # Phase 2/3.B: M-mode boot + S-mode kernel + ptable scheduler + ELF-loaded userprogs
     plic_block_test/   # Phase 3.A: asm-only integration test (CMD → IRQ → trap → claim → halt)
   fixtures/             # tiny hand-crafted ELF used only by elf.zig tests
   riscv-tests/          # upstream submodule: riscv-software-src/riscv-tests
