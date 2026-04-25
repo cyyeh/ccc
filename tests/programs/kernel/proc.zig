@@ -168,10 +168,18 @@ fn nextPid() u32 {
     return p;
 }
 
-// Placeholder; real body lands in Task 8. We need this to satisfy the
-// linker for now. Task 8 replaces it.
+// Initial entry for newly-allocated processes. Reached via the first
+// swtch into the proc — its context.ra is set to this address by alloc().
+//
+// 3.B body: just call s_return_to_user(&cur.tf). We're already on the
+// new proc's kstack (swtch loaded sp from context.sp = kstack_top - 16),
+// so srets cleanly into U-mode. 3.C will add lock release here when
+// locks arrive.
+extern fn s_return_to_user(tf: *trap.TrapFrame) noreturn;
+
 export fn forkret() callconv(.c) noreturn {
-    @import("kprintf.zig").panic("forkret called before Task 8 wired it up", .{});
+    const p = cur();
+    s_return_to_user(&p.tf);
 }
 
 /// Save current process state and switch to the scheduler context. The
