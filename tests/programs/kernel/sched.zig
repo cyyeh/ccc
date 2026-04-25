@@ -1,31 +1,67 @@
-// tests/programs/kernel/sched.zig — Phase 3.B scheduler stub.
+// tests/programs/kernel/sched.zig — Phase 3.B round-robin scheduler.
 //
-// schedule() returns proc.cur() (currently always &ptable[0]). Task 9
-// will swap in the real round-robin loop and wire in CPU-local state so
-// the picker can select among Runnable processes.
-//
-// Phase 3.B callers:
-//   - kmain.zig: boot tail-calls context_switch_to(&ptable[0]) before
-//     jumping to s_return_to_user (initial satp write).
-//   - trap.zig (SSI branch): calls schedule() after incrementing ticks.
-//   - syscall.zig (sys_yield): calls schedule().
-//
-// context_switch_to is only called from boot; the SSI and yield paths
-// skip it because satp is already correct with a single process. Task 9
-// will reinstate it when the picker can return a different process.
+// Runs forever on cpu.sched_stack_top. Loop:
+//   1. Scan ptable for the first Runnable proc.
+//   2. If found: cpu.cur = p; p.state = Running; csrw satp from p.satp;
+//      sfence.vma; swtch into p.context.
+//   3. On return (p yielded back), cpu.cur = null. Continue.
+//   4. If no Runnable proc and at least one Embryo or Sleeping or Running
+//      exists, loop. (We'll WFI here in 3.D when there's something to wait
+//      on; for now the timer tick keeps poking us.)
+//   5. If every slot is Unused or Zombie, halt the system via the halt
+//      MMIO with status from the most-recently-zombied proc (or 0).
 
 const proc = @import("proc.zig");
 
-pub fn schedule() *proc.Process {
-    return proc.cur();
-}
+pub fn scheduler() noreturn {
+    while (true) {
+        var picked: ?*proc.Process = null;
+        var any_alive = false;
+        var last_xstatus: i32 = 0;
 
-pub fn context_switch_to(p: *proc.Process) void {
-    asm volatile (
-        \\ csrw satp, %[satp]
-        \\ sfence.vma zero, zero
-        :
-        : [satp] "r" (p.satp),
-        : .{ .memory = true }
-    );
+        var i: u32 = 0;
+        while (i < proc.NPROC) : (i += 1) {
+            const p = &proc.ptable[i];
+            switch (p.state) {
+                .Runnable => {
+                    picked = p;
+                    any_alive = true;
+                    break;
+                },
+                .Embryo, .Sleeping, .Running => any_alive = true,
+                .Zombie => {
+                    last_xstatus = p.xstate;
+                    any_alive = true; // a zombie is still alive until reaped
+                },
+                .Unused => {},
+            }
+        }
+
+        if (picked) |p| {
+            proc.cpu.cur = p;
+            p.state = .Running;
+            asm volatile (
+                \\ csrw satp, %[s]
+                \\ sfence.vma zero, zero
+                :
+                : [s] "r" (p.satp),
+                : .{ .memory = true }
+            );
+            proc.swtch(&proc.cpu.sched_context, &p.context);
+            // p has yielded back; swtch left us here.
+            proc.cpu.cur = null;
+            continue;
+        }
+
+        if (!any_alive) {
+            // No runnable, no embryo/sleeping/zombie — halt with last
+            // observed exit status (or 0).
+            const halt: *volatile u8 = @ptrFromInt(0x00100000);
+            halt.* = @truncate(@as(u32, @bitCast(last_xstatus)));
+            while (true) asm volatile ("wfi");
+        }
+        // Else: spin (timer tick will fire and re-enter sched's caller —
+        // but we're not anyone's callee. We just busy-loop until something
+        // becomes Runnable. 3.D adds proper WFI here.)
+    }
 }

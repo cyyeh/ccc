@@ -3,8 +3,7 @@
 // Phase 3.B: the singleton `the_process` is replaced by `ptable[0]`.
 // sscratch / trampoline references now point at &ptable[0], whose first
 // field is `tf` (offset 0), preserving the trampoline invariant.
-// Boot routes through `sched.context_switch_to` for the initial satp
-// write so Phase 3 can extend this path without a signature change.
+// Task 9: satp written inline before s_return_to_user; sched import removed.
 
 const std = @import("std");
 const uart = @import("uart.zig");
@@ -12,7 +11,6 @@ const vm = @import("vm.zig");
 const page_alloc = @import("page_alloc.zig");
 const trap = @import("trap.zig");
 const proc = @import("proc.zig");
-const sched = @import("sched.zig");
 const user_blob = @import("user_blob");
 
 pub const USER_BLOB: []const u8 = user_blob.BLOB;
@@ -85,9 +83,14 @@ export fn kmain() callconv(.c) noreturn {
         : .{ .memory = true }
     );
 
-    // Flip on Sv32 translation via the scheduler's context-switch helper.
-    // Phase 3.B only calls this from boot; Task 9 will reroute SSI + yield.
-    sched.context_switch_to(&proc.ptable[0]);
+    // Flip on Sv32 translation inline (Task 9: sched.context_switch_to removed).
+    asm volatile (
+        \\ csrw satp, %[s]
+        \\ sfence.vma zero, zero
+        :
+        : [s] "r" (proc.ptable[0].satp),
+        : .{ .memory = true }
+    );
 
     // Jump to the trampoline's return-to-user path with a0 = &ptable[0].tf.
     // Since @offsetOf(Process, "tf") == 0, &ptable[0] is the TrapFrame ptr.
