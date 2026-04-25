@@ -15,6 +15,8 @@ const trap = @import("trap.zig");
 const uart = @import("uart.zig");
 const kprintf = @import("kprintf.zig");
 const proc = @import("proc.zig");
+const page_alloc = @import("page_alloc.zig");
+const vm = @import("vm.zig");
 
 const SSTATUS_SUM: u32 = 1 << 18;
 
@@ -81,12 +83,38 @@ fn sysGetpid() u32 {
     return proc.cur().pid;
 }
 
+fn sysSbrk(incr_signed: u32) u32 {
+    const incr: i32 = @bitCast(incr_signed);
+    const p = proc.cur();
+    const old_sz = p.sz;
+
+    if (incr > 0) {
+        const new_sz = old_sz + @as(u32, @intCast(incr));
+        const PAGE_SIZE: u32 = 4096;
+        const old_top = (old_sz + PAGE_SIZE - 1) & ~@as(u32, PAGE_SIZE - 1);
+        const new_top = (new_sz + PAGE_SIZE - 1) & ~@as(u32, PAGE_SIZE - 1);
+        var va: u32 = old_top;
+        while (va < new_top) : (va += PAGE_SIZE) {
+            const pa = page_alloc.alloc() orelse return @bitCast(@as(i32, -12)); // -ENOMEM
+            vm.mapPage(p.pgdir, va, pa, vm.USER_RW);
+        }
+        p.sz = new_sz;
+    } else if (incr < 0) {
+        // 3.B accepts but doesn't unmap. 3.E will properly unmap and free.
+        const dec: u32 = @intCast(-incr);
+        if (dec > old_sz) return @bitCast(@as(i32, -22)); // -EINVAL
+        p.sz = old_sz - dec;
+    }
+    return old_sz;
+}
+
 pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
         64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
         93 => sysExit(tf.a0),
         124 => tf.a0 = sysYield(),
         172 => tf.a0 = sysGetpid(),
+        214 => tf.a0 = sysSbrk(tf.a0),
         else => tf.a0 = @bitCast(@as(i32, -38)), // -ENOSYS
     }
 }
