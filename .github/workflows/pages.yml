@@ -1,0 +1,92 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: test (zig build + e2e)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Zig 0.16.0
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: zig build test
+        run: zig build test
+
+      - name: zig build e2e (RV32I hello)
+        run: zig build e2e
+
+      - name: zig build e2e-mul (RV32IMA)
+        run: zig build e2e-mul
+
+      - name: zig build e2e-trap (privilege/traps)
+        run: zig build e2e-trap
+
+      - name: zig build e2e-hello-elf (Phase 1 DoD)
+        run: zig build e2e-hello-elf
+
+      - name: zig build e2e-kernel (Phase 2 DoD)
+        run: zig build e2e-kernel
+
+      - name: zig build wasm (smoke-test cross-compile)
+        run: zig build wasm
+
+  build-and-deploy:
+    name: build wasm + deploy Pages
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig 0.16.0
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Build wasm
+        run: zig build wasm
+
+      - name: Stage Pages artifact
+        run: |
+          mkdir -p _site/web
+          cp index.html deck-stage.js .nojekyll _site/
+          cp -r web/. _site/web/
+          cp zig-out/web/ccc.wasm _site/web/ccc.wasm
+          ls -lh _site _site/web
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
