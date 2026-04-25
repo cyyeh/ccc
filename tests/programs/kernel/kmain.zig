@@ -12,9 +12,9 @@ const page_alloc = @import("page_alloc.zig");
 const kprintf = @import("kprintf.zig");
 const trap = @import("trap.zig");
 const proc = @import("proc.zig");
-const user_blob = @import("user_blob");
-
-pub const USER_BLOB: []const u8 = user_blob.BLOB;
+const boot_config = @import("boot_config");
+const elfload = @import("elfload.zig");
+pub const USERPROG_ELF: []const u8 = boot_config.USERPROG_ELF;
 
 const SATP_MODE_SV32: u32 = 1 << 31;
 
@@ -32,12 +32,30 @@ export fn kmain() callconv(.c) noreturn {
     proc.cpuInit();
     const root_pa = vm.allocRoot() orelse kprintf.panic("allocRoot OOM", .{});
     vm.mapKernelAndMmio(root_pa);
-    vm.mapUser(root_pa, USER_BLOB.ptr, @intCast(USER_BLOB.len));
+    const allocFn = struct {
+        fn f() ?u32 {
+            return page_alloc.alloc();
+        }
+    }.f;
+    const mapFn = struct {
+        fn f(pgdir: u32, va: u32, pa: u32, flags: u32) void {
+            vm.mapPage(pgdir, va, pa, flags);
+        }
+    }.f;
+    const lookupFn = struct {
+        fn f(pgdir: u32, va: u32) ?u32 {
+            return vm.lookupPA(pgdir, va);
+        }
+    }.f;
+    const entry = elfload.load(USERPROG_ELF, root_pa, allocFn, mapFn, lookupFn, vm.USER_RWX) catch |err| {
+        kprintf.panic("elfload PID 1 failed: {s}", .{@errorName(err)});
+    };
+    if (!vm.mapUserStack(root_pa)) kprintf.panic("mapUserStack PID 1 failed", .{});
 
     // Initialize the single process.
     const p = &proc.ptable[0];
     p.* = std.mem.zeroes(proc.Process);
-    p.tf.sepc = vm.USER_TEXT_VA;
+    p.tf.sepc = entry;
     p.tf.sp = vm.USER_STACK_TOP;
     p.satp = SATP_MODE_SV32 | (root_pa >> 12);
     p.pgdir = root_pa;

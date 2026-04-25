@@ -284,29 +284,21 @@ pub fn build(b: *std.Build) void {
     userprog_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
     userprog_elf.entry = .{ .symbol_name = "_start" };
 
-    // Flatten ELF -> raw binary so the kernel can @embedFile it. Use
-    // Zig's built-in ObjCopy step (backed by llvm-objcopy from the Zig
-    // distribution) — avoids depending on a system llvm-objcopy binary.
-    const userprog_objcopy = b.addObjCopy(userprog_elf.getEmittedBin(), .{
-        .format = .bin,
-        .basename = "userprog.bin",
-    });
-    const userprog_bin = userprog_objcopy.getOutput();
+    const userprog_elf_bin = userprog_elf.getEmittedBin();
 
-    // WriteFile step that co-locates a tiny Zig stub with userprog.bin
-    // in a single output dir. The stub `pub const BLOB = @embedFile(...)`
-    // is resolved relative to itself, so the bin must be its sibling.
-    const user_blob_stub_dir = b.addWriteFiles();
-    const user_blob_zig = user_blob_stub_dir.add(
-        "user_blob.zig",
-        "pub const BLOB = @embedFile(\"userprog.bin\");\n",
+    const boot_config_stub_dir = b.addWriteFiles();
+    const boot_config_zig = boot_config_stub_dir.add(
+        "boot_config.zig",
+        \\pub const MULTI_PROC: bool = false;
+        \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
+        \\pub const USERPROG2_ELF: []const u8 = &.{};
+        \\
     );
-    _ = user_blob_stub_dir.addCopyFile(userprog_bin, "userprog.bin");
+    _ = boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
 
-    // Expose a top-level step for CI / debugging.
-    const install_userprog_bin = b.addInstallFile(userprog_bin, "userprog.bin");
-    const kernel_user_step = b.step("kernel-user", "Build the Plan 2.C userprog.bin");
-    kernel_user_step.dependOn(&install_userprog_bin.step);
+    const install_userprog_elf = b.addInstallFile(userprog_elf_bin, "userprog.elf");
+    const kernel_user_step = b.step("kernel-user", "Build the Phase 3.B userprog.elf");
+    kernel_user_step.dependOn(&install_userprog_elf.step);
 
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
@@ -318,8 +310,8 @@ pub fn build(b: *std.Build) void {
             .single_threaded = true,
         }),
     });
-    kernel_kmain_obj.root_module.addAnonymousImport("user_blob", .{
-        .root_source_file = user_blob_zig,
+    kernel_kmain_obj.root_module.addAnonymousImport("boot_config", .{
+        .root_source_file = boot_config_zig,
     });
 
     const kernel_elf = b.addExecutable(.{

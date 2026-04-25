@@ -105,6 +105,20 @@ pub fn mapPage(root_pa: u32, va: u32, pa: u32, flags: u32) void {
     l0_entry.* = makeLeaf(pa, flags | PTE_V);
 }
 
+/// Look up the physical address backing `va` in `root_pa`'s Sv32 table.
+/// Returns the PA if a valid leaf PTE exists, null otherwise.
+pub fn lookupPA(root_pa: u32, va: u32) ?u32 {
+    const l1_idx = vpn1(va);
+    const l1_entry = ptePtr(root_pa, l1_idx);
+    if ((l1_entry.* & PTE_V) == 0) return null;
+    if ((l1_entry.* & (PTE_R | PTE_W | PTE_X)) != 0) return null; // superpage — not used
+    const l0_table_pa = ppnOfPte(l1_entry.*) << 12;
+    const l0_idx = vpn0(va);
+    const l0_entry = ptePtr(l0_table_pa, l0_idx);
+    if ((l0_entry.* & PTE_V) == 0) return null;
+    return ppnOfPte(l0_entry.*) << 12;
+}
+
 /// Map a contiguous VA region to a contiguous PA region, page by page.
 /// `va` and `pa` must be PAGE_SIZE-aligned; `len` is rounded up to a
 /// PAGE_SIZE multiple.

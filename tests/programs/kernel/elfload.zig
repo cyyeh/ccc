@@ -29,6 +29,8 @@ const PT_LOAD: u32 = 1;
 
 pub const PageAllocFn = *const fn () ?u32;
 pub const MapFn = *const fn (pgdir: u32, va: u32, pa: u32, flags: u32) void;
+/// Look up an already-mapped PA for `va` in `pgdir`. Returns null if unmapped.
+pub const LookupFn = *const fn (pgdir: u32, va: u32) ?u32;
 
 pub fn parse(blob: []const u8) ElfError!struct { entry: u32, ph_off: u32, ph_num: u16, ph_entsize: u16 } {
     if (blob.len < 52) return ElfError.BadMagic;
@@ -47,7 +49,7 @@ pub fn parse(blob: []const u8) ElfError!struct { entry: u32, ph_off: u32, ph_num
     };
 }
 
-pub fn load(blob: []const u8, pgdir: u32, alloc_fn: PageAllocFn, map_fn: MapFn, user_flags: u32) ElfError!u32 {
+pub fn load(blob: []const u8, pgdir: u32, alloc_fn: PageAllocFn, map_fn: MapFn, lookup_fn: LookupFn, user_flags: u32) ElfError!u32 {
     const hdr = try parse(blob);
 
     var i: u32 = 0;
@@ -71,9 +73,19 @@ pub fn load(blob: []const u8, pgdir: u32, alloc_fn: PageAllocFn, map_fn: MapFn, 
 
         var va = va_start;
         while (va < va_end) : (va += PAGE_SIZE) {
-            const pa = alloc_fn() orelse return ElfError.OutOfMemory;
-            map_fn(pgdir, va, pa, user_flags);
+            // If a prior PT_LOAD segment already allocated+mapped this page
+            // (two segments sharing a 4 KB page), reuse the existing frame.
+            const pa = if (lookup_fn(pgdir, va)) |existing_pa|
+                existing_pa
+            else blk: {
+                const new_pa = alloc_fn() orelse return ElfError.OutOfMemory;
+                map_fn(pgdir, va, new_pa, user_flags);
+                break :blk new_pa;
+            };
 
+            // NOTE(Phase 3.E): shared-page reuse skips map_fn for the second
+            // segment, so its p_flags are silently ignored here. Phase 3.E must
+            // OR the desired flags onto the existing PTE instead of skipping.
             // Copy bytes that fall in this page from the blob.
             const seg_lo = if (va < p_vaddr) p_vaddr else va;
             const seg_hi = @min(va + PAGE_SIZE, p_vaddr + p_filesz);
