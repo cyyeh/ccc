@@ -179,3 +179,8 @@ pre.trace {
   margin: 8px 0 0;
   white-space: pre;
 }
+
+/* ----- terminal prompt + typed command (inside pre.output) ----- */
+
+pre.output .prompt { color: var(--accent); font-weight: 600; }
+pre.output .cmd    { color: var(--fg); }

@@ -26,6 +26,8 @@ function fmtBytes(n) {
   return `${n} B`;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 let instance = null;
 
 async function load() {
@@ -42,13 +44,28 @@ async function load() {
   runBtn.textContent = "▶ run ccc hello.elf";
 }
 
-function runDemo() {
+async function runDemo() {
   if (!instance) return;
   clearOutput();
   clearTrace();
-  const traceEnabled = traceCb.checked;
-  setStatus(traceEnabled ? "running ccc /hello.elf (with trace)…" : "running ccc /hello.elf…");
   runBtn.disabled = true;
+
+  const traceEnabled = traceCb.checked;
+  const cmd = traceEnabled ? "./ccc --trace hello.elf" : "./ccc hello.elf";
+
+  // 1. Prompt + animated typing of the command.
+  setStatus("typing…");
+  appendOutput("$ ", "prompt");
+  for (const ch of cmd) {
+    appendOutput(ch, "cmd");
+    await sleep(45 + Math.random() * 55); // 45-100ms per char, gentle jitter
+  }
+  appendOutput("\n");
+
+  // 2. Run the wasm.
+  setStatus(traceEnabled ? "running ccc /hello.elf (with trace)…" : "running ccc /hello.elf…");
+  // Yield once so the "running" status paints before the (sub-millisecond) wasm call.
+  await sleep(0);
 
   let exitCode = -100;
   try {
@@ -57,14 +74,17 @@ function runDemo() {
     appendOutput(`runtime error: ${e}\n`, "stderr");
   }
 
-  // Output region
+  // 3. Output region (existing behavior).
   const outPtr = instance.exports.outputPtr();
   const outLen = instance.exports.outputLen();
   const outBytes = new Uint8Array(instance.exports.memory.buffer, outPtr, outLen);
   appendOutput(new TextDecoder().decode(outBytes));
   appendOutput(`\n[exit ${exitCode}]\n`, "meta");
 
-  // Trace region (only if requested)
+  // 4. Trailing prompt — implies the shell is ready for another command.
+  appendOutput("$ ", "prompt");
+
+  // 5. Trace region (existing behavior, unchanged).
   if (traceEnabled) {
     const tPtr = instance.exports.tracePtr();
     const tLen = instance.exports.traceLen();
