@@ -515,6 +515,23 @@ pub fn build(b: *std.Build) void {
     });
     wasm_exe.entry = .disabled;        // we call our own export, not _start
     wasm_exe.rdynamic = true;          // expose `export fn` symbols
+
+    // Expose hello.elf as an importable module so web_main.zig can
+    // @embedFile it without escaping src/'s package root. WriteFile
+    // step that co-locates a tiny Zig stub with hello.elf in a single
+    // output dir; the stub `pub const BLOB = @embedFile(...)` resolves
+    // relative to itself, so the .elf must be its sibling. Mirrors
+    // the user_blob pattern used by kernel.elf (see above).
+    const hello_blob_dir = b.addWriteFiles();
+    const hello_blob_zig = hello_blob_dir.add(
+        "hello_elf.zig",
+        "pub const BLOB = @embedFile(\"hello.elf\");\n",
+    );
+    _ = hello_blob_dir.addCopyFile(hello_elf.getEmittedBin(), "hello.elf");
+    wasm_exe.root_module.addAnonymousImport("hello_elf", .{
+        .root_source_file = hello_blob_zig,
+    });
+
     const install_wasm = b.addInstallArtifact(wasm_exe, .{
         .dest_dir = .{ .override = .{ .custom = "web" } },
     });

@@ -1,15 +1,65 @@
+//! Freestanding wasm entry point for the browser demo. Imports the
+//! existing emulator modules (cpu / memory / elf / devices) verbatim
+//! and exposes a minimal run / outputPtr / outputLen interface so
+//! `web/demo.js` can instantiate the wasm with no imports, call
+//! `run()`, and copy the captured output out of linear memory.
+
 const std = @import("std");
+const cpu_mod = @import("cpu.zig");
+const mem_mod = @import("memory.zig");
+const halt_dev = @import("devices/halt.zig");
+const uart_dev = @import("devices/uart.zig");
+const clint_dev = @import("devices/clint.zig");
+const elf_mod = @import("elf.zig");
 
-var output_buf: [16 * 1024]u8 = undefined;
+// hello.elf is embedded at compile time via an anonymous module that
+// build.zig wires up: a co-located stub does the @embedFile so the
+// path doesn't escape src/'s package root. The build graph guarantees
+// hello.elf is fresh before the wasm build runs (install_wasm depends
+// on install_hello_elf).
+const hello_elf = @import("hello_elf").BLOB;
 
-export fn run() i32 {
+// 16 KB is comfortable headroom for a "hello world" run.
+const OUTPUT_BUF_SIZE: usize = 16 * 1024;
+var output_buf: [OUTPUT_BUF_SIZE]u8 = undefined;
+var output_writer: std.Io.Writer = .fixed(&output_buf);
+
+// hello.elf doesn't poll mtime, so a constant clock is sufficient.
+fn zeroClock() i128 {
     return 0;
 }
+
+// 16 MiB of guest RAM is plenty for hello.elf.
+const RAM_SIZE: usize = 16 * 1024 * 1024;
 
 export fn outputPtr() [*]const u8 {
     return &output_buf;
 }
 
 export fn outputLen() u32 {
-    return 0;
+    return @intCast(output_writer.end);
+}
+
+export fn run() i32 {
+    output_writer.end = 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.wasm_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var halt = halt_dev.Halt.init();
+    var uart = uart_dev.Uart.init(&output_writer);
+    var clint = clint_dev.Clint.init(zeroClock);
+
+    var mem = mem_mod.Memory.init(a, &halt, &uart, &clint, null, RAM_SIZE) catch return -1;
+    defer mem.deinit();
+
+    const result = elf_mod.parseAndLoad(hello_elf, &mem) catch return -2;
+    mem.tohost_addr = result.tohost_addr;
+
+    var cpu = cpu_mod.Cpu.init(&mem, result.entry);
+    cpu.run() catch return -3;
+
+    output_writer.flush() catch {};
+    return @intCast(halt.exit_code orelse 0);
 }
