@@ -71,17 +71,24 @@ Browser (web/index.html, demo.js, ansi.js, runner.js)
   ├─ <select>:    snake.elf (default) | hello.elf
   ├─ <pre>:       32×16 monospace, tabindex="0", "click to play" hint until focused
   ├─ keydown:     w/a/s/d/q/Space  →  postMessage({type:"input", byte}) → Worker
-  └─ Worker:      hosts ccc.wasm, drains output at 60 Hz, posts bytes to main
+  └─ Worker:      runs the wasm in CHUNKS — see "Wasm loop architecture" below.
+                  Each turn: setMtimeNs(now); runStep(N); drain consumeOutput;
+                  forward input bytes via pushInput; yield via setTimeout(0).
                                               │
-                                              ▼ main thread feeds bytes into ansi.js
+                                              ▼ posts {type:"output", bytes} to main
+                                                main thread feeds bytes into ansi.js
                                                 ANSI interpreter updates 32×16 screen
                                                 buffer, renders <pre>.textContent
                        ─────────────────────────────────────────────
 ccc.wasm (demo/web_main.zig + emulator core)
-  Existing exports:  run(traceFlag) -> i32, outputPtr, outputLen, tracePtr, traceLen
-  New exports:       pushInput(byte: u32)        → uart.pushRx(byte)
-                     selectProgram(idx: u32)     → choose embedded ELF before run()
-                     consumeOutput() -> u32      → return current outputLen, then reset to 0
+  Existing exports:  outputPtr, tracePtr, traceLen
+                     (run() is removed — replaced by runStart + runStep)
+  New exports:       runStart(programIdx: u32, trace: i32) -> i32
+                     runStep(maxInstructions: u32) -> i32   (-1 still running, else exit code)
+                     setMtimeNs(ns: i64)                    (BigInt from JS)
+                     consumeOutput() -> u32                  (count of unconsumed bytes; advances drain pointer)
+                     pushInput(byte: u32)                    (UART RX FIFO push)
+                     selectProgram(idx: u32)                 (kept as alias of runStart's first arg)
   Embedded:          hello.elf (today), snake.elf (new)
                                               │
                                               ▼ ELF loaded, emulated
@@ -216,18 +223,35 @@ riscv-tests use). No emulator changes needed.
 **Files added/modified:**
 
 ```
-demo/web_main.zig    extend: + pushInput, + selectProgram, + consumeOutput,
-                              embed snake.elf alongside hello.elf
+demo/web_main.zig    rewritten: replace run() with runStart + runStep,
+                                add setMtimeNs + pushInput + selectProgram
+                                + consumeOutput; embed snake.elf alongside
+                                hello.elf; module-level emulator state
 src/lib.zig          unchanged (re-export shim)
 web/index.html       extend: + <select>, focus styling on <pre>, click hint
 web/demo.css         extend: + .focus-hint, monospace tightening
 web/demo.js          rewritten: ~80 → ~150 lines; owns Worker + UI + select
-web/runner.js        NEW: ~80 lines; Web Worker; hosts wasm; drains output;
-                          routes input
+web/runner.js        NEW: ~100 lines; Web Worker; chunked runStep loop;
+                          drains output; routes input
 web/ansi.js          NEW: ~120 lines; ANSI interpreter over a 32×16 char buffer
 ```
 
-**Worker boundary** (clean one-way separation):
+### Wasm loop architecture (chunked execution)
+
+The existing `hello.elf` demo calls `run()` once and reads `outputLen`
+after it returns — fine for a program that halts in <100 ms. Snake
+never halts until `q`, so a blocking `run()` would lock the Worker:
+Web Workers are single-threaded, and while `run()` is executing, the
+Worker can't service `setInterval` callbacks or process incoming
+`postMessage` listeners. Both output draining AND input forwarding
+would stall.
+
+The fix: **chunk the wasm execution from the JS side.** The wasm
+exposes a `runStart` / `runStep` pair that lets the Worker turn the
+crank itself. Module-level state in `web_main.zig` holds the current
+emulator (CPU, memory, devices) across chunks.
+
+**Worker main loop:**
 
 ```
 Main thread                                Web Worker (runner.js)
@@ -236,33 +260,71 @@ demo.js                                    – load ccc.wasm bytes via fetch
   load runner.js as Worker                 – instantiate (no imports)
   on <select> change:
     postMessage {type:"select", idx}       – on {type:"select", idx}:
-                                             exports.selectProgram(idx)
+                                             stash idx, await {type:"start"}
                                            – on {type:"start"}:
-  on click <pre>: focus, send "start"        exports.run(0)
-                                             (blocks until program halts)
+  on click <pre>: focus, send "start"        exports.runStart(idx, 0)
+                                             record startMs = performance.now()
+                                             enter chunked loop (below)
 
-  on keydown (filtered):                   – setInterval(16ms) drain loop:
-    postMessage {type:"input", byte}         len = exports.consumeOutput()
-                                             if len > 0: copy bytes via
-                                                outputPtr() + len, postMessage
-                                                {type:"output", bytes}
+                                           – chunked loop:
+                                               while (true):
+                                                 elapsedNs =
+                                                   (performance.now() - startMs) * 1e6
+                                                 exports.setMtimeNs(BigInt(elapsedNs))
+                                                 exit = exports.runStep(50_000)
+                                                 len = exports.consumeOutput()
+                                                 if (len > 0):
+                                                   bytes = copy from outputPtr()..len
+                                                   postMessage {type:"output", bytes}
+                                                 if (exit !== -1):
+                                                   postMessage {type:"halt", code: exit}
+                                                   break
+                                                 await new Promise(r => setTimeout(r, 0))
 
-                                           – on {type:"input", byte}:
-                                             exports.pushInput(byte)
-                                             (bytes wait in UART RX FIFO; the
-                                              snake program will drain on its
-                                              next tick — no need to poke CPU)
+  on keydown (filtered):                   – on {type:"input", byte}:
+    postMessage {type:"input", byte}         exports.pushInput(byte)
+                                             (UART RX FIFO; bytes wait there
+                                              for the snake program to drain
+                                              on its next tick — pushing
+                                              raises PLIC src 10 internally,
+                                              but snake polls LSR.DR anyway)
 
-  on message from worker:                  – when run() returns:
-    if "output": ansi.feed(bytes); render()  postMessage {type:"halt", code}
+  on message from worker:
+    if "output": ansi.feed(bytes); render()
     if "halt":   show "press restart"
 ```
 
-**`consumeOutput()` export**: today the wasm exposes `outputPtr/outputLen`
-as a write-only cursor; `hello.elf` finishes once and JS reads the whole
-buffer. Snake never finishes, so we need streaming. New `consumeOutput()`
-returns the current `outputLen` and resets the internal counter to 0,
-acting as a one-reader ring drain. The Worker calls this every 16 ms.
+The `setTimeout(0)` between chunks is the key responsiveness mechanism:
+the Worker's event loop runs once per turn, processing any pending
+`{type:"input"}` messages and applying them via `pushInput` *before* the
+next `runStep`. Latency from keypress → snake-can-see-it: at most one
+chunk (~5 ms) plus one tick boundary (≤ 125 ms). Imperceptible.
+
+**Why a Worker at all?** The chunked loop runs 50K wasm instructions per
+turn (~1–10 ms depending on machine). Doing this on the main thread
+would jank `requestAnimationFrame` and CSS transitions. The Worker keeps
+emulation off the UI thread.
+
+**Why `setMtimeNs` (not a JS-imported clock)?** Keeps the wasm import
+list empty — same constraint we held in the existing demo. The clock
+source inside the wasm reads a module-level `i128` that JS updates
+between chunks. mtime is "frozen" within a chunk (no real-time advance
+during a `runStep`), but updated each chunk to current `performance.now()`.
+For an 8 Hz game with 5 ms chunks, mtime resolution is plenty.
+
+**Why `runStep` returns `-1` for "still running":** `i32` exit codes
+fit naturally into native sign-extended `i32`; using `-1` as a sentinel
+avoids needing a separate "halted" flag export.
+
+**Output buffer overflow risk:** the existing 16 KB `output_buf` would
+fill in ~3 seconds of snake play (~4800 B/s). `consumeOutput` resets
+`output_writer.end` to 0 when its returned count equals the current
+write position — i.e., when JS has fully drained, the wasm "rewinds."
+This is safe because the Worker calls `consumeOutput` on every turn,
+so the drain mark is always at the write position by the time the next
+chunk runs.
+
+### Browser bridge components
 
 **ANSI interpreter** (`ansi.js`) — small state machine, full-redraw subset:
 
@@ -393,7 +455,7 @@ All decisions captured during brainstorming (Q1–Q7):
   `run-snake` / `e2e-snake` mirroring `hello-elf`; embed snake.elf in
   wasm; Web Worker hosts wasm so the main thread stays responsive.
 
-Two refinements added during spec writing:
+Three refinements added during spec writing (third found during plan writing 2026-04-26):
 
 - **Game starts in `.Playing` but does not advance until the first key
   press.** This removes any timing dependency between the e2e input
@@ -408,3 +470,11 @@ Two refinements added during spec writing:
   by a single deterministic input file. Real-time gameplay is unaffected
   (input latency ≤ 125 ms; key bursts queue in the 256-byte FIFO and are
   drained one per tick).
+- **Wasm uses chunked execution, not a single blocking `run()`.** The
+  Worker can't be locked inside `run()` — it needs to service input
+  messages and post output messages between turns. Replaced `run()` with
+  `runStart()` + `runStep(maxInstructions)` and added `setMtimeNs(ns)`
+  so the JS event loop drives the simulation clock. The existing
+  `hello.elf` flow is preserved (a single `runStart` + `runStep` loop
+  produces equivalent output). See "Wasm loop architecture" section
+  above for the full rationale.
