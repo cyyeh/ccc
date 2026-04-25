@@ -31,7 +31,11 @@ our own terminal browser, with every layer written ourselves:
 - **ISA:** RV32I + M + A + Zicsr + Zifencei. Single hart. No F/D, no C.
 - **Privilege:** M-mode + S-mode + U-mode. Sv32 paging (4 KB pages, no
   superpages, no TLB model).
-- **Devices (Phase 1):** NS16550A UART + CLINT timer. 128 MB RAM at `0x80000000`.
+- **Devices:** NS16550A UART + CLINT timer (Phase 1). 128 MB RAM at `0x80000000`.
+  Plan 3.A adds:
+  - **PLIC** (`0x0c00_0000`, 4 MB) — 32 sources × 1 S-mode hart context.
+  - **Block device** (`0x1000_1000`, 16 B) — 4 KB sectors, host-file-backed via `--disk`.
+  - **UART RX** — 256-byte FIFO, level IRQ via PLIC source 10.
 - **Host platform:** macOS. Phase 4 may move to a Linux VM for TAP/TUN.
 - **Decomposition rule:** one phase's spec at a time — brainstorm → spec →
   plan → implementation, then repeat.
@@ -78,14 +82,23 @@ Extra flags:
     --trace              Print one line per executed instruction to stderr.
     --halt-on-trap       Stop on first unhandled trap; dump regs/CSRs.
     --memory <MB>        Override RAM size (default: 128).
+    --disk PATH          Back the block device with this 4 MB host file.
+    --input PATH         Stream this file's bytes into the UART RX FIFO.
+    --disk-latency CYC   Reserved (no-op in Phase 3.A).
 
 ISA coverage: RV32I + M + A + Zicsr + Zifencei, M/S/U privilege,
 synchronous traps with delegation, async interrupt delivery, Sv32
 paging. `--trace` renders a `[M]`/`[S]`/`[U]` privilege column, plus
-a synthetic `--- interrupt N (<name>) taken in <old>, now <new> ---`
-marker on async trap entry.
+synthetic markers on async events:
+
+    --- interrupt N (<name>) taken in <old>, now <new> ---
+    --- interrupt 9 (supervisor external, src N) taken in <old>, now <new> ---
+    --- block: read sector S at PA 0x<P> ---
 
 ## Status
+
+**Phase 3 in progress.** Plan 3.A merged: PLIC, simple block device, UART RX,
+`--disk` and `--input` flags, real `wfi` idle.
 
 **Phase 1 — RISC-V CPU emulator — complete.**
 
@@ -128,7 +141,15 @@ Debug aids: `zig build qemu-diff-kernel` runs `scripts/qemu-diff-kernel.sh`,
 which compares per-instruction traces between our emulator and QEMU.
 Requires `qemu-system-riscv32`; not a CI gate.
 
-Next: **Phase 3 — multi-process OS + filesystem + shell.**
+**Phase 3 — multi-process OS + filesystem + shell — in progress.**
+
+Plan 3.A (emulator: PLIC + simple block device + UART RX + `--disk`/`--input`
+flags + real `wfi` idle) is merged. The CPU now blocks in `wfi` until an
+async interrupt is pending; the PLIC routes UART RX (source 10) and block
+completion (source 1) into S-mode external interrupts; the block device
+serves 4 KB sectors out of a host-backed file at `0x1000_1000`.
+
+Next: Plan 3.B — kernel-side drivers, syscalls, and a tiny FS + shell.
 
 ## Layout
 
