@@ -418,6 +418,47 @@ pub fn build(b: *std.Build) void {
     const e2e_plic_block_step = b.step("e2e-plic-block", "Run the Phase 3.A PLIC + block integration test");
     e2e_plic_block_step.dependOn(&e2e_plic_block_run.step);
 
+    // === Snake demo (Phase 3) ===
+    const snake_monitor_obj = b.addObject(.{
+        .name = "snake-monitor",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    snake_monitor_obj.root_module.addAssemblyFile(b.path("tests/programs/snake/monitor.S"));
+
+    const snake_zig_obj = b.addObject(.{
+        .name = "snake-zig",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/snake/snake.zig"),
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const snake_elf = b.addExecutable(.{
+        .name = "snake.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    snake_elf.root_module.addObject(snake_monitor_obj);
+    snake_elf.root_module.addObject(snake_zig_obj);
+    snake_elf.setLinkerScript(b.path("tests/programs/snake/linker.ld"));
+    snake_elf.entry = .{ .symbol_name = "_start" };
+
+    const install_snake_elf = b.addInstallArtifact(snake_elf, .{});
+    const snake_elf_step = b.step("snake-elf", "Build the Phase 3 snake.elf demo");
+    snake_elf_step.dependOn(&install_snake_elf.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
