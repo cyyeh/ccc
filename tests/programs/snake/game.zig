@@ -78,6 +78,18 @@ pub const Game = struct {
         self.tail = (self.tail + 1) % MAX_SNAKE;
         return .Moved;
     }
+
+    pub fn applyDirIfLegal(self: *Game) void {
+        const p = self.pending_dir orelse return;
+        const reversal = switch (self.dir) {
+            .Up    => p == .Down,
+            .Down  => p == .Up,
+            .Left  => p == .Right,
+            .Right => p == .Left,
+        };
+        if (!reversal) self.dir = p;
+        self.pending_dir = null;
+    }
 };
 
 test "Game.init: snake length 3, head at spawn, facing right" {
@@ -135,4 +147,34 @@ test "advance: hits bottom wall" {
     _ = g.advance();
     const r = g.advance();
     try std.testing.expectEqual(AdvanceResult.CollisionWall, r);
+}
+
+test "applyDirIfLegal: 90° turn accepted" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    g.pending_dir = .Up;
+    g.applyDirIfLegal();
+    try std.testing.expectEqual(Dir.Up, g.dir);
+    try std.testing.expectEqual(@as(?Dir, null), g.pending_dir);
+}
+
+test "applyDirIfLegal: 180° reversal rejected" {
+    var g = Game.init(.{ .x = 16, .y = 7 }); // facing Right
+    g.pending_dir = .Left;
+    g.applyDirIfLegal();
+    try std.testing.expectEqual(Dir.Right, g.dir);
+    try std.testing.expectEqual(@as(?Dir, null), g.pending_dir);
+}
+
+test "applyDirIfLegal: same direction is a no-op" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    g.pending_dir = .Right;
+    g.applyDirIfLegal();
+    try std.testing.expectEqual(Dir.Right, g.dir);
+}
+
+test "applyDirIfLegal: no pending is a no-op" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    g.pending_dir = null;
+    g.applyDirIfLegal();
+    try std.testing.expectEqual(Dir.Right, g.dir);
 }
