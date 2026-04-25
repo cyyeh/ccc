@@ -694,11 +694,22 @@ pub fn build(b: *std.Build) void {
         .root_source_file = hello_blob_zig,
     });
 
+    const snake_blob_dir = b.addWriteFiles();
+    const snake_blob_zig = snake_blob_dir.add(
+        "snake_elf.zig",
+        "pub const BLOB = @embedFile(\"snake.elf\");\n",
+    );
+    _ = snake_blob_dir.addCopyFile(snake_elf.getEmittedBin(), "snake.elf");
+    wasm_exe.root_module.addAnonymousImport("snake_elf", .{
+        .root_source_file = snake_blob_zig,
+    });
+
     const install_wasm = b.addInstallArtifact(wasm_exe, .{
         .dest_dir = .{ .override = .{ .custom = "web" } },
     });
-    // Make sure hello.elf is built before we try to @embedFile it.
+    // Make sure hello.elf and snake.elf are built before we try to @embedFile them.
     install_wasm.step.dependOn(&install_hello_elf.step);
+    install_wasm.step.dependOn(&install_snake_elf.step);
     const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-freestanding");
     wasm_step.dependOn(&install_wasm.step);
 }

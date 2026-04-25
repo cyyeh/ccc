@@ -31,7 +31,7 @@ const elf_mod = ccc.elf;
 // hello.elf is fresh before the wasm build runs (install_wasm depends
 // on install_hello_elf).
 const hello_elf = @import("hello_elf").BLOB;
-// snake_elf import lands in T22.
+const snake_elf = @import("snake_elf").BLOB;
 
 // 16 KB is comfortable headroom for a "hello world" run.
 const OUTPUT_BUF_SIZE: usize = 16 * 1024;
@@ -111,12 +111,26 @@ export fn setMtimeNs(ns: i64) void {
     mtime_ns = @intCast(ns);
 }
 
+// Program selection — must be called before runStart, since runStart
+// loads whichever ELF this last set.
+var selected_idx: u32 = 0;
+export fn selectProgram(idx: u32) void {
+    selected_idx = idx;
+}
+
+export fn pushInput(byte: u32) void {
+    if (state) |s| {
+        _ = s.uart.pushRx(@intCast(byte));
+    }
+}
+
 /// Initialise emulator state for the chosen program and start a new run.
-/// programIdx: 0 = hello.elf (T22 adds 1 = snake.elf).
+/// programIdx: 0 = hello.elf, 1 = snake.elf.
 /// trace: non-zero enables per-instruction trace output.
-/// Returns 0 on success, negative on error (−1 mem init failed, −2 ELF failed).
+/// Returns 0 on success, negative on error (−1 mem init failed, −2 ELF failed,
+/// −4 unknown program index).
 export fn runStart(program_idx: u32, trace: i32) i32 {
-    _ = program_idx; // T22 uses this to select between hello.elf and snake.elf
+    selected_idx = program_idx; // also accept it via runStart's first arg
 
     // Tear down any in-progress run before reinitialising.
     if (state != null) {
@@ -156,7 +170,12 @@ export fn runStart(program_idx: u32, trace: i32) i32 {
         RAM_SIZE,
     ) catch return -1;
 
-    const result = elf_mod.parseAndLoad(hello_elf, &state_storage.mem) catch return -2;
+    const elf_blob: []const u8 = switch (selected_idx) {
+        0 => hello_elf,
+        1 => snake_elf,
+        else => return -4,
+    };
+    const result = elf_mod.parseAndLoad(elf_blob, &state_storage.mem) catch return -2;
     state_storage.mem.tohost_addr = result.tohost_addr;
 
     state_storage.cpu = cpu_mod.Cpu.init(&state_storage.mem, result.entry);
