@@ -340,8 +340,8 @@
       <div class="toc-row">
         <div class="toc-num">3</div>
         <div class="toc-body">
-          <div class="toc-head">Multi-process OS + shell <span class="toc-status upcoming">upcoming</span></div>
-          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor.</div>
+          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a done</span></div>
+          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plan 3.A landed:</strong> emulator PLIC + block device + UART RX + <code class="inline">--disk</code>.</div>
         </div>
       </div>
       <div class="toc-row">
@@ -359,7 +359,7 @@
         </div>
       </div>
     </div>
-    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full.</div>
+    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plan 3.A</strong> — the emulator-side substrate Phase 3's kernel will drive.</div>
   </section>
 
   <!-- 3: Prologue · the demo -->
@@ -789,11 +789,33 @@ S   sys_exit:
     <div class="caption"><strong>verify_e2e.zig</strong> — host tool asserts stdout matches <code class="inline">hello from u-mode\nticks observed: (\d+)\n</code> with N &gt; 0 and exit 0. <strong>TIMESLICE</strong> tuned from 1 M → 10 K CLINT cycles (≈ 1 ms) so ticks accumulate during the user program's ~300 K-cycle busy-loop. <strong>Phase 2 §Definition of done: met.</strong></div>
   </section>
 
-  <!-- 17: Epilogue · where we are -->
+  <!-- 17: Chapter 3.A · PLIC + block + UART RX -->
+  <section data-label="Ch 3.A · PLIC + block + UART RX">
+    <div class="slide-label">chapter 3.a · plic + block + uart rx</div>
+    <h2 class="slide-title">Three new devices, <span class="accent">one delegated IRQ</span></h2>
+    <p class="plain">Phase 3 begins under the kernel. The emulator gains the hardware a multi-process OS needs from the platform: a <strong>PLIC</strong> aggregating 32 external sources for one S-mode hart context, a simple <strong>block device</strong> moving 4 KB sectors between RAM and a host-backed image file, and a <strong>UART RX</strong> path with a 256-byte FIFO. <code>wfi</code> becomes a real idle. <strong>No kernel-side code yet</strong> — Plan 3.A is emulator-only.</p>
+    <div class="three-col">
+      <div class="panel">
+        <h4>PLIC @ 0x0c00_0000</h4>
+        <p style="font-size: 24px;"><strong>32 sources</strong> · 1 S-context · per-source priority · enable/threshold registers · <code class="inline">claim</code>/<code class="inline">complete</code>. Live <code class="inline">SEIP</code> in <code class="inline">mip</code>/<code class="inline">sip</code> mirrors PLIC truth — same pattern Phase 2.B used for MTIP. <code class="inline">mideleg.SEIP = 1</code> routes external interrupts straight to S.</p>
+      </div>
+      <div class="panel">
+        <h4>Block @ 0x1000_1000</h4>
+        <p style="font-size: 24px;">Four registers: <code class="inline">SECTOR</code> · <code class="inline">BUFFER</code> · <code class="inline">CMD</code> · <code class="inline">STATUS</code>. <strong>4 KB sectors</strong>, host-file-backed via <code class="inline">--disk PATH</code>. Every <code class="inline">CMD</code> write transfers synchronously, then raises PLIC source <strong>#1</strong> on the next instruction boundary.</p>
+      </div>
+      <div class="panel">
+        <h4>UART RX</h4>
+        <p style="font-size: 24px;"><strong>256-byte ring buffer</strong>. <code class="inline">LSR.DR</code> tracks live FIFO state. Empty → non-empty asserts PLIC source <strong>#10</strong>; draining via <code class="inline">RBR</code> de-asserts. <code class="inline">--input PATH</code> streams a host file into the FIFO for scripted tests; otherwise the idle path drains host stdin.</p>
+      </div>
+    </div>
+    <div class="caption"><strong>e2e-plic-block:</strong> M-mode <code class="inline">boot.S</code> sets <code class="inline">mideleg.SEIP</code>, programs PLIC enables/threshold, drops to S. The S-mode test issues a block read, executes <code class="inline">wfi</code>, takes a delegated S-external interrupt, claims source 1, verifies sector 0's magic bytes, completes, halts 0. <code class="inline">wfi</code> sleeps via <code class="inline">poll(2)</code> until an interrupt-edge fires — no busy spin.</div>
+  </section>
+
+  <!-- 18: Epilogue · where we are -->
   <section data-label="Where we are">
     <div class="slide-label">epilogue · where we are</div>
-    <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">complete</span>.</h2>
-    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell.</p>
+    <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">complete</span>. Phase 3 · <span class="accent">underway</span>.</h2>
+    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> just landed the emulator-side hardware (PLIC, block device, UART RX) the kernel will drive.</p>
     <div class="two-col" style="grid-template-columns: 1.25fr 1fr; gap: 64px;">
       <div class="check-list">
         <div class="row">
@@ -828,12 +850,16 @@ S   sys_exit:
           <div class="head">✓ 2.D · process + scheduler + ticks</div>
           <div class="sub"><code class="inline">Process</code> struct · sched stub · <code class="inline">yield</code> · timer tick counter · <code class="inline">qemu-diff-kernel</code></div>
         </div>
+        <div class="row">
+          <div class="head">✓ 3.A · PLIC + block + UART RX</div>
+          <div class="sub">Emulator-only · 32-source PLIC · 4 KB block device · 256-byte RX FIFO · real <code class="inline">wfi</code> idle · <code class="inline">--disk</code>/<code class="inline">--input</code> · <code class="inline">e2e-plic-block</code></div>
+        </div>
       </div>
       <div class="panel" style="align-self: center;">
-        <h4>Next · phase 3</h4>
+        <h4>Next · plan 3.b</h4>
         <p style="font-size: 28px; line-height: 1.5;">
-          Multi-process OS + FS + shell.<br><br>
-          A real process table, fork/exec, block device, a tiny filesystem, and a shell with <code class="inline">ls</code>/<code class="inline">cat</code> and an editor.
+          Kernel multi-process foundation.<br><br>
+          Free-list page allocator, static <code class="inline">ptable[16]</code>, round-robin scheduler with <code class="inline">swtch</code>, kernel-side ELF loader. Two embedded ELFs running as PID 1 + PID 2.
         </p>
       </div>
     </div>
