@@ -189,11 +189,13 @@ pub const Cpu = struct {
 };
 
 /// Compute the effective `mip` for the interrupt-boundary check. This is
-/// cpu.csr.mip OR'd with CLINT's live MTIP bit. We never store MTIP in
-/// cpu.csr.mip — the bit is always derived here and inside csrRead.
+/// cpu.csr.mip OR'd with CLINT's live MTIP bit and PLIC's live SEIP bit.
+/// We never store MTIP or SEIP in cpu.csr.mip — those bits are always
+/// derived here and inside csrRead.
 fn pendingInterrupts(cpu: *const Cpu) u32 {
     var mip = cpu.csr.mip;
     if (cpu.memory.clint.isMtipPending()) mip |= 1 << 7;
+    if (cpu.memory.plic.hasPendingForS()) mip |= 1 << 9;
     return mip;
 }
 
