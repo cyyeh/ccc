@@ -132,8 +132,20 @@ export fn snakeTrap() callconv(.c) void {
             .x = @as(u8, game_mod.PLAY_W) / 2 + 1,
             .y = @as(u8, game_mod.PLAY_H) / 2 + 1,
         });
+        // Seed RNG with a constant for now; T14 reseeds from mtime
+        // on first key press.
+        game.rng = 0xDEAD_BEEF;
+        game.placeFood();
         initialized = true;
     }
+
+    // T14 will drain input here.
+
+    if (game.state == .Playing and game.game_started) {
+        game.applyDirIfLegal();
+        _ = game.advance();
+    }
     render();
-    halt(); // T13 removes this; tick loop continues until quit.
+
+    advanceMtimecmp();
 }
