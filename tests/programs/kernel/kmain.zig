@@ -30,6 +30,7 @@ extern const _kstack_top: u8;
 
 export fn kmain() callconv(.c) noreturn {
     page_alloc.init();
+    proc.cpuInit();
     const root_pa = vm.allocRoot();
     vm.mapKernelAndMmio(root_pa);
     vm.mapUser(root_pa, USER_BLOB.ptr, @intCast(USER_BLOB.len));

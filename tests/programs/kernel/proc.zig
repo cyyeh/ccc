@@ -15,6 +15,8 @@
 
 const std = @import("std");
 const trap = @import("trap.zig");
+const page_alloc = @import("page_alloc.zig");
+const kprintf = @import("kprintf.zig");
 
 pub extern fn swtch(old: *Context, new: *Context) void;
 
@@ -47,6 +49,29 @@ comptime {
     std.debug.assert(@offsetOf(Context, "s0") == CTX_S0);
     std.debug.assert(@offsetOf(Context, "s11") == CTX_S11);
     std.debug.assert(@sizeOf(Context) == CTX_SIZE);
+}
+
+pub const Cpu = extern struct {
+    cur: ?*Process,
+    sched_context: Context,
+    sched_stack_top: u32,
+};
+
+comptime {
+    std.debug.assert(@sizeOf(Cpu) == 64); // 4 (?*Process) + 56 (Context) + 4 (sched_stack_top)
+}
+
+pub var cpu: Cpu = undefined;
+
+// The scheduler runs on its OWN dedicated kernel stack rather than borrowing
+// a stack from any process. This means a process that sleeps mid-syscall
+// (e.g. Task 3.D's sleep) leaves its kernel stack untouched while the
+// scheduler resumes here — the same rationale as xv6; we land it now in 3.B
+// for clean ordering before the scheduler loop is wired in Task 9.
+pub fn cpuInit() void {
+    cpu = std.mem.zeroes(Cpu);
+    const stack = page_alloc.alloc() orelse kprintf.panic("cpuInit: no scheduler stack", .{});
+    cpu.sched_stack_top = stack + page_alloc.PAGE_SIZE;
 }
 
 pub const NPROC: u32 = 16;
@@ -101,10 +126,8 @@ pub export var ptable: [NPROC]Process = undefined;
 /// (Task 9, where `cpu.cur` becomes meaningful), this returns
 /// `&ptable[0]` so trap/syscall code keeps working unchanged.
 pub fn cur() *Process {
-    return &ptable[0];
+    return cpu.cur orelse &ptable[0];
 }
-
-const page_alloc = @import("page_alloc.zig");
 
 pub fn alloc() ?*Process {
     var i: u32 = 0;
