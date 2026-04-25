@@ -300,6 +300,37 @@ pub fn build(b: *std.Build) void {
     const kernel_user_step = b.step("kernel-user", "Build the Phase 3.B userprog.elf");
     kernel_user_step.dependOn(&install_userprog_elf.step);
 
+    const userprog2_obj = b.addObject(.{
+        .name = "userprog2",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/user/userprog2.zig"),
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const userprog2_elf = b.addExecutable(.{
+        .name = "userprog2.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    userprog2_elf.root_module.addObject(userprog2_obj);
+    userprog2_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    userprog2_elf.entry = .{ .symbol_name = "_start" };
+
+    const userprog2_elf_bin = userprog2_elf.getEmittedBin();
+
+    const install_userprog2_elf = b.addInstallFile(userprog2_elf_bin, "userprog2.elf");
+    const userprog2_step = b.step("kernel-user2", "Build the Phase 3.B userprog2.elf");
+    userprog2_step.dependOn(&install_userprog2_elf.step);
+
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
         .root_module = b.createModule(.{
