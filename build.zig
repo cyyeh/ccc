@@ -439,6 +439,23 @@ pub fn build(b: *std.Build) void {
     const e2e_kernel_step = b.step("e2e-kernel", "Run the Phase 2 kernel e2e test (hello + ticks)");
     e2e_kernel_step.dependOn(&e2e_kernel_run.step);
 
+    const multiproc_verify = b.addExecutable(.{
+        .name = "multiproc_verify_e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/multiproc_verify_e2e.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const e2e_multiproc_run = b.addRunArtifact(multiproc_verify);
+    e2e_multiproc_run.addFileArg(exe.getEmittedBin());
+    e2e_multiproc_run.addFileArg(kernel_multi_elf.getEmittedBin());
+    e2e_multiproc_run.expectExitCode(0);
+
+    const e2e_multiproc_step = b.step("e2e-multiproc-stub", "Run the Phase 3.B multi-proc e2e test (PID 1 + PID 2)");
+    e2e_multiproc_step.dependOn(&e2e_multiproc_run.step);
+
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
     const qemu_diff_kernel_cmd = b.addSystemCommand(&.{
