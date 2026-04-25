@@ -14,6 +14,7 @@ comptime {
     _ = @import("devices/halt.zig");
     _ = @import("devices/uart.zig");
     _ = @import("devices/clint.zig");
+    _ = @import("devices/plic.zig");
     _ = @import("decoder.zig");
     _ = @import("execute.zig");
     _ = @import("csr.zig");
