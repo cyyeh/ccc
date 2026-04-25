@@ -54,6 +54,24 @@ pub const Plic = struct {
         return best_id;
     }
 
+    /// Non-destructive query: does any source have pending=1, enabled=1,
+    /// and priority > S-context threshold? Used by csr.zig to derive
+    /// mip.SEIP without claiming the source.
+    pub fn hasPendingForS(self: *const Plic) bool {
+        const candidates = self.pending & self.enable_s;
+        if (candidates == 0) return false;
+        var i: u5 = 1;
+        while (true) : (i += 1) {
+            if ((candidates & (@as(u32, 1) << i)) != 0 and
+                self.priority[i] > self.threshold_s)
+            {
+                return true;
+            }
+            if (i == 31) break;
+        }
+        return false;
+    }
+
     /// Byte-wise read protocol for the 32-bit claim register. Byte 0 triggers
     /// the destructive claim and latches the resulting source ID; bytes 1..3
     /// return slices of the latched value. After byte 3 is consumed the
@@ -354,4 +372,45 @@ test "complete (write to claim register) is a no-op" {
     try p.writeByte(0x20_1006, 0);
     try p.writeByte(0x20_1007, 0);
     // No state observed; just doesn't crash.
+}
+
+test "hasPendingForS: false on init" {
+    const p = Plic.init();
+    try std.testing.expect(!p.hasPendingForS());
+}
+
+test "hasPendingForS: true when source pending+enabled+priority>threshold" {
+    var p = Plic.init();
+    try p.writeByte(0x0004, 4);       // src 1 priority 4
+    try p.writeByte(0x2080, 0x02);    // enable src 1
+    try p.writeByte(0x20_1000, 3);    // threshold 3
+    p.assertSource(1);
+    try std.testing.expect(p.hasPendingForS());
+}
+
+test "hasPendingForS: false when priority not > threshold" {
+    var p = Plic.init();
+    try p.writeByte(0x0004, 3);       // src 1 priority 3
+    try p.writeByte(0x2080, 0x02);
+    try p.writeByte(0x20_1000, 3);    // threshold = priority → NOT >
+    p.assertSource(1);
+    try std.testing.expect(!p.hasPendingForS());
+}
+
+test "hasPendingForS: false when source disabled" {
+    var p = Plic.init();
+    try p.writeByte(0x0004, 4);
+    // enable_s = 0
+    p.assertSource(1);
+    try std.testing.expect(!p.hasPendingForS());
+}
+
+test "hasPendingForS does NOT clear pending (non-destructive)" {
+    var p = Plic.init();
+    try p.writeByte(0x0004, 4);
+    try p.writeByte(0x2080, 0x02);
+    p.assertSource(1);
+    _ = p.hasPendingForS();
+    try std.testing.expect((p.pending & (1 << 1)) != 0);
+    try std.testing.expect(p.hasPendingForS());
 }
