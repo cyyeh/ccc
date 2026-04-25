@@ -495,4 +495,31 @@ pub fn build(b: *std.Build) void {
             rv_step.dependOn(&run_it.step);
         }
     }
+
+    // === Phase 1.W — Web demo: cross-compile ccc to wasm32-freestanding ===
+    // Thin entry point in src/web_main.zig that imports the existing
+    // emulator modules and exports a minimal run/outputPtr/outputLen
+    // interface for the browser. The web_main.zig file embeds hello.elf
+    // at compile time, so this step depends on the hello-elf build.
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const wasm_exe = b.addExecutable(.{
+        .name = "ccc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/web_main.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    wasm_exe.entry = .disabled;        // we call our own export, not _start
+    wasm_exe.rdynamic = true;          // expose `export fn` symbols
+    const install_wasm = b.addInstallArtifact(wasm_exe, .{
+        .dest_dir = .{ .override = .{ .custom = "web" } },
+    });
+    // Make sure hello.elf is built before we try to @embedFile it.
+    install_wasm.step.dependOn(&install_hello_elf.step);
+    const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-freestanding");
+    wasm_step.dependOn(&install_wasm.step);
 }
