@@ -5,16 +5,17 @@
 //! `run()`, and copy the captured output out of linear memory.
 
 const std = @import("std");
-const cpu_mod = @import("cpu.zig");
-const mem_mod = @import("memory.zig");
-const halt_dev = @import("devices/halt.zig");
-const uart_dev = @import("devices/uart.zig");
-const clint_dev = @import("devices/clint.zig");
-const elf_mod = @import("elf.zig");
+const ccc = @import("ccc");
+const cpu_mod = ccc.cpu;
+const mem_mod = ccc.memory;
+const halt_dev = ccc.halt;
+const uart_dev = ccc.uart;
+const clint_dev = ccc.clint;
+const elf_mod = ccc.elf;
 
 // hello.elf is embedded at compile time via an anonymous module that
 // build.zig wires up: a co-located stub does the @embedFile so the
-// path doesn't escape src/'s package root. The build graph guarantees
+// path doesn't escape demo/'s package root. The build graph guarantees
 // hello.elf is fresh before the wasm build runs (install_wasm depends
 // on install_hello_elf).
 const hello_elf = @import("hello_elf").BLOB;

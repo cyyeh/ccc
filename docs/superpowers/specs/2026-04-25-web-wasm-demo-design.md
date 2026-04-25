@@ -6,7 +6,7 @@
 on a page, and watch the actual `ccc` emulator core — compiled to
 WebAssembly — load `hello.elf` and print `hello world`. Same Zig source
 modules as the CLI (`cpu.zig`, `memory.zig`, `decoder.zig`, ...);
-just a tiny new entry point file (`src/web_main.zig`) for the browser.
+just a tiny new entry point file (`demo/web_main.zig`) for the browser.
 
 This is the smallest possible "the project works" experience for a deck
 viewer who doesn't have a Zig toolchain handy.
@@ -40,9 +40,11 @@ choice — see "Revision history" below). No WASI ABI; no JS-side WASI
 shim. The wasm module exports a tiny, explicit interface and imports
 nothing.
 
-**Entry point:** new `src/web_main.zig` (~80 lines). Imports the existing
-emulator modules (`cpu.zig`, `memory.zig`, `elf.zig`, `devices/*.zig`)
-unchanged. Embeds `hello.elf` at compile time via `@embedFile`. Captures
+**Entry point:** new `demo/web_main.zig` (~80 lines). Imports the existing
+emulator modules (`cpu.zig`, `memory.zig`, `elf.zig`, `devices/*.zig`) via
+a single `ccc` named module exposed by `src/lib.zig` (a thin re-export
+shim — see Component details for why one module, not six). Embeds
+`hello.elf` at compile time via `@embedFile`. Captures
 UART output into a fixed in-wasm buffer (`std.Io.Writer.fixed`). Uses a
 no-op clock (`fn () i128 { return 0; }`) since `hello.elf` doesn't poll
 mtime.
@@ -63,7 +65,7 @@ call `run()`, copy bytes from `instance.exports.memory.buffer` using
 
 **One small clint.zig change:** the existing `defaultClockSource()` in
 `src/devices/clint.zig` calls `std.c.clock_gettime`, which won't link
-against `wasm32-freestanding` (no libc) and isn't needed (web_main.zig
+against `wasm32-freestanding` (no libc) and isn't needed (`demo/web_main.zig`
 doesn't call `Clint.initDefault`). Wrap it in a comptime switch on
 `builtin.os.tag` so the freestanding branch returns `0` and pulls no
 libc symbols. Native code path is byte-equivalent.
@@ -74,8 +76,11 @@ libc symbols. Native code path is byte-equivalent.
 .github/workflows/
   pages.yml                # test → build wasm → deploy Pages
 
-src/
+demo/
   web_main.zig             # new: freestanding wasm entry point
+
+src/
+  lib.zig                  # new: re-export shim consumed by demo/web_main.zig
 
 web/                       # GitHub Pages serves this at /web/
   index.html               # demo page
@@ -99,21 +104,29 @@ web/ccc.wasm
 
 ### 1. `build.zig` — new `wasm` step
 
-Add a single new step that cross-compiles `src/web_main.zig` for
+Add a single new step that cross-compiles `demo/web_main.zig` for
 `wasm32-freestanding`, `ReleaseSmall`, with the artifact installed
-under `zig-out/web/`:
+under `zig-out/web/`. A single `ccc` named module (rooted at
+`src/lib.zig`) gives `demo/web_main.zig` access to the emulator
+without escaping its own package root:
 
 ```zig
 const wasm_target = b.resolveTargetQuery(.{
     .cpu_arch = .wasm32,
     .os_tag = .freestanding,
 });
+const ccc_module = b.createModule(.{
+    .root_source_file = b.path("src/lib.zig"),
+});
 const wasm_exe = b.addExecutable(.{
     .name = "ccc",
     .root_module = b.createModule(.{
-        .root_source_file = b.path("src/web_main.zig"),
+        .root_source_file = b.path("demo/web_main.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "ccc", .module = ccc_module },
+        },
     }),
 });
 wasm_exe.entry = .disabled;        // we call our own export, not _start
@@ -124,6 +137,12 @@ const install_wasm = b.addInstallArtifact(wasm_exe, .{
 b.step("wasm", "Cross-compile ccc to wasm32-freestanding")
     .dependOn(&install_wasm.step);
 ```
+
+Why one `ccc` module instead of six (`cpu`, `memory`, …)? The emulator
+files cross-import each other via relative paths (`cpu.zig` does
+`@import("memory.zig")`, etc.), so declaring each as its own module
+trips Zig's "file exists in modules X and Y" check. Funneling everything
+through `src/lib.zig` keeps every emulator file inside one module tree.
 
 The `wasm` step depends on `hello.elf` being built first (since
 `web_main.zig` does `@embedFile("../zig-out/bin/hello.elf")`):
@@ -137,18 +156,20 @@ install_wasm.step.dependOn(&install_hello_elf.step);
 The implementer chooses whichever dependency wiring matches the existing
 `install_hello_elf` variable name in build.zig.
 
-### 2. `src/web_main.zig` — freestanding entry point
+### 2. `demo/web_main.zig` — freestanding entry point
 
-~80 lines. Uses the existing emulator modules verbatim:
+~80 lines. Pulls the existing emulator modules in via the single `ccc`
+named module wired up by build.zig (rooted at `src/lib.zig`):
 
 ```zig
 const std = @import("std");
-const cpu_mod = @import("cpu.zig");
-const mem_mod = @import("memory.zig");
-const halt_dev = @import("devices/halt.zig");
-const uart_dev = @import("devices/uart.zig");
-const clint_dev = @import("devices/clint.zig");
-const elf_mod = @import("elf.zig");
+const ccc = @import("ccc");
+const cpu_mod = ccc.cpu;
+const mem_mod = ccc.memory;
+const halt_dev = ccc.halt;
+const uart_dev = ccc.uart;
+const clint_dev = ccc.clint;
+const elf_mod = ccc.elf;
 
 // hello.elf is embedded at compile time. The build graph guarantees
 // this file is fresh before the wasm build runs.
@@ -254,7 +275,7 @@ load().then(runDemo).catch((e) => {
 ```
 
 **Future kernel.elf path (per scope decision C):** add another export
-(`run_kernel() -> i32`) in `web_main.zig` that uses
+(`run_kernel() -> i32`) in `demo/web_main.zig` that uses
 `@embedFile("../zig-out/bin/kernel.elf")`. Add a second button in
 `index.html`. Add ~5 lines of JS to call the new export. No WASI plumbing
 to retro-fit — the `run/outputPtr/outputLen/memory` interface stays.
@@ -375,7 +396,7 @@ inlines the same logic.
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | `wasm32-freestanding` build fails because `std.heap.wasm_allocator` or `std.Io.Writer.fixed` API has changed in 0.16 | low — both are in 0.16's stable API | Adapt the API call once the implementer confirms the actual signature. The functional design (fixed buffer + arena allocator + capture writer) is stable; only spelling shifts. |
-| `defaultClockSource` is still linked in despite never being called from `web_main.zig` | low (we explicitly handle this with the comptime switch) | The comptime-switched freestanding branch has no libc symbols, so the link succeeds either way. |
+| `defaultClockSource` is still linked in despite never being called from `demo/web_main.zig` | low (we explicitly handle this with the comptime switch) | The comptime-switched freestanding branch has no libc symbols, so the link succeeds either way. |
 | `Uart` writer interface (`*std.Io.Writer`) doesn't accept a `fixed` writer | very low — `fixed` returns the abstract `Writer` type by design | If it does, fall back to a custom Writer impl with a 30-line VTable. |
 | WASM binary too large | low — `ReleaseSmall` of just the emulator core (no WASI) plus an embedded ~few-KB ELF should land well under 200KB | If it's actually a problem, run `wasm-opt -Oz` in CI. Not pre-emptive. |
 | GitHub Pages source not flipped to Actions | medium — easy oversight | Spec calls it out; first deploy will fail loudly with an actionable error. |
@@ -413,7 +434,7 @@ inlines the same logic.
   `@bjorn3/browser_wasi_shim` for "no source changes to ccc" — same
   `src/main.zig` cross-compiles to both targets via WASI ABI.
 - **2026-04-25 (revised):** switched to `wasm32-freestanding` + a new
-  thin `src/web_main.zig` entry point. Reasons:
+  thin `demo/web_main.zig` entry point. Reasons:
   - The wasi path required a libc-linkage workaround in `clint.zig`
     anyway (the `std.c.clock_gettime` call wouldn't link against
     `wasm32-wasi`'s libc-less default). Once we needed source touching,

@@ -497,7 +497,7 @@ pub fn build(b: *std.Build) void {
     }
 
     // === Phase 1.W — Web demo: cross-compile ccc to wasm32-freestanding ===
-    // Thin entry point in src/web_main.zig that imports the existing
+    // Thin entry point in demo/web_main.zig that imports the existing
     // emulator modules and exports a minimal run/outputPtr/outputLen
     // interface for the browser. The web_main.zig file embeds hello.elf
     // at compile time, so this step depends on the hello-elf build.
@@ -505,19 +505,34 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
     });
+
+    // Single emulator module exposed via src/lib.zig so demo/web_main.zig
+    // can import the emulator without escaping its own package root.
+    // One module (not six) avoids "file exists in modules X and Y": the
+    // emulator files cross-import each other via relative paths, so
+    // declaring memory/cpu/etc as separate modules would pull the same
+    // file into multiple module trees. The shim re-exports the six
+    // pieces web_main.zig needs (cpu / memory / elf / halt / uart / clint).
+    const ccc_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+    });
+
     const wasm_exe = b.addExecutable(.{
         .name = "ccc",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/web_main.zig"),
+            .root_source_file = b.path("demo/web_main.zig"),
             .target = wasm_target,
             .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "ccc", .module = ccc_module },
+            },
         }),
     });
     wasm_exe.entry = .disabled;        // we call our own export, not _start
     wasm_exe.rdynamic = true;          // expose `export fn` symbols
 
     // Expose hello.elf as an importable module so web_main.zig can
-    // @embedFile it without escaping src/'s package root. WriteFile
+    // @embedFile it without escaping demo/'s package root. WriteFile
     // step that co-locates a tiny Zig stub with hello.elf in a single
     // output dir; the stub `pub const BLOB = @embedFile(...)` resolves
     // relative to itself, so the .elf must be its sibling. Mirrors

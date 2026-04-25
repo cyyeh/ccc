@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Cross-compile the `ccc` emulator core to `wasm32-freestanding` via a new thin entry point (`src/web_main.zig`), ship a single-page web demo to GitHub Pages that runs `hello.elf` in the browser, and add a CI workflow that gates Pages deploy on the existing test suite.
+**Goal:** Cross-compile the `ccc` emulator core to `wasm32-freestanding` via a new thin entry point (`demo/web_main.zig`), ship a single-page web demo to GitHub Pages that runs `hello.elf` in the browser, and add a CI workflow that gates Pages deploy on the existing test suite.
 
-**Architecture:** New `src/web_main.zig` (~80 lines) imports the existing emulator modules (`cpu.zig`, `memory.zig`, `elf.zig`, `devices/*.zig`) verbatim. `hello.elf` is embedded at compile time via `@embedFile`. UART output is captured into a fixed in-wasm buffer; JS reads it via exported `outputPtr()` / `outputLen()` after calling `run() -> i32`. No WASI, no vendored JS shim. Single GitHub Actions workflow runs the existing test suite and (on `main`) deploys the deck + demo to Pages.
+**Architecture:** New `demo/web_main.zig` (~80 lines) imports the existing emulator modules (`cpu.zig`, `memory.zig`, `elf.zig`, `devices/*.zig`) via a single `ccc` named module exposed by `src/lib.zig` (a thin re-export shim — keeps every emulator file inside one module tree, since they cross-import each other relatively). `hello.elf` is embedded at compile time via `@embedFile`. UART output is captured into a fixed in-wasm buffer; JS reads it via exported `outputPtr()` / `outputLen()` after calling `run() -> i32`. No WASI, no vendored JS shim. Single GitHub Actions workflow runs the existing test suite and (on `main`) deploys the deck + demo to Pages.
 
 **Tech Stack:** Zig 0.16 (`wasm32-freestanding` target, `ReleaseSmall`, `std.heap.wasm_allocator`, `std.Io.Writer.fixed`), GitHub Actions (`mlugg/setup-zig`, `actions/upload-pages-artifact@v3`, `actions/deploy-pages@v4`).
 
@@ -17,7 +17,8 @@
 ## File Structure
 
 **New files:**
-- `src/web_main.zig` — freestanding wasm entry point
+- `demo/web_main.zig` — freestanding wasm entry point
+- `src/lib.zig` — thin re-export shim consumed by `demo/web_main.zig`
 - `web/index.html` — demo page
 - `web/demo.js` — ~30 lines: instantiate, call run(), read output buffer
 - `web/demo.css` — terminal styling matching deck palette
@@ -26,7 +27,7 @@
 - `.github/workflows/pages.yml` — single workflow with test + deploy jobs
 
 **Modified files:**
-- `build.zig` — add `wasm` step (cross-compile `src/web_main.zig` to `wasm32-freestanding`, install to `zig-out/web/`, depends on `hello-elf`)
+- `build.zig` — add `wasm` step (cross-compile `demo/web_main.zig` to `wasm32-freestanding` via a single `ccc` named module rooted at `src/lib.zig`, install to `zig-out/web/`, depends on `hello-elf`)
 - `src/devices/clint.zig` — wrap `defaultClockSource` in a comptime switch on `builtin.os.tag` so the freestanding branch returns 0 (no libc symbols). Native and wasi branches preserved.
 - `index.html` (deck) — add `.demo-link` CSS class + two link sites (title slide + prologue slide)
 - `README.md` — mention the live web demo
@@ -34,8 +35,9 @@
 
 **Notes vs. the prior wasi-flavored plan:**
 - No `web/vendor/` directory and no vendored `browser_wasi_shim`. The freestanding wasm has zero JS-side dependencies.
-- No separate `web/hello.elf` file. The ELF is embedded at compile time via `@embedFile` in `web_main.zig`.
+- No separate `web/hello.elf` file. The ELF is embedded at compile time via `@embedFile` in `demo/web_main.zig`.
 - Tasks 1–2 of the prior plan are now Task 1 (combined: build.zig + web_main.zig + clint.zig comptime switch).
+- **Mid-execution refactor (post-Task 2):** `web_main.zig` was relocated from `src/` to `demo/` so `src/` stays focused on the emulator core. The wasm build now wires a single `ccc` named module via `src/lib.zig` (instead of six per-file modules — Zig rejects that because emulator files cross-import each other). The Task 1 / Task 2 instructions below still describe the historical placement (`src/web_main.zig`) for archival accuracy; the actual on-disk file lives at `demo/web_main.zig` and uses `@import("ccc")` instead of relative `@import("cpu.zig")` etc.
 
 ---
 
@@ -830,14 +832,14 @@ A single-page browser demo of [`ccc`](../), a from-scratch RISC-V CPU
 emulator written in Zig. The same emulator modules that power the
 native CLI (`cpu.zig`, `memory.zig`, `elf.zig`, `devices/*.zig`) are
 cross-compiled to `wasm32-freestanding` via a thin entry point
-(`src/web_main.zig`) and loaded into your browser, where they run
+(`demo/web_main.zig`) and loaded into your browser, where they run
 `hello.elf` and print `hello world`.
 
 **Live:** https://cyyeh.github.io/ccc/web/
 
 ## How it works
 
-1. `zig build wasm` cross-compiles `src/web_main.zig` to
+1. `zig build wasm` cross-compiles `demo/web_main.zig` to
    `wasm32-freestanding`, installed as `zig-out/web/ccc.wasm`.
 2. `web_main.zig` `@embedFile`s `hello.elf` at compile time, captures
    UART output into a fixed in-wasm buffer, and exposes three exports:
@@ -864,7 +866,7 @@ overlaid into the Pages artifact in CI.
 
 The page is structured so a second demo is a small additive change:
 
-1. In `src/web_main.zig`, add another `@embedFile` (e.g., for `kernel.elf`)
+1. In `demo/web_main.zig`, add another `@embedFile` (e.g., for `kernel.elf`)
    and an additional export (e.g., `run_kernel() -> i32`) that wires up
    the same Memory/Cpu/etc. with the new ELF.
 2. Extend `scripts/stage-web.sh` and the `build-and-deploy` job in
@@ -1094,8 +1096,8 @@ gh pr create --title "web wasm demo + CI" --body "$(cat <<'EOF'
 ## Summary
 
 - Cross-compile ccc to `wasm32-freestanding` via a new ~80-line
-  `src/web_main.zig` entry point that imports the existing emulator
-  modules verbatim.
+  `demo/web_main.zig` entry point that imports the existing emulator
+  modules through a single `ccc` named module rooted at `src/lib.zig`.
 - Add a single-page web demo in `web/` that runs `hello.elf` in the
   browser. Zero JS dependencies, zero WASM imports.
 - Link to the demo from the deck's title slide and prologue slide.
