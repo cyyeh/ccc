@@ -49,15 +49,27 @@ fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
 }
 
 fn sysExit(status: u32) noreturn {
-    // Emit the Phase 2 §Definition of done trailer: "ticks observed: N\n".
-    // We read the counter AFTER the scheduler has had a chance to bump it
-    // one last time (the ticks live in proc.cur(), touched by the
-    // SSI handler in trap.zig).
-    kprintf.print("ticks observed: {d}\n", .{proc.cur().ticks_observed});
-    const halt: *volatile u8 = @ptrFromInt(0x00100000);
-    halt.* = @intCast(status & 0xFF);
-    // Unreachable — halt MMIO terminates the emulator on the store above.
-    while (true) asm volatile ("wfi");
+    const p = proc.cur();
+    p.xstate = @bitCast(status);
+    p.state = .Zombie;
+
+    if (p.pid == 1) {
+        // Phase 2 §Definition of done: print "ticks observed: N\n" before
+        // halting. We use this proc's own ticks_observed; the multi-proc
+        // test arranges for PID 1 to be the last to exit.
+        kprintf.print("ticks observed: {d}\n", .{p.ticks_observed});
+        const halt: *volatile u8 = @ptrFromInt(0x00100000);
+        halt.* = @intCast(status & 0xFF);
+        while (true) asm volatile ("wfi");
+    }
+
+    // Non-PID-1 proc: yield back to scheduler. 3.C will reap zombies via
+    // wait(); for 3.B's multi-proc demo, the scheduler will keep cycling
+    // between PID 1 and PID 2 (now Zombie, skipped) until PID 1 exits and
+    // halts.
+    proc.sched();
+    // Should not return — but if it does, panic.
+    kprintf.panic("sysExit: zombie woke up", .{});
 }
 
 fn sysYield() u32 {
