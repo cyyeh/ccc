@@ -173,3 +173,24 @@ fn nextPid() u32 {
 export fn forkret() callconv(.c) noreturn {
     @import("kprintf.zig").panic("forkret called before Task 8 wired it up", .{});
 }
+
+/// Save current process state and switch to the scheduler context. The
+/// scheduler picks the next runnable proc and swtch's back into us when
+/// our turn comes. Until kmain wires `cpu.sched_context.ra` to the real
+/// scheduler entry (Task 14), `sched()` is a no-op so the existing
+/// single-proc boot path keeps working unchanged.
+pub fn sched() void {
+    if (cpu.sched_context.ra == 0) return;
+    const p = cur();
+    swtch(&p.context, &cpu.sched_context);
+}
+
+/// User-facing yield: mark current Runnable, switch to scheduler. Phase
+/// 3.B's scheduler may pick the same proc back immediately, which is
+/// fine — yield is just a "scheduling point".
+pub fn yield() void {
+    const p = cur();
+    p.state = .Runnable;
+    sched();
+    p.state = .Running;
+}

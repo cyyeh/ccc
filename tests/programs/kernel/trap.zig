@@ -1,7 +1,7 @@
 // tests/programs/kernel/trap.zig — S-mode trap dispatcher.
 //
 // Phase 3.B changes: the SSI branch now increments proc.cur().ticks_observed
-// and calls sched.schedule(). The ECALL branch is unchanged from 2.C; the
+// and calls proc.yield(). The ECALL branch is unchanged from 2.C; the
 // panic branch is unchanged from 2.C.
 //
 // Field order in TrapFrame matters. trampoline.S saves/restores registers
@@ -105,7 +105,6 @@ comptime {
 const kprintf = @import("kprintf.zig");
 const syscall = @import("syscall.zig");
 const proc = @import("proc.zig");
-const sched = @import("sched.zig");
 
 fn readScause() u32 {
     return asm volatile ("csrr %[out], scause"
@@ -151,7 +150,7 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         //    without a signature change.
         clearSipSsip();
         proc.cur().ticks_observed +%= 1;
-        _ = sched.schedule();
+        proc.yield();
         return;
     }
 

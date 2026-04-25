@@ -3,7 +3,7 @@
 // Syscalls dispatched in Phase 3.B:
 //   - 64  (write): copies user bytes to UART via SSTATUS.SUM.
 //   - 93  (exit):  prints "ticks observed: N\n" then halts via MMIO.
-//   - 124 (yield): calls sched.schedule() (currently always ptable[0]).
+//   - 124 (yield): calls proc.yield() to voluntarily relinquish the CPU.
 //
 // proc.cur() is used for any per-process state reads (currently always
 // &ptable[0] until Task 9 wires in a real CPU-local picker). Future
@@ -15,7 +15,6 @@ const trap = @import("trap.zig");
 const uart = @import("uart.zig");
 const kprintf = @import("kprintf.zig");
 const proc = @import("proc.zig");
-const sched = @import("sched.zig");
 
 const SSTATUS_SUM: u32 = 1 << 18;
 
@@ -62,9 +61,7 @@ fn sysExit(status: u32) noreturn {
 }
 
 fn sysYield() u32 {
-    // Phase 3.B: schedule() always returns ptable[0]; still exercises the
-    // path so Task 9's real picker drops in without changing this layer.
-    _ = sched.schedule();
+    proc.yield();
     return 0;
 }
 
