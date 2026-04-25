@@ -459,6 +459,16 @@ pub fn build(b: *std.Build) void {
     const snake_elf_step = b.step("snake-elf", "Build the Phase 3 snake.elf demo");
     snake_elf_step.dependOn(&install_snake_elf.step);
 
+    const snake_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/programs/snake/game.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const snake_test = b.addTest(.{ .root_module = snake_test_mod });
+    const snake_test_run = b.addRunArtifact(snake_test);
+    const snake_test_step = b.step("snake-test", "Run game.zig unit tests on native");
+    snake_test_step.dependOn(&snake_test_run.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
