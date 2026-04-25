@@ -33,6 +33,9 @@ jobs:
       - name: zig build test
         run: zig build test
 
+      - name: zig build snake-test
+        run: zig build snake-test
+
       - name: zig build e2e (RV32I hello)
         run: zig build e2e
 
@@ -47,6 +50,9 @@ jobs:
 
       - name: zig build e2e-kernel (Phase 2 DoD)
         run: zig build e2e-kernel
+
+      - name: zig build e2e-snake (Phase 3 snake demo)
+        run: zig build e2e-snake
 
       - name: zig build wasm (smoke-test cross-compile)
         run: zig build wasm
