@@ -349,6 +349,68 @@ pub fn build(b: *std.Build) void {
     );
     qemu_diff_kernel_step.dependOn(&qemu_diff_kernel_cmd.step);
 
+    // === Phase 3.A integration test ===
+    const plic_block_boot = b.addObject(.{
+        .name = "plic-block-boot",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    plic_block_boot.root_module.addAssemblyFile(b.path("tests/programs/plic_block_test/boot.S"));
+
+    const plic_block_test_obj = b.addObject(.{
+        .name = "plic-block-test",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    plic_block_test_obj.root_module.addAssemblyFile(b.path("tests/programs/plic_block_test/test.S"));
+
+    const plic_block_elf = b.addExecutable(.{
+        .name = "plic_block_test.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    plic_block_elf.root_module.addObject(plic_block_boot);
+    plic_block_elf.root_module.addObject(plic_block_test_obj);
+    plic_block_elf.setLinkerScript(b.path("tests/programs/plic_block_test/linker.ld"));
+    plic_block_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_plic_block_elf = b.addInstallArtifact(plic_block_elf, .{});
+    const plic_block_step = b.step("plic-block-test", "Build the Phase 3.A integration test ELF");
+    plic_block_step.dependOn(&install_plic_block_elf.step);
+
+    // Build the 4 MB test image (sector 0 = 0xCC, rest zero).
+    const make_img = b.addExecutable(.{
+        .name = "make_plic_block_img",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/plic_block_test/make_img.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const make_img_run = b.addRunArtifact(make_img);
+    const test_img = make_img_run.addOutputFileArg("plic_block_test.img");
+
+    // Run e2e-plic-block: ccc --disk <img> <elf>; expect exit 0.
+    const e2e_plic_block_run = b.addRunArtifact(exe);
+    e2e_plic_block_run.addArg("--disk");
+    e2e_plic_block_run.addFileArg(test_img);
+    e2e_plic_block_run.addFileArg(plic_block_elf.getEmittedBin());
+    e2e_plic_block_run.expectExitCode(0);
+
+    const e2e_plic_block_step = b.step("e2e-plic-block", "Run the Phase 3.A PLIC + block integration test");
+    e2e_plic_block_step.dependOn(&e2e_plic_block_run.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
