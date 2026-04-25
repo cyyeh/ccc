@@ -138,7 +138,7 @@ src/
   cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation
   decoder.zig       # RV32I + M + A + Zifencei + Zicsr + mret/wfi decoder
   execute.zig       # instruction execution (trap-routing)
-  memory.zig        # RAM + MMIO dispatch (UART, CLINT, halt, tohost)
+  memory.zig        # RAM + MMIO dispatch (UART, CLINT, PLIC, halt, tohost)
   csr.zig           # CSR read/write with field masks + privilege checks
   trap.zig          # synchronous trap entry + mret exit
   elf.zig           # ELF32 loader (entry + tohost symbol resolution)
@@ -147,13 +147,18 @@ src/
     uart.zig        # NS16550A UART
     halt.zig        # test-only halt device at 0x00100000
     clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime)
+    plic.zig        # Platform-Level Interrupt Controller (Phase 3, in progress)
 tests/
   programs/
     hello/          # RV32I hello-world encoder + expected output
     mul_demo/       # RV32IMA demo encoder (prints "42\n")
     trap_demo/      # Plan 1.C privilege demo (prints "trap ok\n")
+    kernel/         # Phase 2 kernel: boot.S, kmain.zig, sched, proc, vm,
+                    # syscall, trap, kprintf, mtimer, trampoline, uart,
+                    # linker.ld, verify_e2e.zig, user/ (U-mode payload)
   fixtures/         # tiny hand-crafted ELF used only by elf.zig tests
   riscv-tests/      # upstream submodule: riscv-software-src/riscv-tests
+  riscv-tests-shim/ # riscv_test.h + weak trap handlers for the test env
   riscv-tests-p.ld  # linker script for the 'p' (physical/M-mode) environment
   riscv-tests-s.ld  # linker script for the rv32si-p-* family (S-mode test body)
 docs/
@@ -161,6 +166,9 @@ docs/
     specs/          # design docs per phase (brainstormed + approved)
     plans/          # implementation plans per phase
   references/       # notes on RISC-V specifics (traps, etc.)
+scripts/
+  qemu-diff.sh         # per-instruction trace diff vs. qemu-system-riscv32
+  qemu-diff-kernel.sh  # same, scoped to kernel.elf (Phase 2 debug aid)
 build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests
 build.zig.zon       # pinned Zig version + dependencies
 ```
