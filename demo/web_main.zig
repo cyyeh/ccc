@@ -118,6 +118,13 @@ export fn setMtimeNs(ns: i64) void {
 export fn runStart(program_idx: u32, trace: i32) i32 {
     _ = program_idx; // T22 uses this to select between hello.elf and snake.elf
 
+    // Tear down any in-progress run before reinitialising.
+    if (state != null) {
+        state_storage.mem.deinit();
+        state_storage.arena.deinit();
+        state = null;
+    }
+
     // Reset output/trace buffers and clock.
     output_writer.end = 0;
     output_consumed = 0;
