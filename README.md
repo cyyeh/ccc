@@ -62,6 +62,8 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build kernel-elf` (or `kernel`) | Build the Plan 2.C `kernel.elf` (M-mode boot shim + S-mode kernel + embedded user blob) |
 | `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout matches `hello from u-mode\nticks observed: N\n` with N > 0 (Phase 2 §Definition of done) |
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
+| `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
+| `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
 
@@ -155,42 +157,42 @@ Next: Plan 3.B — kernel-side drivers, syscalls, and a tiny FS + shell.
 
 ```
 src/
-  main.zig          # CLI entry point (ELF default, --raw fallback)
-  cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation
-  decoder.zig       # RV32I + M + A + Zifencei + Zicsr + mret/wfi decoder
-  execute.zig       # instruction execution (trap-routing)
-  memory.zig        # RAM + MMIO dispatch (UART, CLINT, PLIC, halt, tohost)
-  csr.zig           # CSR read/write with field masks + privilege checks
-  trap.zig          # synchronous trap entry + mret exit
+  main.zig          # CLI entry point (ELF default, --raw fallback; --disk/--input/--trace/etc.)
+  cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation; idleSpin (wfi)
+  decoder.zig       # RV32IMA + Zicsr + Zifencei + mret/sret/wfi/sfence.vma decoder
+  execute.zig       # instruction execution + trap-routing; wfi → cpu.idleSpin
+  memory.zig        # RAM + MMIO dispatch (UART, CLINT, PLIC, block, halt, tohost) + Sv32 translation
+  csr.zig           # M/S CSRs with field masks, privilege checks, live MTIP/SEIP from devices
+  trap.zig          # sync + async trap entry, mret/sret exit, medeleg/mideleg routing
   elf.zig           # ELF32 loader (entry + tohost symbol resolution)
-  trace.zig         # --trace one-line-per-instruction formatter
+  trace.zig         # --trace one-line-per-instruction formatter + interrupt/block markers
   devices/
-    uart.zig        # NS16550A UART
+    uart.zig        # NS16550A UART (TX + 256B RX FIFO + level IRQ via PLIC src 10)
     halt.zig        # test-only halt device at 0x00100000
-    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime)
-    plic.zig        # Platform-Level Interrupt Controller (Phase 3, in progress)
+    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime; raises mip.MTIP)
+    plic.zig        # Platform-Level Interrupt Controller (32 sources, S-context, claim/complete)
+    block.zig       # Simple MMIO block device (4 KB sectors, host-file-backed via --disk)
 tests/
   programs/
-    hello/          # RV32I hello-world encoder + expected output
-    mul_demo/       # RV32IMA demo encoder (prints "42\n")
-    trap_demo/      # Plan 1.C privilege demo (prints "trap ok\n")
-    kernel/         # Phase 2 kernel: boot.S, kmain.zig, sched, proc, vm,
-                    # syscall, trap, kprintf, mtimer, trampoline, uart,
-                    # linker.ld, verify_e2e.zig, user/ (U-mode payload)
-  fixtures/         # tiny hand-crafted ELF used only by elf.zig tests
-  riscv-tests/      # upstream submodule: riscv-software-src/riscv-tests
-  riscv-tests-shim/ # riscv_test.h + weak trap handlers for the test env
-  riscv-tests-p.ld  # linker script for the 'p' (physical/M-mode) environment
-  riscv-tests-s.ld  # linker script for the rv32si-p-* family (S-mode test body)
+    hello/             # Phase 1: RV32I hello-world encoder + Phase 1.D Zig-compiled hello.elf
+    mul_demo/          # Phase 1: RV32IMA demo encoder (prints "42\n")
+    trap_demo/         # Phase 1.C: privilege demo (prints "trap ok\n")
+    kernel/            # Phase 2: M-mode boot + S-mode kernel + embedded U-mode userprog
+    plic_block_test/   # Phase 3.A: asm-only integration test (CMD → IRQ → trap → claim → halt)
+  fixtures/             # tiny hand-crafted ELF used only by elf.zig tests
+  riscv-tests/          # upstream submodule: riscv-software-src/riscv-tests
+  riscv-tests-shim/     # weak handlers + riscv_test.h overrides for the shared test env
+  riscv-tests-p.ld      # linker script for the 'p' (physical/M-mode) environment
+  riscv-tests-s.ld      # linker script for the rv32si-p-* family (S-mode test body)
+scripts/
+  qemu-diff.sh           # debug aid: per-instruction trace diff vs qemu-system-riscv32
+  qemu-diff-kernel.sh    # same, scoped to kernel.elf (Phase 2 debugging)
 docs/
   superpowers/
     specs/          # design docs per phase (brainstormed + approved)
     plans/          # implementation plans per phase
   references/       # notes on RISC-V specifics (traps, etc.)
-scripts/
-  qemu-diff.sh         # per-instruction trace diff vs. qemu-system-riscv32
-  qemu-diff-kernel.sh  # same, scoped to kernel.elf (Phase 2 debug aid)
-build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests
+build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests + plic-block-test
 build.zig.zon       # pinned Zig version + dependencies
 ```
 
