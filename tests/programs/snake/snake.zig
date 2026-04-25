@@ -156,15 +156,76 @@ fn paint() void {
     }
 }
 
+fn paintGameOver() void {
+    // Centered 5×14 panel. (W=32, H=15) → top-left at (col 9, row 5).
+    const PW: u8 = 14;
+    const PH: u8 = 5;
+    const col0: u8 = (game_mod.W - PW) / 2;       // 9
+    const row0: u8 = (game_mod.H - PH) / 2;       // 5
+    var dy: u8 = 0;
+    while (dy < PH) : (dy += 1) {
+        var dx: u8 = 0;
+        while (dx < PW) : (dx += 1) {
+            const top    = (dy == 0);
+            const bot    = (dy == PH - 1);
+            const left   = (dx == 0);
+            const right  = (dx == PW - 1);
+            const c: u8 = if ((top or bot) and (left or right)) '+'
+                else if (top or bot) '-'
+                else if (left or right) '|'
+                else ' ';
+            frame[row0 + dy][col0 + dx] = c;
+        }
+    }
+    const msg1 = "GAME OVER";
+    const msg2_prefix = "score: ";
+    const msg3 = "SPC retry";
+
+    // row0+1: "GAME OVER" centered in inner 12 cols.
+    {
+        const inner = PW - 2; // 12
+        const start = col0 + 1 + (inner - @as(u8, @intCast(msg1.len))) / 2;
+        for (msg1, 0..) |c, i| frame[row0 + 1][start + @as(u8, @intCast(i))] = c;
+    }
+    // row0+2: "score: N" left-aligned with 2-space indent.
+    {
+        var col = col0 + 2;
+        for (msg2_prefix) |c| {
+            frame[row0 + 2][col] = c;
+            col += 1;
+        }
+        var n = game.score;
+        var digits: [5]u8 = undefined;
+        var ndigits: usize = 0;
+        if (n == 0) {
+            digits[0] = '0';
+            ndigits = 1;
+        } else while (n > 0) : (n /= 10) {
+            digits[ndigits] = @intCast('0' + (n % 10));
+            ndigits += 1;
+        }
+        var di = ndigits;
+        while (di > 0) {
+            di -= 1;
+            frame[row0 + 2][col] = digits[di];
+            col += 1;
+        }
+    }
+    // row0+3: "SPC retry" centered.
+    {
+        const inner = PW - 2;
+        const start = col0 + 1 + (inner - @as(u8, @intCast(msg3.len))) / 2;
+        for (msg3, 0..) |c, i| frame[row0 + 3][start + @as(u8, @intCast(i))] = c;
+    }
+}
+
 fn render() void {
     paint();
-    // Clear screen + home cursor.
+    if (game.state == .GameOver) paintGameOver();
     uartPutSlice("\x1b[2J\x1b[H");
-    // HUD row.
     uartPutSlice("SNAKE  score: ");
     uartPutDecimal(game.score);
     uartPutSlice("  (q quit)\r\n");
-    // Board.
     var y: u8 = 0;
     while (y < game_mod.H) : (y += 1) {
         var x: u8 = 0;
