@@ -88,10 +88,26 @@ pub const Game = struct {
             }
         }
 
+        // Move head into (nx, ny).
         const new_head: u16 = (self.head + 1) % MAX_SNAKE;
         self.snake_x[new_head] = @intCast(nx);
         self.snake_y[new_head] = @intCast(ny);
         self.head = new_head;
+
+        // Food check.
+        const ate = if (self.food) |f|
+            (f.x == @as(u8, @intCast(nx)) and f.y == @as(u8, @intCast(ny)))
+        else
+            false;
+
+        if (ate) {
+            self.score += 1;
+            self.len += 1;
+            self.placeFood();
+            return .Grew;
+        }
+
+        // No food eaten — advance tail (snake moves, doesn't grow).
         self.tail = (self.tail + 1) % MAX_SNAKE;
         return .Moved;
     }
@@ -344,4 +360,24 @@ test "placeFood: never on the snake body" {
             idx = (idx + 1) % MAX_SNAKE;
         }
     }
+}
+
+test "advance onto food: score++, len++, food respawned, tail stays" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    g.rng = 1;
+    // Place food immediately to the right of the head: head at (16,7), food at (17,7).
+    g.food = .{ .x = 17, .y = 7 };
+    const tail_x_before = g.snake_x[g.tail];
+    const tail_y_before = g.snake_y[g.tail];
+    const r = g.advance();
+    try std.testing.expectEqual(AdvanceResult.Grew, r);
+    try std.testing.expectEqual(@as(u32, 1), g.score);
+    try std.testing.expectEqual(@as(u16, 4), g.len);
+    // Tail did NOT advance.
+    try std.testing.expectEqual(tail_x_before, g.snake_x[g.tail]);
+    try std.testing.expectEqual(tail_y_before, g.snake_y[g.tail]);
+    // New food placed (rng was nonzero, so placeFood succeeded).
+    try std.testing.expect(g.food != null);
+    // New food is not at the eaten position.
+    try std.testing.expect(!(g.food.?.x == 17 and g.food.?.y == 7));
 }
