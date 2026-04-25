@@ -14,6 +14,8 @@
 #
 # Offsets MUST match trap.zig's TF_* constants. comptime asserts in
 # trap.zig catch drift; this .equ block mirrors the numeric values.
+# KSTACK_TOP_OFFSET must match proc.zig's KSTACK_TOP_OFFSET; the
+# comptime assert in proc.zig catches drift there too.
 
 .equ TF_RA,   0
 .equ TF_SP,   4
@@ -47,6 +49,7 @@
 .equ TF_T5,  116
 .equ TF_T6,  120
 .equ TF_SEPC, 124
+.equ KSTACK_TOP_OFFSET, 144
 
 .section .text, "ax", @progbits
 .balign 4
@@ -91,27 +94,30 @@ s_trap_entry:
     csrr    t0, sscratch
     sw      t0, TF_SP(sp)
 
-    # Reset sscratch = &ptable[0] so the NEXT trap has something valid
-    # to swap with. @offsetOf(Process, "tf") == 0 so &ptable[0] is also
-    # the TrapFrame pointer trampoline save/restore blocks work on.
-    la      t0, ptable
-    csrw    sscratch, t0
+    # Re-arm sscratch for the next trap. sp currently points at &cur_proc
+    # (since we swapped sp<->sscratch on entry and tf is offset 0 in
+    # Process), so simply reflect it back into sscratch.
+    csrw    sscratch, sp
 
     # Save sepc.
     csrr    t0, sepc
     sw      t0, TF_SEPC(sp)
 
-    # Switch sp to the kernel stack. _kstack_top is the linker symbol.
-    la      sp, _kstack_top
+    # Move &cur_proc into a0 BEFORE switching the stack — the dispatcher
+    # takes the tf pointer in a0, and we need to keep it accessible.
+    mv      a0, sp
+
+    # Switch sp to the per-process kernel stack.
+    lw      sp, KSTACK_TOP_OFFSET(a0)
 
     # Call s_trap_dispatch(tf).
-    la      a0, ptable
     call    s_trap_dispatch
 
-    # s_trap_dispatch is a C-ABI function and may clobber a0. Reload
-    # it before the return path, which expects a0 = &ptable[0] (equal
-    # to &ptable[0].tf since tf is the first field).
-    la      a0, ptable
+    # On return, s_trap_dispatch may have called swtch, which leaves us
+    # on a (possibly different) process's kstack with a0 clobbered. We
+    # need a0 = &cur_proc.tf for the s_return_to_user path. Read sscratch
+    # — re-armed at trap entry to point at the current process struct.
+    csrr    a0, sscratch
 
     # Fall through to return-to-user.
 
