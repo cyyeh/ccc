@@ -11,6 +11,8 @@ const mem_mod = ccc.memory;
 const halt_dev = ccc.halt;
 const uart_dev = ccc.uart;
 const clint_dev = ccc.clint;
+const plic_dev = ccc.plic;
+const block_dev = ccc.block;
 const elf_mod = ccc.elf;
 
 // hello.elf is embedded at compile time via an anonymous module that
@@ -69,8 +71,13 @@ export fn run(trace: i32) i32 {
     var halt = halt_dev.Halt.init();
     var uart = uart_dev.Uart.init(&output_writer);
     var clint = clint_dev.Clint.init(zeroClock);
+    var plic = plic_dev.Plic.init();
+    var block = block_dev.Block.init();
+    // hello.elf never touches the block device, so std.Io.failing — which
+    // errors on every operation — is safe: nothing ever invokes it.
+    const io: std.Io = std.Io.failing;
 
-    var mem = mem_mod.Memory.init(a, &halt, &uart, &clint, null, RAM_SIZE) catch return -1;
+    var mem = mem_mod.Memory.init(a, &halt, &uart, &clint, &plic, &block, io, null, RAM_SIZE) catch return -1;
     defer mem.deinit();
 
     const result = elf_mod.parseAndLoad(hello_elf, &mem) catch return -2;

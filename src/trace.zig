@@ -59,22 +59,58 @@ fn privStr(p: PrivilegeMode) []const u8 {
     };
 }
 
+/// Block-device transfer direction. Shared between `formatBlockTransfer`
+/// (which prints the trace marker) and `devices/block.zig` (which records
+/// the most recently completed transfer for cpu.step to emit later).
+pub const Op = enum { Read, Write };
+
 /// Emit one line denoting an async interrupt entry:
 ///   --- interrupt N (<name>) taken in <old>, now <new> ---
 ///
 /// Called by trap.enter_interrupt BEFORE the privilege switch so `from`
 /// captures the pre-interrupt state. Synchronous traps do NOT emit this
 /// marker — they appear in trace as the target-vector instruction.
+///
+/// `plic_src` is consulted only when `cause_code == 9` (S-external): if
+/// non-null, the printed line includes a `, src N` suffix carrying the
+/// PLIC source ID that drove this interrupt. For every other cause the
+/// argument is ignored — pass `null`.
 pub fn formatInterruptMarker(
     writer: *std.Io.Writer,
     cause_code: u32,
     from: PrivilegeMode,
     to: PrivilegeMode,
+    plic_src: ?u32,
 ) !void {
-    try writer.print(
-        "--- interrupt {d} ({s}) taken in {s}, now {s} ---\n",
-        .{ cause_code, interruptName(cause_code), privStr(from), privStr(to) },
-    );
+    if (cause_code == 9 and plic_src != null) {
+        try writer.print(
+            "--- interrupt {d} ({s}, src {d}) taken in {s}, now {s} ---\n",
+            .{ cause_code, interruptName(cause_code), plic_src.?, privStr(from), privStr(to) },
+        );
+    } else {
+        try writer.print(
+            "--- interrupt {d} ({s}) taken in {s}, now {s} ---\n",
+            .{ cause_code, interruptName(cause_code), privStr(from), privStr(to) },
+        );
+    }
+    try writer.flush();
+}
+
+/// Emit one line denoting a block-device transfer:
+///   --- block: <op> sector <N> at PA 0x<HHHHHHHH> ---
+///
+/// Called by `cpu.step` after the deferred IRQ for a completed transfer
+/// has been observed, using the `last_op`/`last_sector`/`last_buffer_pa`
+/// fields snapshotted by `Block.performTransfer`. Placement is between
+/// the prior instruction's trace line and the upcoming interrupt marker.
+pub fn formatBlockTransfer(
+    writer: *std.Io.Writer,
+    op: Op,
+    sector: u32,
+    pa: u32,
+) !void {
+    const op_s = switch (op) { .Read => "read", .Write => "write" };
+    try writer.print("--- block: {s} sector {d} at PA 0x{X:0>8} ---\n", .{ op_s, sector, pa });
     try writer.flush();
 }
 
@@ -135,7 +171,7 @@ test "formatInstr emits [S] for S-mode and [U] for U-mode" {
 test "formatInterruptMarker: machine timer (cause 7), taken in U, now M" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    try formatInterruptMarker(&aw.writer, 7, .U, .M);
+    try formatInterruptMarker(&aw.writer, 7, .U, .M, null);
     try std.testing.expectEqualStrings(
         "--- interrupt 7 (machine timer) taken in U, now M ---\n",
         aw.written(),
@@ -145,7 +181,7 @@ test "formatInterruptMarker: machine timer (cause 7), taken in U, now M" {
 test "formatInterruptMarker: supervisor software (cause 1), taken in S, now S" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    try formatInterruptMarker(&aw.writer, 1, .S, .S);
+    try formatInterruptMarker(&aw.writer, 1, .S, .S, null);
     try std.testing.expectEqualStrings(
         "--- interrupt 1 (supervisor software) taken in S, now S ---\n",
         aw.written(),
@@ -155,9 +191,30 @@ test "formatInterruptMarker: supervisor software (cause 1), taken in S, now S" {
 test "formatInterruptMarker: unknown cause → \"unknown\"" {
     var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
-    try formatInterruptMarker(&aw.writer, 42, .M, .M);
+    try formatInterruptMarker(&aw.writer, 42, .M, .M, null);
     try std.testing.expectEqualStrings(
         "--- interrupt 42 (unknown) taken in M, now M ---\n",
         aw.written(),
     );
+}
+
+test "formatInterruptMarker for S-external includes plic source id" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try formatInterruptMarker(&aw.writer, 9, .U, .S, 1);
+    try std.testing.expectEqualStrings("--- interrupt 9 (supervisor external, src 1) taken in U, now S ---\n", aw.written());
+}
+
+test "formatInterruptMarker for non-external ignores src arg" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try formatInterruptMarker(&aw.writer, 1, .U, .S, null);
+    try std.testing.expectEqualStrings("--- interrupt 1 (supervisor software) taken in U, now S ---\n", aw.written());
+}
+
+test "formatBlockTransfer prints op, sector, and PA" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try formatBlockTransfer(&aw.writer, .Read, 42, 0x80100000);
+    try std.testing.expectEqualStrings("--- block: read sector 42 at PA 0x80100000 ---\n", aw.written());
 }

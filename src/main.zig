@@ -6,6 +6,8 @@ const mem_mod = @import("memory.zig");
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
+const plic_dev = @import("devices/plic.zig");
+const block_dev = @import("devices/block.zig");
 const elf_mod = @import("elf.zig");
 
 comptime {
@@ -14,6 +16,8 @@ comptime {
     _ = @import("devices/halt.zig");
     _ = @import("devices/uart.zig");
     _ = @import("devices/clint.zig");
+    _ = @import("devices/plic.zig");
+    _ = @import("devices/block.zig");
     _ = @import("decoder.zig");
     _ = @import("execute.zig");
     _ = @import("csr.zig");
@@ -28,6 +32,9 @@ const Args = struct {
     trace: bool = false,
     halt_on_trap: bool = false,
     memory_mb: u32 = 128,
+    disk_path: ?[]const u8 = null,
+    disk_latency: u32 = 0,
+    input_path: ?[]const u8 = null,
 };
 
 const ArgsError = error{
@@ -58,6 +65,18 @@ fn parseArgs(argv: []const [:0]const u8, stderr: *Io.Writer) ArgsError!Args {
             const mb = std.fmt.parseInt(u32, argv[i], 0) catch return error.InvalidMemory;
             if (mb == 0 or mb > 4096) return error.InvalidMemory;
             args.memory_mb = mb;
+        } else if (std.mem.eql(u8, a, "--disk")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingArg;
+            args.disk_path = argv[i];
+        } else if (std.mem.eql(u8, a, "--disk-latency")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingArg;
+            args.disk_latency = std.fmt.parseInt(u32, argv[i], 0) catch return error.InvalidAddress;
+        } else if (std.mem.eql(u8, a, "--input")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingArg;
+            args.input_path = argv[i];
         } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
             printUsage(stderr) catch {};
             std.process.exit(0);
@@ -88,6 +107,9 @@ fn printUsage(stderr: *Io.Writer) !void {
         \\  --trace             Print one line per executed instruction to stderr.
         \\  --memory <MB>       Override RAM size (default: 128).
         \\  --halt-on-trap      Stop on first unhandled trap (default: enter trap handler).
+        \\  --disk <path>       Back the block device with this file (4 MB image).
+        \\  --disk-latency <n>  Reserved (no-op in Phase 3.A).
+        \\  --input <path>      Stream this file's bytes into UART RX (Task 16).
         \\  -h, --help          Show this help.
         \\
     , .{});
@@ -151,13 +173,42 @@ pub fn main(init: std.process.Init) !void {
     var halt = halt_dev.Halt.init();
     var uart = uart_dev.Uart.init(stdout);
     var clint = clint_dev.Clint.initDefault();
+    var plic = plic_dev.Plic.init();
+    var block = block_dev.Block.init();
+
+    // UART RX FIFO asserts PLIC source 10 — wire pointer once PLIC exists.
+    uart.plic = &plic;
+
+    if (args.disk_path) |path| {
+        const f = Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write }) catch |err| {
+            stderr.print("failed to open disk image {s}: {s}\n", .{ path, @errorName(err) }) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        block.disk_file = f;
+        block.status = @intFromEnum(block_dev.Status.Ready);
+    }
+    defer if (block.disk_file) |f| f.close(io);
+
+    // --input PATH: stream the file's bytes into UART RX FIFO during idleSpin.
+    var rx_pump_storage: uart_dev.RxPump = undefined;
+    if (args.input_path) |ipath| {
+        const f = Io.Dir.cwd().openFile(io, ipath, .{ .mode = .read_only }) catch |err| {
+            stderr.print("failed to open input file {s}: {s}\n", .{ ipath, @errorName(err) }) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        rx_pump_storage = .{ .file = f };
+        uart.rx_pump = &rx_pump_storage;
+    }
+    defer if (uart.rx_pump) |p| p.file.close(io);
 
     const ram_size: usize = @as(usize, args.memory_mb) * 1024 * 1024;
 
     // Default boot: ELF. Fallback: --raw <addr>.
     // Construct Memory with tohost_addr=null initially; the ELF path will
     // set mem.tohost_addr post-hoc after parseAndLoad resolves the symbol.
-    var mem = try mem_mod.Memory.init(a, &halt, &uart, &clint, null, ram_size);
+    var mem = try mem_mod.Memory.init(a, &halt, &uart, &clint, &plic, &block, io, null, ram_size);
     defer mem.deinit();
 
     var entry: u32 = 0;
@@ -207,4 +258,40 @@ pub fn main(init: std.process.Init) !void {
 
 test "trivial" {
     try std.testing.expect(true);
+}
+
+test "parseArgs accepts --disk PATH" {
+    var stderr_buf: [256]u8 = undefined;
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    _ = &stderr_buf;
+
+    const argv = &[_][:0]const u8{ "ccc", "--disk", "/tmp/foo.img", "kernel.elf" };
+    const args = try parseArgs(argv[0..], &aw.writer);
+    try std.testing.expectEqualStrings("/tmp/foo.img", args.disk_path.?);
+    try std.testing.expectEqualStrings("kernel.elf", args.file.?);
+}
+
+test "parseArgs accepts --disk-latency NUM" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const argv = &[_][:0]const u8{ "ccc", "--disk-latency", "1000", "kernel.elf" };
+    const args = try parseArgs(argv[0..], &aw.writer);
+    try std.testing.expectEqual(@as(u32, 1000), args.disk_latency);
+}
+
+test "parseArgs default disk_path is null" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const argv = &[_][:0]const u8{ "ccc", "kernel.elf" };
+    const args = try parseArgs(argv[0..], &aw.writer);
+    try std.testing.expect(args.disk_path == null);
+}
+
+test "parseArgs accepts --input PATH" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const argv = &[_][:0]const u8{ "ccc", "--input", "/dev/null", "kernel.elf" };
+    const args = try parseArgs(argv[0..], &aw.writer);
+    try std.testing.expectEqualStrings("/dev/null", args.input_path.?);
 }

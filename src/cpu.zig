@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const decoder = @import("decoder.zig");
 const execute = @import("execute.zig");
 const trap = @import("trap.zig");
@@ -6,6 +7,7 @@ const mem_mod = @import("memory.zig");
 const Memory = mem_mod.Memory;
 const MemoryError = mem_mod.MemoryError;
 const clint_dev = @import("devices/clint.zig");
+const plic_dev = @import("devices/plic.zig");
 
 pub const StepError = error{
     Halt,
@@ -131,6 +133,35 @@ pub const Cpu = struct {
     }
 
     pub fn step(self: *Cpu) StepError!void {
+        // Plan 3.A Task 12: service deferred device IRQs from the previous
+        // instruction's MMIO writes. The block device sets pending_irq inside
+        // performTransfer; we drain it here at the next instruction boundary
+        // so the PLIC sees the source-1 assertion atomically with respect to
+        // the instruction stream.
+        //
+        // Plan 3.A Task 17: when --trace is on, emit the block-transfer
+        // marker at this same boundary, between the previous instruction
+        // line and the upcoming interrupt marker that check_interrupt
+        // will produce. The op/sector/PA snapshot was captured inside
+        // performTransfer, then mirrored on Block; we drop last_op back
+        // to null after emission so a subsequent CMD=0 reset (which does
+        // not refresh the snapshot) doesn't print a phantom marker.
+        if (self.memory.block.pending_irq) {
+            if (self.trace_writer) |tw| {
+                if (self.memory.block.last_op) |op| {
+                    @import("trace.zig").formatBlockTransfer(
+                        tw,
+                        op,
+                        self.memory.block.last_sector,
+                        self.memory.block.last_buffer_pa,
+                    ) catch {};
+                }
+            }
+            self.memory.plic.assertSource(1);
+            self.memory.block.pending_irq = false;
+            self.memory.block.last_op = null;
+        }
+
         // Plan 2.B: check for deliverable async interrupts BEFORE fetching.
         // If one is taken, the PC has been redirected to the trap vector
         // and the instruction that would have been fetched this cycle is
@@ -185,14 +216,110 @@ pub const Cpu = struct {
             }
         }
     }
+
+    /// Idle the CPU until a deliverable interrupt arrives or 10s wall-clock
+    /// elapses. Called by execute.zig's wfi arm.
+    ///
+    /// Each iteration: service deferred device IRQs (block); poll host stdin
+    /// (if a UART pump is wired); check for deliverable interrupts. If a trap
+    /// fires, return early — the caller's step() will detect cpu.trap_taken
+    /// and skip the +4 PC advance. If nothing happens, sleep ~1 ms and loop.
+    pub fn idleSpin(self: *Cpu) void {
+        const max_ns: i128 = 10_000_000_000; // 10 s
+        const start = monotonicNs();
+        while (true) {
+            // Service deferred block IRQ. Mirror cpu.step's trace hook so
+            // a transfer that completes while the guest is in WFI still
+            // gets its `--- block: ... ---` marker on the trace stream.
+            if (self.memory.block.pending_irq) {
+                if (self.trace_writer) |tw| {
+                    if (self.memory.block.last_op) |op| {
+                        @import("trace.zig").formatBlockTransfer(
+                            tw,
+                            op,
+                            self.memory.block.last_sector,
+                            self.memory.block.last_buffer_pa,
+                        ) catch {};
+                    }
+                }
+                self.memory.plic.assertSource(1);
+                self.memory.block.pending_irq = false;
+                self.memory.block.last_op = null;
+            }
+            // Drain host stdin if a pump is configured (Task 16 wires this).
+            if (self.memory.uart.rx_pump) |pump| {
+                pump.drainAvailable(self.memory.io, self.memory.uart);
+            }
+            // Did we just get something interrupt-worthy?
+            if (check_interrupt(self)) return;
+
+            if (monotonicNs() - start > max_ns) return;
+            // 1 ms sleep — short enough to keep tests fast, long enough to
+            // not chew CPU when truly idle. Zig 0.16 has no top-level
+            // std.Thread.sleep; go through libc nanosleep directly.
+            sleepMs(1);
+        }
+    }
 };
 
+/// Monotonic timestamp in nanoseconds. Comptime-branched on target so the
+/// freestanding (wasm) build doesn't pull libc in. Mirrors the approach in
+/// devices/clint.zig — Zig 0.16 removed std.time.nanoTimestamp, so each
+/// host gets the most direct API:
+///   - freestanding: a static counter that advances ~1ms per call so
+///     idleSpin's max_ns timeout fires (hello.elf doesn't actually wfi,
+///     but make sure idleSpin terminates if it ever does).
+///   - wasi: clock_time_get from the WASI ABI directly (no libc).
+///   - else (POSIX): clock_gettime via libc.
+fn monotonicNs() i128 {
+    switch (comptime builtin.os.tag) {
+        .freestanding => {
+            const State = struct {
+                var counter: i128 = 0;
+            };
+            State.counter += 1_000_000;
+            return State.counter;
+        },
+        .wasi => {
+            var ns: u64 = undefined;
+            _ = std.os.wasi.clock_time_get(.MONOTONIC, 1, &ns);
+            return @intCast(ns);
+        },
+        else => {
+            var ts: std.c.timespec = undefined;
+            if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
+            const sec: i128 = @intCast(ts.sec);
+            const nsec: i128 = @intCast(ts.nsec);
+            return sec * 1_000_000_000 + nsec;
+        },
+    }
+}
+
+/// Sleep for `ms` milliseconds. No-op on wasm targets (no scheduler). On
+/// POSIX hosts, libc nanosleep — best-effort; an EINTR/early wakeup just
+/// shortens the iteration, which is harmless because idleSpin loops.
+fn sleepMs(ms: u32) void {
+    switch (comptime builtin.os.tag) {
+        .freestanding, .wasi => return,
+        else => {
+            const ns_per_ms: i64 = 1_000_000;
+            var req: std.c.timespec = .{
+                .sec = @intCast(@divTrunc(ms, 1000)),
+                .nsec = @intCast(@as(i64, @intCast(ms % 1000)) * ns_per_ms),
+            };
+            _ = std.c.nanosleep(&req, null);
+        },
+    }
+}
+
 /// Compute the effective `mip` for the interrupt-boundary check. This is
-/// cpu.csr.mip OR'd with CLINT's live MTIP bit. We never store MTIP in
-/// cpu.csr.mip — the bit is always derived here and inside csrRead.
+/// cpu.csr.mip OR'd with CLINT's live MTIP bit and PLIC's live SEIP bit.
+/// We never store MTIP or SEIP in cpu.csr.mip — those bits are always
+/// derived here and inside csrRead.
 fn pendingInterrupts(cpu: *const Cpu) u32 {
     var mip = cpu.csr.mip;
     if (cpu.memory.clint.isMtipPending()) mip |= 1 << 7;
+    if (cpu.memory.plic.hasPendingForS()) mip |= 1 << 9;
     return mip;
 }
 
@@ -276,7 +403,9 @@ test "Cpu.run halts cleanly when program writes to halt MMIO" {
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
+    var plic = plic_dev.Plic.init();
+    var block = @import("devices/block.zig").Block.init();
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, &block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
 
     // Hand-encoded program at RAM_BASE:
@@ -318,7 +447,9 @@ test "instruction page fault: step() from unmapped PC in U-mode updates mcause a
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.zeroClock);
-    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT);
+    var plic = plic_dev.Plic.init();
+    var block = @import("devices/block.zig").Block.init();
+    var mem = try Memory.init(std.testing.allocator, &halt, &uart, &clint, &plic, &block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT);
     defer mem.deinit();
 
     // Point satp at an empty root page (all zero RAM → L1 PTE.V=0 → fetch fault).
@@ -354,12 +485,15 @@ test "CsrFile default has zero medeleg and mideleg" {
 const trap_mod = @import("trap.zig");
 const halt_dev_t = @import("devices/halt.zig");
 const uart_dev_t = @import("devices/uart.zig");
+const block_dev_t = @import("devices/block.zig");
 
 const CpuRig = struct {
     halt: halt_dev_t.Halt,
     aw: std.Io.Writer.Allocating,
     uart: uart_dev_t.Uart,
     clint: clint_dev.Clint,
+    plic: plic_dev.Plic,
+    block: block_dev_t.Block,
     mem: Memory,
     cpu: Cpu,
     fn deinit(self: *CpuRig) void {
@@ -379,9 +513,11 @@ fn cpuRig() !*CpuRig {
     rig.aw = std.Io.Writer.Allocating.init(std.testing.allocator);
     rig.uart = uart_dev_t.Uart.init(&rig.aw.writer);
     rig.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    rig.plic = plic_dev.Plic.init();
+    rig.block = block_dev_t.Block.init();
     rig.mem = try Memory.init(
-        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, null,
-        mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, &rig.plic, &rig.block,
+        std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT,
     );
     rig.cpu = Cpu.init(&rig.mem, mem_mod.RAM_BASE);
     return rig;
@@ -516,8 +652,10 @@ test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
     defer aw.deinit();
     var uart = @import("devices/uart.zig").Uart.init(&aw.writer);
     var clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
+    var plic = plic_dev.Plic.init();
+    var block = @import("devices/block.zig").Block.init();
     var mem = try Memory.init(
-        std.testing.allocator, &halt, &uart, &clint, null, mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator, &halt, &uart, &clint, &plic, &block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT,
     );
     defer mem.deinit();
 
@@ -617,4 +755,49 @@ test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
     try std.testing.expectEqual(@as(u32, 1), sentinel);
     // Final privilege should be S (SSI ISR loops there).
     try std.testing.expectEqual(PrivilegeMode.S, cpu.privilege);
+}
+
+test "step asserts PLIC IRQ #1 when block has pending_irq set, then clears the flag" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+
+    // Manually set pending_irq as if performTransfer just ran.
+    rig.cpu.memory.block.pending_irq = true;
+    // Place a NOP at PC so step proceeds normally after IRQ delivery.
+    try rig.mem.storeWordPhysical(rig.cpu.pc, 0x00000013); // addi x0,x0,0 (nop)
+
+    _ = rig.cpu.step() catch {};
+    try std.testing.expect((rig.cpu.memory.plic.pending & (1 << 1)) != 0);
+    try std.testing.expect(!rig.cpu.memory.block.pending_irq);
+}
+
+test "WFI returns promptly when a deliverable interrupt arrives during idle" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+
+    // Configure delegation + enable so SEIP delivers to S.
+    rig.cpu.privilege = .U;                              // U < S → trap deliverable regardless of sstatus.SIE
+    rig.cpu.csr.stvec = 0x8000_0500;
+    rig.cpu.csr.mideleg = 1 << 9;                        // delegate SEIP to S
+    rig.cpu.csr.mie = 1 << 9;                            // SEIE
+    // PLIC: src 1 priority 1, enabled, threshold 0.
+    try rig.cpu.memory.plic.writeByte(0x0004, 1);
+    try rig.cpu.memory.plic.writeByte(0x2080, 0x02);
+
+    // Pre-arm block IRQ so the first idleSpin iteration asserts PLIC src 1
+    // and check_interrupt fires immediately.
+    rig.cpu.memory.block.pending_irq = true;
+
+    // Place WFI at PC. (U-mode wfi traps illegal in our model, but here we'll
+    // test idleSpin directly to keep the unit-level concern pure.)
+    rig.cpu.idleSpin();
+
+    // After idleSpin returns: PLIC src 1 was asserted, the trap was taken,
+    // privilege flipped to S, PC redirected to stvec.
+    // Plan note: pending bit stays set until claim; what we test is: trap was taken.
+    try std.testing.expect((rig.cpu.memory.plic.pending & (1 << 1)) != 0);
+    try std.testing.expectEqual(@import("cpu.zig").PrivilegeMode.S, rig.cpu.privilege);
+    try std.testing.expectEqual(@as(u32, 0x8000_0500), rig.cpu.pc);
+    try std.testing.expectEqual(@as(u32, (1 << 31) | 9), rig.cpu.csr.scause);
+    try std.testing.expect(!rig.cpu.memory.block.pending_irq); // serviced
 }

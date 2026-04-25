@@ -44,16 +44,16 @@ const SIP_READ_MASK  : u32 = (1 << 1) | (1 << 5) | (1 << 9); // SSIP | STIP | SE
 const SIP_WRITE_MASK : u32 = (1 << 1);                        // only SSIP writable from S
 
 // mip write mask: MTIP (bit 7) is a hardware-driven read-only bit; writes
-// to it from software are silently dropped. MEIP (bit 11) and SEIP (bit 9)
-// are platform-driven (PLIC writes through dedicated APIs, not plain CSR
-// writes); we permit software writes to them since Phase 2 has no PLIC and
-// tests sometimes inject SEIP by hand. MSIP (bit 3), SSIP (bit 1), and
+// to it from software are silently dropped. MEIP (bit 11) is platform-driven
+// (PLIC writes through dedicated APIs, not plain CSR writes); we permit
+// software writes to it for compatibility. MSIP (bit 3), SSIP (bit 1), and
 // STIP (bit 5) are software-writable per spec.
+// SEIP (bit 9) is now PLIC-owned: live state is OR'd in on read from
+// `cpu.memory.plic.hasPendingForS()`. Software writes to bit 9 are dropped.
 pub const MIP_WRITE_MASK: u32 =
     (1 << 1)  | // SSIP
     (1 << 3)  | // MSIP
     (1 << 5)  | // STIP
-    (1 << 9)  | // SEIP
     (1 << 11);  // MEIP
 
 // mie WARL mask: the six interrupt-enable bits defined by the RISC-V
@@ -202,6 +202,7 @@ fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
             // here for symmetry with the CSR_MIP arm so any future expansion
             // of SIP_READ_MASK that exposes MTIP to S-mode works seamlessly.
             if (cpu.memory.clint.isMtipPending()) v |= 1 << 7;
+            if (cpu.memory.plic.hasPendingForS()) v |= 1 << 9;
             break :blk v & SIP_READ_MASK;
         },
         CSR_SATP => blk: {
@@ -242,6 +243,7 @@ fn csrReadUnchecked(cpu: *const Cpu, addr: u12) CsrError!u32 {
         CSR_MIP => blk: {
             var v = cpu.csr.mip;
             if (cpu.memory.clint.isMtipPending()) v |= 1 << 7;
+            if (cpu.memory.plic.hasPendingForS()) v |= 1 << 9;
             break :blk v;
         },
         CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID => 0,
@@ -606,7 +608,13 @@ test "sie write merges into mie preserving M-only bits" {
 test "sip reads SSIP/STIP/SEIP from mip (rig)" {
     var rig = try csrRigWithMtimecmp(0);
     defer rig.deinit();
-    try csrWrite(&rig.cpu, CSR_MIP, (1 << 1) | (1 << 5) | (1 << 9));
+    // SSIP and STIP go through software-writable mip bits. SEIP is now
+    // PLIC-owned, so we drive it through the PLIC API: src 1 priority 4,
+    // enabled in the S-context, threshold 0, asserted.
+    try csrWrite(&rig.cpu, CSR_MIP, (1 << 1) | (1 << 5));
+    try rig.cpu.memory.plic.writeByte(0x0004, 4);
+    try rig.cpu.memory.plic.writeByte(0x2080, 0x02);
+    rig.cpu.memory.plic.assertSource(1);
     const s = try csrRead(&rig.cpu, CSR_SIP);
     try std.testing.expectEqual(@as(u32, (1 << 1) | (1 << 5) | (1 << 9)), s);
 }
@@ -769,6 +777,8 @@ test "mideleg masks out MSIP/MTIP/MEIP" {
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
+const plic_dev = @import("devices/plic.zig");
+const block_dev = @import("devices/block.zig");
 const mem_mod = @import("memory.zig");
 
 /// Test rig that stands up a fully-wired Cpu + Memory + CLINT, needed by
@@ -780,6 +790,8 @@ const CsrRig = struct {
     aw: std.Io.Writer.Allocating,
     uart: uart_dev.Uart,
     clint: clint_dev.Clint,
+    plic: plic_dev.Plic,
+    block: block_dev.Block,
     mem: mem_mod.Memory,
     cpu: Cpu,
 
@@ -797,12 +809,19 @@ fn csrRigWithMtimecmp(mtimecmp: u64) !CsrRig {
     rig.uart = uart_dev.Uart.init(&rig.aw.writer);
     rig.clint = clint_dev.Clint.init(&clint_dev.fixtureClock);
     rig.clint.mtimecmp = mtimecmp;
+    rig.plic = plic_dev.Plic.init();
+    rig.block = block_dev.Block.init();
     rig.mem = try mem_mod.Memory.init(
-        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, null,
-        mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, &rig.plic, &rig.block,
+        std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT,
     );
     rig.cpu = Cpu.init(&rig.mem, 0);
     return rig;
+}
+
+/// Convenience wrapper for tests that don't need a specific mtimecmp.
+fn csrTestRig() !CsrRig {
+    return csrRigWithMtimecmp(0);
 }
 
 test "CSR_MIP read reflects live MTIP from CLINT when pending" {
@@ -847,4 +866,61 @@ test "mie reserved bits (0, 2, 4, 6, 8, 10, 12+) stay zero" {
     try std.testing.expectEqual(@as(u32, 0), v & (1 << 2));
     try std.testing.expectEqual(@as(u32, 0), v & (1 << 12));
     try std.testing.expectEqual(@as(u32, 0), v & 0xFFFF_0000);
+}
+
+test "CSR_MIP read reflects live SEIP from PLIC when pending+enabled+over-threshold" {
+    var rig = try csrTestRig();
+    defer rig.deinit();
+    // Set up PLIC: src 1 priority 4, enabled, threshold 0, pending.
+    try rig.cpu.memory.plic.writeByte(0x0004, 4);
+    try rig.cpu.memory.plic.writeByte(0x2080, 0x02);
+    rig.cpu.memory.plic.assertSource(1);
+    const v = try csrRead(&rig.cpu, CSR_MIP);
+    try std.testing.expectEqual(@as(u32, 1 << 9), v & (1 << 9)); // SEIP set
+}
+
+test "CSR_MIP read: SEIP stays clear when PLIC says not deliverable" {
+    var rig = try csrTestRig();
+    defer rig.deinit();
+    // PLIC default: nothing pending.
+    const v = try csrRead(&rig.cpu, CSR_MIP);
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 9));
+}
+
+test "CSR_SIP read also reflects live SEIP from PLIC" {
+    var rig = try csrTestRig();
+    defer rig.deinit();
+    try rig.cpu.memory.plic.writeByte(0x0004, 4);
+    try rig.cpu.memory.plic.writeByte(0x2080, 0x02);
+    rig.cpu.memory.plic.assertSource(1);
+    const v = try csrRead(&rig.cpu, CSR_SIP);
+    try std.testing.expectEqual(@as(u32, 1 << 9), v & (1 << 9));
+}
+
+test "CSR_MIP write masks out SEIP (PLIC owns it now)" {
+    var rig = try csrTestRig();
+    defer rig.deinit();
+    try csrWrite(&rig.cpu, CSR_MIP, 1 << 9);
+    // Stored mip.SEIP must remain 0; live read still 0 because PLIC has no pending.
+    const v = try csrRead(&rig.cpu, CSR_MIP);
+    try std.testing.expectEqual(@as(u32, 0), v & (1 << 9));
+}
+
+test "cpu.check_interrupt: SEIP delivers to S when delegated" {
+    var rig = try csrTestRig();
+    defer rig.deinit();
+    rig.cpu.privilege = .U;
+    rig.cpu.csr.stvec = 0x8000_0500;
+    rig.cpu.csr.mideleg = 1 << 9;       // delegate SEIP
+    rig.cpu.csr.mie = (1 << 9);         // enable SEIE
+    rig.cpu.csr.mstatus_sie = true;
+    // PLIC: src 1 priority 4, enabled, threshold 0, pending.
+    try rig.cpu.memory.plic.writeByte(0x0004, 4);
+    try rig.cpu.memory.plic.writeByte(0x2080, 0x02);
+    rig.cpu.memory.plic.assertSource(1);
+
+    const taken = @import("cpu.zig").check_interrupt(&rig.cpu);
+    try std.testing.expect(taken);
+    try std.testing.expectEqual(@as(u32, (1 << 31) | 9), rig.cpu.csr.scause);
+    try std.testing.expectEqual(@import("cpu.zig").PrivilegeMode.S, rig.cpu.privilege);
 }

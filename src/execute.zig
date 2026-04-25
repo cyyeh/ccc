@@ -297,8 +297,15 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
                 trap.enter(.illegal_instruction, instr.raw, cpu);
                 return;
             }
-            // Phase 1/2 has no interrupt sources; wfi is a no-op (advance PC).
-            cpu.pc +%= 4;
+            // Real idle: spin on host events until an interrupt fires or 10s elapses.
+            cpu.idleSpin();
+            // PC advance: if idleSpin returned because a trap fired, the trap
+            // entry already redirected PC to stvec/mtvec; skip the +4 so we
+            // don't trample the redirected PC. If idleSpin returned because
+            // of timeout (no event), advance past wfi to make forward progress.
+            if (!cpu.trap_taken) {
+                cpu.pc +%= 4;
+            }
         },
         .sret => {
             if (cpu.privilege == .U) {
@@ -456,6 +463,8 @@ pub fn dispatch(instr: decoder.Instruction, cpu: *cpu_mod.Cpu) ExecuteError!void
 const halt_dev = @import("devices/halt.zig");
 const uart_dev = @import("devices/uart.zig");
 const clint_dev = @import("devices/clint.zig");
+const plic_dev = @import("devices/plic.zig");
+const block_dev = @import("devices/block.zig");
 
 // Test fixture: Uart holds `*std.Io.Writer` pointing into the rig's `aw`,
 // so the rig MUST NOT be moved/copied after init. Fill-in-place pattern
@@ -464,6 +473,8 @@ const Rig = struct {
     halt: halt_dev.Halt,
     uart: uart_dev.Uart,
     clint: clint_dev.Clint,
+    plic: plic_dev.Plic,
+    block: block_dev.Block,
     aw: std.Io.Writer.Allocating,
     mem: mem_mod.Memory,
     cpu: cpu_mod.Cpu,
@@ -473,7 +484,9 @@ const Rig = struct {
         self.aw = .init(allocator);
         self.uart = uart_dev.Uart.init(&self.aw.writer);
         self.clint = clint_dev.Clint.init(&clint_dev.zeroClock);
-        self.mem = try mem_mod.Memory.init(allocator, &self.halt, &self.uart, &self.clint, null, mem_mod.RAM_SIZE_DEFAULT);
+        self.plic = plic_dev.Plic.init();
+        self.block = block_dev.Block.init();
+        self.mem = try mem_mod.Memory.init(allocator, &self.halt, &self.uart, &self.clint, &self.plic, &self.block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT);
         self.cpu = cpu_mod.Cpu.init(&self.mem, entry);
     }
 

@@ -35,7 +35,11 @@ our own terminal browser, with every layer written ourselves:
 - **ISA:** RV32I + M + A + Zicsr + Zifencei. Single hart. No F/D, no C.
 - **Privilege:** M-mode + S-mode + U-mode. Sv32 paging (4 KB pages, no
   superpages, no TLB model).
-- **Devices (Phase 1):** NS16550A UART + CLINT timer. 128 MB RAM at `0x80000000`.
+- **Devices:** NS16550A UART + CLINT timer (Phase 1). 128 MB RAM at `0x80000000`.
+  Plan 3.A adds:
+  - **PLIC** (`0x0c00_0000`, 4 MB) — 32 sources × 1 S-mode hart context.
+  - **Block device** (`0x1000_1000`, 16 B) — 4 KB sectors, host-file-backed via `--disk`.
+  - **UART RX** — 256-byte FIFO, level IRQ via PLIC source 10.
 - **Host platform:** macOS. Phase 4 may move to a Linux VM for TAP/TUN.
 - **Decomposition rule:** one phase's spec at a time — brainstorm → spec →
   plan → implementation, then repeat.
@@ -62,6 +66,8 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build kernel-elf` (or `kernel`) | Build the Plan 2.C `kernel.elf` (M-mode boot shim + S-mode kernel + embedded user blob) |
 | `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout matches `hello from u-mode\nticks observed: N\n` with N > 0 (Phase 2 §Definition of done) |
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
+| `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
+| `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
 | `zig build wasm` | Cross-compile `demo/web_main.zig` to `wasm32-freestanding` (installed to `zig-out/web/ccc.wasm`; powers the live web demo) |
@@ -83,12 +89,18 @@ Extra flags:
     --trace              Print one line per executed instruction to stderr.
     --halt-on-trap       Stop on first unhandled trap; dump regs/CSRs.
     --memory <MB>        Override RAM size (default: 128).
+    --disk PATH          Back the block device with this 4 MB host file.
+    --input PATH         Stream this file's bytes into the UART RX FIFO.
+    --disk-latency CYC   Reserved (no-op in Phase 3.A).
 
 ISA coverage: RV32I + M + A + Zicsr + Zifencei, M/S/U privilege,
 synchronous traps with delegation, async interrupt delivery, Sv32
 paging. `--trace` renders a `[M]`/`[S]`/`[U]` privilege column, plus
-a synthetic `--- interrupt N (<name>) taken in <old>, now <new> ---`
-marker on async trap entry.
+synthetic markers on async events:
+
+    --- interrupt N (<name>) taken in <old>, now <new> ---
+    --- interrupt 9 (supervisor external, src N) taken in <old>, now <new> ---
+    --- block: read sector S at PA 0x<P> ---
 
 ## Web demo
 
@@ -122,6 +134,9 @@ wasm and deploys the deck + demo to Pages. Pages source must be set
 to "GitHub Actions" in repo settings (one-time manual step).
 
 ## Status
+
+**Phase 3 in progress.** Plan 3.A merged: PLIC, simple block device, UART RX,
+`--disk` and `--input` flags, real `wfi` idle.
 
 **Phase 1 — RISC-V CPU emulator — complete.**
 
@@ -164,27 +179,36 @@ Debug aids: `zig build qemu-diff-kernel` runs `scripts/qemu-diff-kernel.sh`,
 which compares per-instruction traces between our emulator and QEMU.
 Requires `qemu-system-riscv32`; not a CI gate.
 
-Next: **Phase 3 — multi-process OS + filesystem + shell.**
+**Phase 3 — multi-process OS + filesystem + shell — in progress.**
+
+Plan 3.A (emulator: PLIC + simple block device + UART RX + `--disk`/`--input`
+flags + real `wfi` idle) is merged. The CPU now blocks in `wfi` until an
+async interrupt is pending; the PLIC routes UART RX (source 10) and block
+completion (source 1) into S-mode external interrupts; the block device
+serves 4 KB sectors out of a host-backed file at `0x1000_1000`.
+
+Next: Plan 3.B — kernel-side drivers, syscalls, and a tiny FS + shell.
 
 ## Layout
 
 ```
 src/
-  main.zig          # CLI entry point (ELF default, --raw fallback)
+  main.zig          # CLI entry point (ELF default, --raw fallback; --disk/--input/--trace/etc.)
   lib.zig           # re-export shim consumed by the wasm build (one named module)
-  cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation
-  decoder.zig       # RV32I + M + A + Zifencei + Zicsr + mret/wfi decoder
-  execute.zig       # instruction execution (trap-routing)
-  memory.zig        # RAM + MMIO dispatch (UART, CLINT, PLIC, halt, tohost)
-  csr.zig           # CSR read/write with field masks + privilege checks
-  trap.zig          # synchronous trap entry + mret exit
+  cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation; idleSpin (wfi)
+  decoder.zig       # RV32IMA + Zicsr + Zifencei + mret/sret/wfi/sfence.vma decoder
+  execute.zig       # instruction execution + trap-routing; wfi → cpu.idleSpin
+  memory.zig        # RAM + MMIO dispatch (UART, CLINT, PLIC, block, halt, tohost) + Sv32 translation
+  csr.zig           # M/S CSRs with field masks, privilege checks, live MTIP/SEIP from devices
+  trap.zig          # sync + async trap entry, mret/sret exit, medeleg/mideleg routing
   elf.zig           # ELF32 loader (entry + tohost symbol resolution)
-  trace.zig         # --trace one-line-per-instruction formatter
+  trace.zig         # --trace one-line-per-instruction formatter + interrupt/block markers
   devices/
-    uart.zig        # NS16550A UART
+    uart.zig        # NS16550A UART (TX + 256B RX FIFO + level IRQ via PLIC src 10)
     halt.zig        # test-only halt device at 0x00100000
-    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime) — comptime clock branch for wasm
-    plic.zig        # Platform-Level Interrupt Controller (Phase 3, in progress)
+    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime; raises mip.MTIP; comptime clock branch for wasm)
+    plic.zig        # Platform-Level Interrupt Controller (32 sources, S-context, claim/complete)
+    block.zig       # Simple MMIO block device (4 KB sectors, host-file-backed via --disk)
 demo/
   web_main.zig      # freestanding wasm entry — embeds hello.elf, exports run/outputPtr/outputLen + tracePtr/traceLen
 web/                # GitHub Pages root (https://cyyeh.github.io/ccc/web/)
@@ -194,30 +218,29 @@ web/                # GitHub Pages root (https://cyyeh.github.io/ccc/web/)
   README.md         # how the demo works + how to add another ELF
 tests/
   programs/
-    hello/          # RV32I hello-world encoder + expected output
-    mul_demo/       # RV32IMA demo encoder (prints "42\n")
-    trap_demo/      # Plan 1.C privilege demo (prints "trap ok\n")
-    kernel/         # Phase 2 kernel: boot.S, kmain.zig, sched, proc, vm,
-                    # syscall, trap, kprintf, mtimer, trampoline, uart,
-                    # linker.ld, verify_e2e.zig, user/ (U-mode payload)
-  fixtures/         # tiny hand-crafted ELF used only by elf.zig tests
-  riscv-tests/      # upstream submodule: riscv-software-src/riscv-tests
-  riscv-tests-shim/ # riscv_test.h + weak trap handlers for the test env
-  riscv-tests-p.ld  # linker script for the 'p' (physical/M-mode) environment
-  riscv-tests-s.ld  # linker script for the rv32si-p-* family (S-mode test body)
+    hello/             # Phase 1: RV32I hello-world encoder + Phase 1.D Zig-compiled hello.elf
+    mul_demo/          # Phase 1: RV32IMA demo encoder (prints "42\n")
+    trap_demo/         # Phase 1.C: privilege demo (prints "trap ok\n")
+    kernel/            # Phase 2: M-mode boot + S-mode kernel + embedded U-mode userprog
+    plic_block_test/   # Phase 3.A: asm-only integration test (CMD → IRQ → trap → claim → halt)
+  fixtures/             # tiny hand-crafted ELF used only by elf.zig tests
+  riscv-tests/          # upstream submodule: riscv-software-src/riscv-tests
+  riscv-tests-shim/     # weak handlers + riscv_test.h overrides for the shared test env
+  riscv-tests-p.ld      # linker script for the 'p' (physical/M-mode) environment
+  riscv-tests-s.ld      # linker script for the rv32si-p-* family (S-mode test body)
+scripts/
+  qemu-diff.sh           # debug aid: per-instruction trace diff vs qemu-system-riscv32
+  qemu-diff-kernel.sh    # same, scoped to kernel.elf (Phase 2 debugging)
+  stage-web.sh           # local dev: zig build wasm + copy ccc.wasm into web/
 docs/
   superpowers/
     specs/          # design docs per phase (brainstormed + approved)
     plans/          # implementation plans per phase
   references/       # notes on RISC-V specifics (traps, etc.)
-scripts/
-  qemu-diff.sh         # per-instruction trace diff vs. qemu-system-riscv32
-  qemu-diff-kernel.sh  # same, scoped to kernel.elf (Phase 2 debug aid)
-  stage-web.sh         # local dev: zig build wasm + copy ccc.wasm into web/
 .github/
   workflows/
     pages.yml       # CI: test on every PR; build wasm + deploy Pages on push to main
-build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests + wasm
+build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests + plic-block-test + wasm
 build.zig.zon       # pinned Zig version + dependencies
 ```
 

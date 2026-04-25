@@ -16,3 +16,5 @@ pub const elf = @import("elf.zig");
 pub const halt = @import("devices/halt.zig");
 pub const uart = @import("devices/uart.zig");
 pub const clint = @import("devices/clint.zig");
+pub const plic = @import("devices/plic.zig");
+pub const block = @import("devices/block.zig");
