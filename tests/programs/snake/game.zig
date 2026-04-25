@@ -117,6 +117,30 @@ pub const Game = struct {
         self.rng = x;
         return x;
     }
+
+    pub fn placeFood(self: *Game) void {
+        var attempts: u32 = 0;
+        while (attempts < MAX_SNAKE) : (attempts += 1) {
+            const r = self.nextRng();
+            const x: u8 = @intCast((r % PLAY_W) + 1);
+            const y: u8 = @intCast(((r >> 8) % PLAY_H) + 1);
+            var i: u16 = 0;
+            var idx: u16 = self.tail;
+            var on_snake = false;
+            while (i < self.len) : (i += 1) {
+                if (self.snake_x[idx] == x and self.snake_y[idx] == y) {
+                    on_snake = true;
+                    break;
+                }
+                idx = (idx + 1) % MAX_SNAKE;
+            }
+            if (!on_snake) {
+                self.food = .{ .x = x, .y = y };
+                return;
+            }
+        }
+        self.food = null;
+    }
 };
 
 test "Game.init: snake length 3, head at spawn, facing right" {
@@ -295,4 +319,29 @@ test "nextRng: deterministic with fixed seed" {
     g2.rng = 42;
     try std.testing.expectEqual(g1.nextRng(), g2.nextRng());
     try std.testing.expectEqual(g1.nextRng(), g2.nextRng());
+}
+
+test "placeFood: lands inside the playable area" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    g.rng = 1;
+    g.placeFood();
+    const f = g.food.?;
+    try std.testing.expect(f.x >= 1 and f.x <= PLAY_W);
+    try std.testing.expect(f.y >= 1 and f.y <= PLAY_H);
+}
+
+test "placeFood: never on the snake body" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    g.rng = 7;
+    var iter: u32 = 0;
+    while (iter < 100) : (iter += 1) {
+        g.placeFood();
+        const f = g.food.?;
+        var i: u16 = 0;
+        var idx: u16 = g.tail;
+        while (i < g.len) : (i += 1) {
+            try std.testing.expect(!(g.snake_x[idx] == f.x and g.snake_y[idx] == f.y));
+            idx = (idx + 1) % MAX_SNAKE;
+        }
+    }
 }
