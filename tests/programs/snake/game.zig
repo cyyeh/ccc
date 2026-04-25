@@ -107,6 +107,16 @@ pub const Game = struct {
         if (!reversal) self.dir = p;
         self.pending_dir = null;
     }
+
+    pub fn nextRng(self: *Game) u32 {
+        // xorshift32. Self.rng must be nonzero before the first call.
+        var x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        return x;
+    }
 };
 
 test "Game.init: snake length 3, head at spawn, facing right" {
@@ -266,4 +276,23 @@ test "advance: head into vacating tail cell is allowed (permissive variant)" {
     const r = g.advance();
     try std.testing.expectEqual(AdvanceResult.Moved, r);
     try std.testing.expectEqual(State.Playing, g.state);
+}
+
+test "nextRng: nonzero seed produces nonzero output" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    g.rng = 0x1234_5678;
+    const r1 = g.nextRng();
+    const r2 = g.nextRng();
+    try std.testing.expect(r1 != 0);
+    try std.testing.expect(r2 != 0);
+    try std.testing.expect(r1 != r2);
+}
+
+test "nextRng: deterministic with fixed seed" {
+    var g1 = Game.init(.{ .x = 16, .y = 7 });
+    var g2 = Game.init(.{ .x = 16, .y = 7 });
+    g1.rng = 42;
+    g2.rng = 42;
+    try std.testing.expectEqual(g1.nextRng(), g2.nextRng());
+    try std.testing.expectEqual(g1.nextRng(), g2.nextRng());
 }
