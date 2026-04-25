@@ -469,6 +469,15 @@ pub fn build(b: *std.Build) void {
     const snake_test_step = b.step("snake-test", "Run game.zig unit tests on native");
     snake_test_step.dependOn(&snake_test_run.step);
 
+    const run_snake_cmd = b.addSystemCommand(&.{
+        "bash",
+        "scripts/run-snake.sh",
+    });
+    run_snake_cmd.step.dependOn(b.getInstallStep());
+    run_snake_cmd.step.dependOn(&install_snake_elf.step);
+    const run_snake_step = b.step("run-snake", "Play snake.elf in the CLI (tty raw mode)");
+    run_snake_step.dependOn(&run_snake_cmd.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
