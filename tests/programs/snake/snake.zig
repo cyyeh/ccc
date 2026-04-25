@@ -69,6 +69,53 @@ fn uartPutDecimal(n: u32) void {
     }
 }
 
+const UART_RBR: u32 = 0x1000_0000;
+const UART_LSR: u32 = 0x1000_0005;
+
+fn drainOneInputByte() void {
+    const lsr: *volatile u8 = @ptrFromInt(UART_LSR);
+    if ((lsr.* & 0x01) == 0) return; // DR clear → no byte
+    const rbr: *volatile u8 = @ptrFromInt(UART_RBR);
+    const b = rbr.*;
+    handleInput(b);
+}
+
+fn readMtimeLow() u32 {
+    const p: *volatile u32 = @ptrFromInt(MTIME_LOW);
+    return p.*;
+}
+
+fn handleInput(b: u8) void {
+    if (b == 'q') {
+        quit_requested = true;
+        return;
+    }
+    if (b == ' ') {
+        // T16 implements restart. For now, ignore SPACE.
+        return;
+    }
+    const new_dir: ?game_mod.Dir = switch (b) {
+        'w', 'W' => .Up,
+        's', 'S' => .Down,
+        'a', 'A' => .Left,
+        'd', 'D' => .Right,
+        else => null,
+    };
+    if (new_dir) |d| {
+        if (game.state == .Playing) {
+            if (!game.game_started) {
+                // First key of a fresh game: seed RNG from mtime, place food, start.
+                var seed = readMtimeLow();
+                if (seed == 0) seed = 1; // xorshift32 degenerate from 0
+                game.rng = seed;
+                game.placeFood();
+                game.game_started = true;
+            }
+            game.pending_dir = d;
+        }
+    }
+}
+
 // Frame buffer: 15 rows × 32 cols. Filled by `paint`, written to UART
 // by `render`. Lives in .bss (zeroed by monitor.S).
 var frame: [game_mod.H][game_mod.W]u8 = undefined;
@@ -132,14 +179,15 @@ export fn snakeTrap() callconv(.c) void {
             .x = @as(u8, game_mod.PLAY_W) / 2 + 1,
             .y = @as(u8, game_mod.PLAY_H) / 2 + 1,
         });
-        // Seed RNG with a constant for now; T14 reseeds from mtime
-        // on first key press.
-        game.rng = 0xDEAD_BEEF;
-        game.placeFood();
         initialized = true;
+        render(); // initial frame so the player sees the empty board
+        advanceMtimecmp();
+        return;
     }
 
-    // T14 will drain input here.
+    drainOneInputByte();
+
+    if (quit_requested) halt();
 
     if (game.state == .Playing and game.game_started) {
         game.applyDirIfLegal();
