@@ -41,6 +41,21 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&test_run.step);
 
+    // Host-runnable tests for kernel-side modules whose algorithms can run
+    // outside the cross-compiled kernel (e.g., elfload's parser).
+    const kernel_host_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/elfload.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    kernel_host_tests.root_module.addAnonymousImport("minimal_elf_fixture", .{
+        .root_source_file = b.path("tests/fixtures/minimal_elf.zig"),
+    });
+    const kernel_host_tests_run = b.addRunArtifact(kernel_host_tests);
+    test_step.dependOn(&kernel_host_tests_run.step);
+
     // === Hand-crafted hello world demo (Task 17) ===
     // The encoder is a host tool that emits a raw RV32I binary.
     const hello_encoder = b.addExecutable(.{
