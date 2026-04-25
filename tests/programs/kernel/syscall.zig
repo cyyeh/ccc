@@ -65,13 +65,13 @@ fn sysExit(status: u32) noreturn {
         while (true) asm volatile ("wfi");
     }
 
-    // Non-PID-1 proc: yield back to scheduler. 3.C will reap zombies via
-    // wait(); for 3.B's multi-proc demo, the scheduler will keep cycling
-    // between PID 1 and PID 2 (now Zombie, skipped) until PID 1 exits and
-    // halts.
-    proc.sched();
-    // Should not return — but if it does, panic.
-    kprintf.panic("sysExit: zombie woke up", .{});
+    // Non-PID-1 proc: yield back to scheduler forever. 3.C will reap
+    // zombies via wait(); for 3.B's multi-proc demo, the scheduler keeps
+    // cycling between PID 1 and PID 2 (now Zombie, skipped) until PID 1
+    // exits and halts. Loop here defensively so a future 3.C scheduler
+    // tweak that allows Zombie wakeups can't accidentally execute past
+    // sysExit.
+    while (true) proc.sched();
 }
 
 fn sysYield() u32 {

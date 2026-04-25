@@ -152,13 +152,13 @@ pub fn alloc() ?*Process {
 }
 
 pub fn free(p: *Process) void {
-    if (p.kstack != 0) {
-        page_alloc.free(p.kstack);
-        p.kstack = 0;
-    }
-    // pgdir teardown deferred to 3.C; 3.B never calls free() in
-    // expected paths.
-    p.* = std.mem.zeroes(Process);
+    _ = p;
+    // 3.B has no caller for proc.free; full teardown (kstack + pgdir +
+    // user pages) is a 3.C deliverable alongside wait()/exit() reaping.
+    // We panic loudly here so a future 3.C accident that calls free
+    // before its body lands surfaces immediately rather than silently
+    // leaking pages.
+    kprintf.panic("proc.free: unimplemented in 3.B (lands in 3.C)", .{});
 }
 
 var next_pid: u32 = 1;
@@ -178,7 +178,10 @@ fn nextPid() u32 {
 extern fn s_return_to_user(tf: *trap.TrapFrame) noreturn;
 
 export fn forkret() callconv(.c) noreturn {
-    const p = cur();
+    // The scheduler set cpu.cur before swtch'ing into us; this assertion
+    // catches any future bug that swtch's into a fresh proc with cpu.cur
+    // still null.
+    const p = cpu.cur orelse @import("kprintf.zig").panic("forkret: cpu.cur is null", .{});
     s_return_to_user(&p.tf);
 }
 
