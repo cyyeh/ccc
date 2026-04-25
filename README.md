@@ -64,6 +64,7 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
+| `zig build wasm` | Cross-compile `demo/web_main.zig` to `wasm32-freestanding` (installed to `zig-out/web/ccc.wasm`; powers the live web demo) |
 
 ## Running programs
 
@@ -88,6 +89,37 @@ synchronous traps with delegation, async interrupt delivery, Sv32
 paging. `--trace` renders a `[M]`/`[S]`/`[U]` privilege column, plus
 a synthetic `--- interrupt N (<name>) taken in <old>, now <new> ---`
 marker on async trap entry.
+
+## Web demo
+
+Live: [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
+
+The browser demo cross-compiles the same emulator core
+(`cpu.zig` / `memory.zig` / `elf.zig` / `devices/*.zig`) to
+`wasm32-freestanding` via a thin entry point at `demo/web_main.zig`
+(plus a one-file `src/lib.zig` shim that exposes the emulator as a
+single named module). `hello.elf` is embedded into the wasm at
+compile time; the JS side fetches `ccc.wasm`, instantiates it with
+no imports, calls a single `run(trace) -> i32` export, and copies
+the captured UART output out of linear memory via `outputPtr()` /
+`outputLen()`. Zero JS dependencies, zero WASM imports.
+
+The page renders a terminal-style session — typed `$ ./ccc hello.elf`
+prompt followed by the captured `hello world` output. A
+`show instruction trace` checkbox enables `cpu.trace_writer` and
+exposes the per-instruction CPU log in a collapsible panel below the
+output.
+
+Local dev:
+
+    ./scripts/stage-web.sh              # zig build wasm + copy into web/
+    python3 -m http.server -d . 8000
+    open http://localhost:8000/web/
+
+CI: `.github/workflows/pages.yml` runs the existing `zig build test`
++ every `e2e-*` step on every PR; on push to `main` it builds the
+wasm and deploys the deck + demo to Pages. Pages source must be set
+to "GitHub Actions" in repo settings (one-time manual step).
 
 ## Status
 
@@ -139,6 +171,7 @@ Next: **Phase 3 — multi-process OS + filesystem + shell.**
 ```
 src/
   main.zig          # CLI entry point (ELF default, --raw fallback)
+  lib.zig           # re-export shim consumed by the wasm build (one named module)
   cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation
   decoder.zig       # RV32I + M + A + Zifencei + Zicsr + mret/wfi decoder
   execute.zig       # instruction execution (trap-routing)
@@ -150,8 +183,15 @@ src/
   devices/
     uart.zig        # NS16550A UART
     halt.zig        # test-only halt device at 0x00100000
-    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime)
+    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime) — comptime clock branch for wasm
     plic.zig        # Platform-Level Interrupt Controller (Phase 3, in progress)
+demo/
+  web_main.zig      # freestanding wasm entry — embeds hello.elf, exports run/outputPtr/outputLen + tracePtr/traceLen
+web/                # GitHub Pages root (https://cyyeh.github.io/ccc/web/)
+  index.html        # demo page (terminal-style typed-command UI + optional trace panel)
+  demo.css          # palette matches the deck
+  demo.js           # ~80 lines: instantiate, type cmd, call run(), copy output, render trace
+  README.md         # how the demo works + how to add another ELF
 tests/
   programs/
     hello/          # RV32I hello-world encoder + expected output
@@ -173,7 +213,11 @@ docs/
 scripts/
   qemu-diff.sh         # per-instruction trace diff vs. qemu-system-riscv32
   qemu-diff-kernel.sh  # same, scoped to kernel.elf (Phase 2 debug aid)
-build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests
+  stage-web.sh         # local dev: zig build wasm + copy ccc.wasm into web/
+.github/
+  workflows/
+    pages.yml       # CI: test on every PR; build wasm + deploy Pages on push to main
+build.zig           # build graph: ccc + tests + demos + fixtures + riscv-tests + wasm
 build.zig.zon       # pinned Zig version + dependencies
 ```
 
