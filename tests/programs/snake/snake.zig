@@ -91,7 +91,12 @@ fn handleInput(b: u8) void {
         return;
     }
     if (b == ' ') {
-        // T16 implements restart. For now, ignore SPACE.
+        if (game.state == .GameOver) {
+            game.restart(.{
+                .x = @as(u8, game_mod.PLAY_W) / 2 + 1,
+                .y = @as(u8, game_mod.PLAY_H) / 2 + 1,
+            });
+        }
         return;
     }
     const new_dir: ?game_mod.Dir = switch (b) {

@@ -134,6 +134,18 @@ pub const Game = struct {
         return x;
     }
 
+    pub fn restart(self: *Game, spawn: Cell) void {
+        const saved_rng = self.rng;
+        self.* = Game.init(spawn);
+        self.rng = saved_rng;
+        // Re-place food immediately if rng is seeded — otherwise wait
+        // until first key press in the new game.
+        if (saved_rng != 0) {
+            self.game_started = true;
+            self.placeFood();
+        }
+    }
+
     pub fn placeFood(self: *Game) void {
         var attempts: u32 = 0;
         while (attempts < MAX_SNAKE) : (attempts += 1) {
@@ -380,4 +392,19 @@ test "advance onto food: score++, len++, food respawned, tail stays" {
     try std.testing.expect(g.food != null);
     // New food is not at the eaten position.
     try std.testing.expect(!(g.food.?.x == 17 and g.food.?.y == 7));
+}
+
+test "restart: preserves rng, resets score/len/state" {
+    var g = Game.init(.{ .x = 16, .y = 7 });
+    g.rng = 0xCAFE;
+    g.score = 42;
+    g.len = 8;
+    g.state = .GameOver;
+    g.restart(.{ .x = 16, .y = 7 });
+    // rng was seeded before restart: it should remain nonzero (placeFood advances it).
+    try std.testing.expect(g.rng != 0);
+    try std.testing.expectEqual(@as(u32, 0), g.score);
+    try std.testing.expectEqual(@as(u16, 3), g.len);
+    try std.testing.expectEqual(State.Playing, g.state);
+    try std.testing.expect(g.food != null);
 }
