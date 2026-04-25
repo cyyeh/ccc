@@ -25,6 +25,15 @@ const OUTPUT_BUF_SIZE: usize = 16 * 1024;
 var output_buf: [OUTPUT_BUF_SIZE]u8 = undefined;
 var output_writer: std.Io.Writer = .fixed(&output_buf);
 
+// Trace buffer: per-instruction CPU log when run(trace=1). Hello.elf
+// runs ~5-50K instructions and each line is ~100 bytes; 8 MiB is
+// comfortable headroom. Trace writes silently no-op once the buffer
+// fills (cpu.zig catches the WriteFailed), so the CPU run never
+// aborts — you just see a truncated trace.
+const TRACE_BUF_SIZE: usize = 8 * 1024 * 1024;
+var trace_buf: [TRACE_BUF_SIZE]u8 = undefined;
+var trace_writer: std.Io.Writer = .fixed(&trace_buf);
+
 // hello.elf doesn't poll mtime, so a constant clock is sufficient.
 fn zeroClock() i128 {
     return 0;
@@ -41,8 +50,17 @@ export fn outputLen() u32 {
     return @intCast(output_writer.end);
 }
 
-export fn run() i32 {
+export fn tracePtr() [*]const u8 {
+    return &trace_buf;
+}
+
+export fn traceLen() u32 {
+    return @intCast(trace_writer.end);
+}
+
+export fn run(trace: i32) i32 {
     output_writer.end = 0;
+    trace_writer.end = 0;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.wasm_allocator);
     defer arena.deinit();
@@ -59,8 +77,12 @@ export fn run() i32 {
     mem.tohost_addr = result.tohost_addr;
 
     var cpu = cpu_mod.Cpu.init(&mem, result.entry);
+    if (trace != 0) {
+        cpu.trace_writer = &trace_writer;
+    }
     cpu.run() catch return -3;
 
     output_writer.flush() catch {};
+    if (cpu.trace_writer) |tw| tw.flush() catch {};
     return @intCast(halt.exit_code orelse 0);
 }

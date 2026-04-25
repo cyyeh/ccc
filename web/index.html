@@ -15,18 +15,27 @@
 
     <div class="controls">
       <button class="run" id="run-btn" disabled>loading…</button>
+      <label class="trace-toggle">
+        <input type="checkbox" id="trace-toggle">
+        <span>show instruction trace</span>
+      </label>
     </div>
     <div class="status" id="status">fetching ccc.wasm…</div>
     <pre class="output" id="output"></pre>
 
+    <details class="trace-details" id="trace-details" hidden>
+      <summary>instruction trace <span class="trace-meta" id="trace-meta"></span></summary>
+      <pre class="trace" id="trace"></pre>
+    </details>
+
     <p class="explain">
-      This page fetched <code>ccc.wasm</code> (a few hundred KB of WebAssembly
-      with <code>hello.elf</code> embedded at compile time), instantiated it
-      with no imports, and called the wasm <code>run()</code> export. UART
-      output was captured into a buffer inside wasm linear memory; this page
-      copied it out via <code>outputPtr()</code> and <code>outputLen()</code>.
-      No server, no remote execution, no JavaScript dependencies — your
-      browser is the RISC-V machine.
+      This page fetched <code>ccc.wasm</code> (<span id="wasm-size">…</span>
+      of WebAssembly with <code>hello.elf</code> embedded at compile time),
+      instantiated it with no imports, and called the wasm <code>run()</code>
+      export. UART output was captured into a buffer inside wasm linear memory;
+      this page copied it out via <code>outputPtr()</code> and
+      <code>outputLen()</code>. No server, no remote execution, no JavaScript
+      dependencies — your browser is the RISC-V machine.
     </p>
 
     <div class="footer-links">

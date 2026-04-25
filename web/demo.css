@@ -126,3 +126,56 @@ pre.output .meta   { color: var(--dim); }
   text-decoration: none;
 }
 .footer-links a:hover { color: var(--fg); }
+
+/* ----- trace toggle + trace block ----- */
+
+.trace-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  cursor: pointer;
+  user-select: none;
+}
+.trace-toggle input { cursor: pointer; }
+.trace-toggle:hover { color: var(--fg); }
+
+.trace-details {
+  margin: 0 0 32px;
+}
+.trace-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  padding: 6px 0;
+  list-style: none;
+}
+.trace-details summary::-webkit-details-marker { display: none; }
+.trace-details summary::before {
+  content: "▸ ";
+  color: var(--accent);
+}
+.trace-details[open] summary::before { content: "▾ "; }
+.trace-details summary:hover { color: var(--fg); }
+.trace-details .trace-meta {
+  color: var(--dim);
+  margin-left: 6px;
+}
+
+pre.trace {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 16px 20px;
+  height: 480px;
+  overflow: auto;
+  margin: 8px 0 0;
+  white-space: pre;
+}
