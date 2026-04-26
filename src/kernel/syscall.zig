@@ -167,6 +167,15 @@ fn sysLseek(fd: u32, off_signed: u32, whence: u32) i32 {
     return file.lseek(idx, off, whence);
 }
 
+/// 80 fstat(fd, statbuf). Writes Stat { type, size } (8 bytes) via SUM=1.
+/// Returns 0 / -1.
+fn sysFstat(fd: u32, stat_user_va: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const idx = proc.cur().ofile[fd];
+    if (idx == 0) return -1;
+    return file.fstat(idx, stat_user_va);
+}
+
 /// 5000 set_fg_pid: shell-only API for telling the console what process
 /// `^C` should target. 3.C accepts and discards; 3.E (when the console
 /// line discipline lands) wires this to the actual fg_pid global.
@@ -190,6 +199,7 @@ pub fn dispatch(tf: *trap.TrapFrame) void {
         62 => tf.a0 = @bitCast(sysLseek(tf.a0, tf.a1, tf.a2)),
         63 => tf.a0 = @bitCast(sysRead(tf.a0, tf.a1, tf.a2)),
         64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
+        80 => tf.a0 = @bitCast(sysFstat(tf.a0, tf.a1)),
         93 => sysExit(tf.a0),
         124 => tf.a0 = sysYield(),
         172 => tf.a0 = sysGetpid(),
