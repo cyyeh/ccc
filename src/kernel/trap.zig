@@ -129,23 +129,55 @@ fn clearSipSsip() void {
     );
 }
 
+/// S-from-S trap dispatcher. Installed via stvec only while sched.scheduler
+/// holds its SIE window open. We expect device-IRQ + spurious timer SSI;
+/// both clear themselves and don't yield. SPIE is forced to 0 so the
+/// pending csrc closes the window cleanly on sret.
+export fn s_kernel_trap_dispatch() callconv(.c) void {
+    const scause = readScause();
+    const is_interrupt = (scause >> 31) & 1 == 1;
+    const cause = scause & 0x7fff_ffff;
+
+    // SPP must be S here (caller is the kernel SIE window). Clear SPIE
+    // so the post-sret csrc closes the window without re-trapping on
+    // another pending IRQ.
+    asm volatile ("csrc sstatus, %[m]"
+        :
+        : [m] "r" (@as(u32, 1 << 5)),
+        : .{ .memory = true });
+
+    if (is_interrupt and cause == 1) {
+        clearSipSsip();
+        return;
+    }
+    if (is_interrupt and cause == 9) {
+        const irq = plic.claim();
+        switch (irq) {
+            plic.IRQ_BLOCK => block.isr(),
+            else => kprintf.panic("unhandled PLIC src in kernel trap: {d}", .{irq}),
+        }
+        plic.complete(irq);
+        return;
+    }
+    kprintf.panic("unexpected kernel trap: scause={x}", .{scause});
+}
+
 export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
     const scause = readScause();
     const is_interrupt = (scause >> 31) & 1 == 1;
     const cause = scause & 0x7fff_ffff;
 
-    // If the trap originated from S-mode (SPP=S), it interrupted a
-    // scheduler SIE window. Clear SPIE so sret restores SIE=0 and the
-    // window's csrc can execute without immediately re-trapping on
-    // another pending interrupt (e.g. perpetual timer SSI).
     const sstatus_val = asm volatile ("csrr %[v], sstatus"
         : [v] "=r" (-> u32),
     );
     if ((sstatus_val & (1 << 8)) != 0) {
-        asm volatile ("csrc sstatus, %[m]"
-            :
-            : [m] "r" (@as(u32, 1 << 5)),
-            : .{ .memory = true });
+        // S-from-S into the user vector means stvec was wrong at trap
+        // time. Should never happen — the scheduler swaps to
+        // s_kernel_trap_entry around its SIE window.
+        const satp_val = asm volatile ("csrr %[v], satp"
+            : [v] "=r" (-> u32),
+        );
+        kprintf.panic("S-from-S user vector: scause={x} stval={x} sepc={x} satp={x}", .{ scause, readStval(), tf.sepc, satp_val });
     }
 
     if (!is_interrupt and cause == 8) {
@@ -207,8 +239,11 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
 
     // Synchronous faults — kernel-origin bugs in Phase 2. Panic with
     // scause + stval so the cause is visible.
+    const satp_val = asm volatile ("csrr %[v], satp"
+        : [v] "=r" (-> u32),
+    );
     kprintf.panic(
-        "unhandled S-mode trap: scause={x} stval={x} sepc={x}",
-        .{ scause, readStval(), tf.sepc },
+        "unhandled S-mode trap: scause={x} stval={x} sepc={x} satp={x} spp_s={d}",
+        .{ scause, readStval(), tf.sepc, satp_val, @intFromBool((sstatus_val & (1 << 8)) != 0) },
     );
 }

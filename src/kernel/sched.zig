@@ -13,6 +13,9 @@
 
 const proc = @import("proc.zig");
 
+extern fn s_trap_entry() void;
+extern fn s_kernel_trap_entry() void;
+
 pub fn scheduler() noreturn {
     var start: u32 = 0; // round-robin start index: advances past last-picked slot
     while (true) {
@@ -73,20 +76,26 @@ pub fn scheduler() noreturn {
         }
         // Nothing runnable but something is alive (embryo / sleeping /
         // zombie). Open a one-instruction SIE window so a pending PLIC
-        // block IRQ (or timer SSI) can be delivered. The xv6 invariant
-        // is that S-mode runs with interrupts disabled; we restore that
-        // immediately after the window. The interrupt fires at the start
-        // of the `csrc` step (check_interrupt runs before each fetch),
-        // trap.enter_interrupt saves sepc = &csrc, the ISR runs (wakeup),
-        // and sret returns to the `csrc` instruction — which then
-        // re-disables SIE. On the next loop iteration the newly-Runnable
-        // proc is picked and swtch'd into.
+        // block IRQ (or timer SSI) can be delivered. While the window
+        // is open, swap stvec to s_kernel_trap_entry — the user vector
+        // would clobber the sleeping proc's tf and kstack. The kernel
+        // vector saves caller-saved regs on the current (scheduler)
+        // stack, runs s_kernel_trap_dispatch, restores, and srets back
+        // here. SPIE is forced to 0 by the dispatcher so the trailing
+        // csrc closes the window without re-trapping on a still-pending
+        // timer SSI.
+        const kvec: u32 = @intCast(@intFromPtr(&s_kernel_trap_entry));
+        const uvec: u32 = @intCast(@intFromPtr(&s_trap_entry));
         const SSTATUS_SIE: u32 = 1 << 1;
         asm volatile (
+            \\ csrw stvec, %[k]
             \\ csrs sstatus, %[b]
             \\ csrc sstatus, %[b]
+            \\ csrw stvec, %[u]
             :
-            : [b] "r" (SSTATUS_SIE),
+            : [k] "r" (kvec),
+              [u] "r" (uvec),
+              [b] "r" (SSTATUS_SIE),
             : .{ .memory = true });
     }
 }
