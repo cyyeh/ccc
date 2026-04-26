@@ -150,6 +150,23 @@ fn sysClose(fd: u32) i32 {
     return 0;
 }
 
+/// 63 read(fd, buf, n). Returns bytes / 0 (EOF) / -1.
+fn sysRead(fd: u32, buf_user_va: u32, n: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const idx = proc.cur().ofile[fd];
+    if (idx == 0) return -1;
+    return file.read(idx, buf_user_va, n);
+}
+
+/// 62 lseek(fd, off, whence). Returns new offset / -1.
+fn sysLseek(fd: u32, off_signed: u32, whence: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const idx = proc.cur().ofile[fd];
+    if (idx == 0) return -1;
+    const off: i32 = @bitCast(off_signed);
+    return file.lseek(idx, off, whence);
+}
+
 /// 5000 set_fg_pid: shell-only API for telling the console what process
 /// `^C` should target. 3.C accepts and discards; 3.E (when the console
 /// line discipline lands) wires this to the actual fg_pid global.
@@ -170,6 +187,8 @@ pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
         56 => tf.a0 = @bitCast(sysOpenat(tf.a0, tf.a1, tf.a2)),
         57 => tf.a0 = @bitCast(sysClose(tf.a0)),
+        62 => tf.a0 = @bitCast(sysLseek(tf.a0, tf.a1, tf.a2)),
+        63 => tf.a0 = @bitCast(sysRead(tf.a0, tf.a1, tf.a2)),
         64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
         93 => sysExit(tf.a0),
         124 => tf.a0 = sysYield(),
