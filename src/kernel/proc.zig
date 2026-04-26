@@ -384,6 +384,20 @@ pub fn fork() i32 {
 pub fn exit(status: i32) noreturn {
     const p = cur();
 
+    // Phase 3.D: close every open fd and release cwd.
+    var fi: u32 = 0;
+    while (fi < NOFILE) : (fi += 1) {
+        if (p.ofile[fi] != 0) {
+            file.close(p.ofile[fi]);
+            p.ofile[fi] = 0;
+        }
+    }
+    if (p.cwd != 0) {
+        const ip: *inode.InMemInode = @ptrFromInt(p.cwd);
+        inode.iput(ip);
+        p.cwd = 0;
+    }
+
     // Reparent every child of `p` to PID 1 (init). PID 1 is hard-wired
     // to slot 0; if 3.D ever changes that, this lookup needs to scan
     // ptable for pid==1.
