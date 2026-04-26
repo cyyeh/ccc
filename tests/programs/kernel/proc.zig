@@ -217,3 +217,55 @@ pub fn yield() void {
     sched();
     p.state = .Running;
 }
+
+const SSTATUS_SIE: u32 = 1 << 1;
+
+inline fn disableSie() void {
+    asm volatile ("csrc sstatus, %[b]"
+        :
+        : [b] "r" (SSTATUS_SIE),
+        : .{ .memory = true }
+    );
+}
+
+/// xv6-style sleep on `chan` (a u32 used purely as identity).
+///
+/// In 3.C, sleep is only ever invoked from a syscall handler — and trap
+/// entry sets `sstatus.SIE = 0` automatically — so the explicit
+/// `disableSie()` here is defensive. Even so, we keep it: if 3.E (or
+/// later) adds a non-trap sleeper (e.g., a kernel idle thread), the
+/// call-site stays correct without revisiting sleep.
+///
+/// We deliberately do NOT re-enable SIE on return. The natural
+/// `s_return_to_user → sret` rotation (`SPIE → SIE`) restores
+/// `SIE = 1` for U-mode. Re-enabling SIE here would leak `SIE = 1`
+/// back into the trap-handler's residual instructions (killed-check +
+/// s_return_to_user), where a freshly-fired SSI could nest into
+/// trap.zig and clobber the trapframe. (xv6's invariant: S-mode runs
+/// with interrupts disabled; only U-mode runs with them on.)
+pub fn sleep(chan: u32) void {
+    const p = cur();
+
+    disableSie();
+    p.chan = chan;
+    p.state = .Sleeping;
+    sched();
+
+    // We're back. Clear chan; SIE intentionally stays disabled.
+    p.chan = 0;
+}
+
+/// Wake every Sleeping process that's blocked on `chan`. Idempotent —
+/// non-Sleeping procs and unrelated chans are skipped silently. Caller
+/// holds no special interrupt state; this is safe to call from both
+/// process context (e.g. proc.exit waking parent) and ISR context
+/// (3.D's block-device ISR waking the bufcache waiter).
+pub fn wakeup(chan: u32) void {
+    var i: u32 = 0;
+    while (i < NPROC) : (i += 1) {
+        const p = &ptable[i];
+        if (p.state == .Sleeping and p.chan == chan) {
+            p.state = .Runnable;
+        }
+    }
+}
