@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move `src/*` → `src/emulator/*`, `tests/programs/kernel/` → `src/kernel/`, `tests/programs/{hello,snake,mul_demo,trap_demo,plic_block_test}/` → `programs/*`, and consolidate the three host-side e2e verifiers at `tests/e2e/{kernel,multiproc,snake}.zig`. `demo/` is unchanged. Every `zig build *` target stays green at every chunk boundary.
+**Goal:** Move `src/*` → `src/emulator/*`, `tests/programs/kernel/` → `src/kernel/`, `tests/programs/{hello,snake,mul_demo,trap_demo,plic_block_test}/` → `programs/*`, and consolidate the four host-side e2e verifiers at `tests/e2e/{kernel,multiproc,fork,snake}.zig`. `demo/` is unchanged. Every `zig build *` target stays green at every chunk boundary.
+
+**Note (amended 2026-04-26):** Plan revised after rebasing onto current `main` which now includes PR #14 ("Phase 3 Plan C: fork/exec/wait/exit/kill-flag"). PR #14 added `tests/programs/kernel/{vm,proc,syscall,trap}.zig` (already siblings, no extra plan work), `tests/programs/kernel/user/{hello,init}.zig` (also siblings under user/), and a third host-side verifier `tests/programs/kernel/fork_verify_e2e.zig` (extracted to `tests/e2e/fork.zig` in Chunk 2). New build targets `e2e-fork` and `kernel-fork` are added to the verification gate.
 
 **Architecture:** Path-only refactor in four committed chunks. Internal `@import("./...")` calls between sibling files survive every move because they're relative. The wasm build's `@import("ccc")` resolves through `build.zig`'s named module — only `build.zig` changes for that. Host-side e2e verifiers import only `std` and spawn the emulator as a subprocess, so their renames are purely path changes. Each chunk: `git mv` the files, edit `build.zig`, run the full verification gate, commit.
 
@@ -22,19 +24,21 @@ src/
     csr.zig  trap.zig  elf.zig  trace.zig
     devices/
       uart.zig  clint.zig  plic.zig  block.zig  halt.zig
-  kernel/                   # was tests/programs/kernel/ (minus the e2e verifiers)
+  kernel/                   # was tests/programs/kernel/ (minus the host-side e2e verifiers)
     kmain.zig
     boot.S  trampoline.S  mtimer.S  swtch.S
-    elfload.zig
+    elfload.zig  vm.zig  proc.zig  sched.zig  syscall.zig  trap.zig
+    page_alloc.zig  kprintf.zig  uart.zig
     linker.ld
     user/
-      userprog.zig  userprog2.zig  user_linker.ld
+      userprog.zig  userprog2.zig  init.zig  hello.zig  user_linker.ld
 programs/                   # NEW top-level dir
   hello/  snake/  mul_demo/  trap_demo/  plic_block_test/
 tests/
   e2e/                      # NEW
     kernel.zig              # was tests/programs/kernel/verify_e2e.zig
     multiproc.zig           # was tests/programs/kernel/multiproc_verify_e2e.zig
+    fork.zig                # was tests/programs/kernel/fork_verify_e2e.zig (PR #14)
     snake.zig               # was tests/programs/snake/verify_e2e.zig
   fixtures/                 # unchanged
   riscv-tests/              # unchanged (submodule)
@@ -45,12 +49,12 @@ demo/                       # unchanged (kept top-level per spec amendment)
 web/  scripts/  docs/  .github/  build.zig  build.zig.zon  README.md
 ```
 
-**Build.zig path changes (33 strings total):**
+**Build.zig path changes (41 strings total, post-PR #14):**
 
 | Chunk | Count | Change |
 |---|---|---|
 | 2 (Chunk 1) | 2 | `src/main.zig` → `src/emulator/main.zig`; `src/lib.zig` → `src/emulator/lib.zig` |
-| 3 (Chunk 2) | 15 | 13 prefix `tests/programs/kernel/` → `src/kernel/`; 2 verifier paths → `tests/e2e/{kernel,multiproc}.zig` |
+| 3 (Chunk 2) | 23 | 20 prefix `tests/programs/kernel/` → `src/kernel/`; 3 verifier paths → `tests/e2e/{kernel,multiproc,fork}.zig` |
 | 4 (Chunk 3) | 16 | 1 verifier path → `tests/e2e/snake.zig`; 15 prefix `tests/programs/` → `programs/` |
 
 No Zig `@import` edits are required:
@@ -75,11 +79,13 @@ zig build e2e-kernel && \
 zig build e2e-multiproc-stub && \
 zig build e2e-plic-block && \
 zig build e2e-snake && \
+zig build e2e-fork && \
 zig build riscv-tests && \
 zig build wasm && \
 zig build hello-elf && \
 zig build kernel-elf && \
 zig build kernel-multi && \
+zig build kernel-fork && \
 zig build snake-elf && \
 zig build plic-block-test && \
 zig build fixtures
@@ -118,7 +124,7 @@ All subsequent `bash` commands run with `cwd = /Users/cyyeh/Desktop/ccc/.worktre
 
 ```bash
 cd /Users/cyyeh/Desktop/ccc/.worktrees/folder-restructure && \
-zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build snake-elf && zig build plic-block-test && zig build fixtures
+zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build e2e-fork && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build kernel-fork && zig build snake-elf && zig build plic-block-test && zig build fixtures
 ```
 
 Expected: every command exits 0. If any fails, the failure pre-existed — STOP and surface to the user; do not begin the move.
@@ -194,7 +200,7 @@ Expected: only two matches, both with the `src/emulator/` prefix:
 
 ```bash
 cd /Users/cyyeh/Desktop/ccc/.worktrees/folder-restructure && \
-zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build snake-elf && zig build plic-block-test && zig build fixtures
+zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build e2e-fork && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build kernel-fork && zig build snake-elf && zig build plic-block-test && zig build fixtures
 ```
 
 Expected: every command exits 0.
@@ -221,8 +227,8 @@ EOF
 ## Task 3: Chunk 2 — Move kernel + extract e2e verifiers
 
 **Files:**
-- Move: `tests/programs/kernel/` → `src/kernel/` (then split off two verifier files to `tests/e2e/`)
-- Modify: `build.zig` (15 `b.path()` strings)
+- Move: `tests/programs/kernel/` → `src/kernel/` (then split off three verifier files to `tests/e2e/`)
+- Modify: `build.zig` (23 `b.path()` strings)
 
 - [ ] **Step 1: Move the kernel directory and split off the e2e verifiers**
 
@@ -232,13 +238,14 @@ mkdir -p tests/e2e && \
 git mv tests/programs/kernel src/kernel && \
 git mv src/kernel/verify_e2e.zig tests/e2e/kernel.zig && \
 git mv src/kernel/multiproc_verify_e2e.zig tests/e2e/multiproc.zig && \
+git mv src/kernel/fork_verify_e2e.zig tests/e2e/fork.zig && \
 ls src/kernel src/kernel/user tests/e2e tests/programs
 ```
 
 Expected from the final `ls`:
-- `src/kernel/`: `boot.S elfload.zig kmain.zig linker.ld mtimer.S swtch.S trampoline.S user`
-- `src/kernel/user/`: `user_linker.ld userprog.zig userprog2.zig`
-- `tests/e2e/`: `kernel.zig multiproc.zig`
+- `src/kernel/`: 4 `.S` files (`boot.S mtimer.S swtch.S trampoline.S`), 10 `.zig` files (`elfload.zig kmain.zig kprintf.zig page_alloc.zig proc.zig sched.zig syscall.zig trap.zig uart.zig vm.zig`), `linker.ld`, and `user/`
+- `src/kernel/user/`: `hello.zig init.zig user_linker.ld userprog.zig userprog2.zig`
+- `tests/e2e/`: `fork.zig kernel.zig multiproc.zig`
 - `tests/programs/`: `hello mul_demo plic_block_test snake trap_demo` (no `kernel/`)
 
 - [ ] **Step 2: Update build.zig — kernel verifier path (single proc)**
@@ -250,7 +257,7 @@ old_string: b.path("tests/programs/kernel/verify_e2e.zig")
 new_string: b.path("tests/e2e/kernel.zig")
 ```
 
-(Single occurrence at line 428.)
+(Single occurrence; current line ~574.)
 
 - [ ] **Step 3: Update build.zig — kernel verifier path (multiproc)**
 
@@ -261,9 +268,20 @@ old_string: b.path("tests/programs/kernel/multiproc_verify_e2e.zig")
 new_string: b.path("tests/e2e/multiproc.zig")
 ```
 
-(Single occurrence at line 445.)
+(Single occurrence; current line ~591.)
 
-- [ ] **Step 4: Update build.zig — bulk-rename remaining kernel paths**
+- [ ] **Step 4: Update build.zig — kernel verifier path (fork)**
+
+Use `Edit` on `build.zig`:
+
+```
+old_string: b.path("tests/programs/kernel/fork_verify_e2e.zig")
+new_string: b.path("tests/e2e/fork.zig")
+```
+
+(Single occurrence; current line ~608.)
+
+- [ ] **Step 5: Update build.zig — bulk-rename remaining kernel paths**
 
 Use `Edit` on `build.zig` with `replace_all: true`:
 
@@ -273,19 +291,9 @@ new_string: src/kernel/
 replace_all: true
 ```
 
-This replaces every remaining occurrence of the prefix in:
-- `tests/programs/kernel/elfload.zig` (line 48)
-- `tests/programs/kernel/boot.S` (229)
-- `tests/programs/kernel/trampoline.S` (239)
-- `tests/programs/kernel/mtimer.S` (249)
-- `tests/programs/kernel/swtch.S` (259)
-- `tests/programs/kernel/user/userprog.zig` (265)
-- `tests/programs/kernel/user/user_linker.ld` (284, 325)
-- `tests/programs/kernel/user/userprog2.zig` (306)
-- `tests/programs/kernel/kmain.zig` (348, 362)
-- `tests/programs/kernel/linker.ld` (388, 413)
+This replaces every remaining occurrence of the prefix (20 strings) — kernel `.zig`/`.S`/`linker.ld` paths plus 5 `user/*` paths and the `user/user_linker.ld` repeated for each user-elf target.
 
-- [ ] **Step 5: Confirm no `tests/programs/kernel` references remain**
+- [ ] **Step 6: Confirm no `tests/programs/kernel` references remain**
 
 ```bash
 cd /Users/cyyeh/Desktop/ccc/.worktrees/folder-restructure && \
@@ -294,16 +302,16 @@ grep -n 'tests/programs/kernel' build.zig
 
 Expected: no output.
 
-- [ ] **Step 6: Run the verification gate**
+- [ ] **Step 7: Run the verification gate**
 
 ```bash
 cd /Users/cyyeh/Desktop/ccc/.worktrees/folder-restructure && \
-zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build snake-elf && zig build plic-block-test && zig build fixtures
+zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build e2e-fork && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build kernel-fork && zig build snake-elf && zig build plic-block-test && zig build fixtures
 ```
 
 Expected: every command exits 0.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 cd /Users/cyyeh/Desktop/ccc/.worktrees/folder-restructure && \
@@ -313,8 +321,8 @@ refactor: move kernel to src/kernel; extract e2e verifiers to tests/e2e
 
 The kernel becomes a peer of src/emulator/ since it's a Phase 2+
 deliverable, not a test. Host-side e2e verifiers consolidate at
-tests/e2e/{kernel,multiproc}.zig. Verifiers only import std and spawn
-ccc as a subprocess — no @import edits required.
+tests/e2e/{kernel,multiproc,fork}.zig. Verifiers only import std and
+spawn ccc as a subprocess — no @import edits required.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
@@ -348,7 +356,7 @@ ls programs programs/snake tests/e2e tests
 Expected from the final `ls`:
 - `programs/`: `hello mul_demo plic_block_test snake trap_demo`
 - `programs/snake/`: `game.zig linker.ld monitor.S snake.zig test_input.txt` (no `verify_e2e.zig`)
-- `tests/e2e/`: `kernel.zig multiproc.zig snake.zig`
+- `tests/e2e/`: `fork.zig kernel.zig multiproc.zig snake.zig`
 - `tests/`: `e2e fixtures riscv-tests riscv-tests-p.ld riscv-tests-s.ld riscv-tests-shim` (no `programs/`)
 
 - [ ] **Step 2: Update build.zig — snake verifier path**
@@ -402,7 +410,7 @@ Expected: no output.
 
 ```bash
 cd /Users/cyyeh/Desktop/ccc/.worktrees/folder-restructure && \
-zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build snake-elf && zig build plic-block-test && zig build fixtures
+zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build e2e-fork && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build kernel-fork && zig build snake-elf && zig build plic-block-test && zig build fixtures
 ```
 
 Expected: every command exits 0.
@@ -585,7 +593,7 @@ Expected: no output. (`web/README.md` mentions `cpu.zig`, `memory.zig`, `elf.zig
 
 ```bash
 cd /Users/cyyeh/Desktop/ccc/.worktrees/folder-restructure && \
-zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build snake-elf && zig build plic-block-test && zig build fixtures
+zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build e2e-fork && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build kernel-fork && zig build snake-elf && zig build plic-block-test && zig build fixtures
 ```
 
 Expected: every command exits 0.
@@ -629,7 +637,7 @@ Expected:
 
 ```bash
 cd /Users/cyyeh/Desktop/ccc/.worktrees/folder-restructure && \
-zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build snake-elf && zig build plic-block-test && zig build fixtures
+zig build test && zig build snake-test && zig build e2e && zig build e2e-mul && zig build e2e-trap && zig build e2e-hello-elf && zig build e2e-kernel && zig build e2e-multiproc-stub && zig build e2e-plic-block && zig build e2e-snake && zig build e2e-fork && zig build riscv-tests && zig build wasm && zig build hello-elf && zig build kernel-elf && zig build kernel-multi && zig build kernel-fork && zig build snake-elf && zig build plic-block-test && zig build fixtures
 ```
 
 Expected: every command exits 0.

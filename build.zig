@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "ccc",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/emulator/main.zig"),
             .target = target,
             .optimize = optimize,
             // Link libc on the native build so devices/clint.zig's
@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
     // outside the cross-compiled kernel (e.g., elfload's parser).
     const kernel_host_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/elfload.zig"),
+            .root_source_file = b.path("src/kernel/elfload.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
     // code paths, so a host-targeted compile succeeds without stubs.
     const vm_host_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/vm.zig"),
+            .root_source_file = b.path("src/kernel/vm.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) void {
     const hello_encoder = b.addExecutable(.{
         .name = "encode_hello",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/hello/encode_hello.zig"),
+            .root_source_file = b.path("programs/hello/encode_hello.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -103,7 +103,7 @@ pub fn build(b: *std.Build) void {
     const mul_demo_encoder = b.addExecutable(.{
         .name = "encode_mul_demo",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/mul_demo/encode_mul_demo.zig"),
+            .root_source_file = b.path("programs/mul_demo/encode_mul_demo.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -129,7 +129,7 @@ pub fn build(b: *std.Build) void {
     const trap_demo_encoder = b.addExecutable(.{
         .name = "encode_trap_demo",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/trap_demo/encode_trap_demo.zig"),
+            .root_source_file = b.path("programs/trap_demo/encode_trap_demo.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -179,12 +179,12 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    hello_monitor_obj.root_module.addAssemblyFile(b.path("tests/programs/hello/monitor.S"));
+    hello_monitor_obj.root_module.addAssemblyFile(b.path("programs/hello/monitor.S"));
 
     const hello_umode_obj = b.addObject(.{
         .name = "hello-umode",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/hello/hello.zig"),
+            .root_source_file = b.path("programs/hello/hello.zig"),
             .target = rv_target,
             .optimize = .ReleaseSmall,
             // Keep the Zig compiler from stripping u_entry / msg as "unused".
@@ -205,7 +205,7 @@ pub fn build(b: *std.Build) void {
     });
     hello_elf.root_module.addObject(hello_monitor_obj);
     hello_elf.root_module.addObject(hello_umode_obj);
-    hello_elf.setLinkerScript(b.path("tests/programs/hello/linker.ld"));
+    hello_elf.setLinkerScript(b.path("programs/hello/linker.ld"));
     hello_elf.entry = .{ .symbol_name = "_start" };
 
     const install_hello_elf = b.addInstallArtifact(hello_elf, .{});
@@ -241,7 +241,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    kernel_boot_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/boot.S"));
+    kernel_boot_obj.root_module.addAssemblyFile(b.path("src/kernel/boot.S"));
 
     const kernel_trampoline_obj = b.addObject(.{
         .name = "kernel-trampoline",
@@ -251,7 +251,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    kernel_trampoline_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/trampoline.S"));
+    kernel_trampoline_obj.root_module.addAssemblyFile(b.path("src/kernel/trampoline.S"));
 
     const kernel_mtimer_obj = b.addObject(.{
         .name = "kernel-mtimer",
@@ -261,7 +261,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    kernel_mtimer_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/mtimer.S"));
+    kernel_mtimer_obj.root_module.addAssemblyFile(b.path("src/kernel/mtimer.S"));
 
     const kernel_swtch_obj = b.addObject(.{
         .name = "kernel-swtch",
@@ -271,13 +271,13 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    kernel_swtch_obj.root_module.addAssemblyFile(b.path("tests/programs/kernel/swtch.S"));
+    kernel_swtch_obj.root_module.addAssemblyFile(b.path("src/kernel/swtch.S"));
 
     // === User program (Plan 2.C) ===
     const userprog_obj = b.addObject(.{
         .name = "userprog",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/user/userprog.zig"),
+            .root_source_file = b.path("src/kernel/user/userprog.zig"),
             .target = rv_target,
             .optimize = .ReleaseSmall,
             .strip = false,
@@ -296,7 +296,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     userprog_elf.root_module.addObject(userprog_obj);
-    userprog_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    userprog_elf.setLinkerScript(b.path("src/kernel/user/user_linker.ld"));
     userprog_elf.entry = .{ .symbol_name = "_start" };
 
     const userprog_elf_bin = userprog_elf.getEmittedBin();
@@ -326,7 +326,7 @@ pub fn build(b: *std.Build) void {
     const userprog2_obj = b.addObject(.{
         .name = "userprog2",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/user/userprog2.zig"),
+            .root_source_file = b.path("src/kernel/user/userprog2.zig"),
             .target = rv_target,
             .optimize = .ReleaseSmall,
             .strip = false,
@@ -345,7 +345,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     userprog2_elf.root_module.addObject(userprog2_obj);
-    userprog2_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    userprog2_elf.setLinkerScript(b.path("src/kernel/user/user_linker.ld"));
     userprog2_elf.entry = .{ .symbol_name = "_start" };
 
     const userprog2_elf_bin = userprog2_elf.getEmittedBin();
@@ -357,7 +357,7 @@ pub fn build(b: *std.Build) void {
     const kernel_init_obj = b.addObject(.{
         .name = "init",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/user/init.zig"),
+            .root_source_file = b.path("src/kernel/user/init.zig"),
             .target = rv_target,
             .optimize = .Debug,
             .strip = false,
@@ -376,7 +376,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     kernel_init_elf.root_module.addObject(kernel_init_obj);
-    kernel_init_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    kernel_init_elf.setLinkerScript(b.path("src/kernel/user/user_linker.ld"));
     kernel_init_elf.entry = .{ .symbol_name = "_start" };
 
     const kernel_init_elf_bin = kernel_init_elf.getEmittedBin();
@@ -387,7 +387,7 @@ pub fn build(b: *std.Build) void {
     const kernel_hello_obj = b.addObject(.{
         .name = "hello",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/user/hello.zig"),
+            .root_source_file = b.path("src/kernel/user/hello.zig"),
             .target = rv_target,
             .optimize = .Debug,
             .strip = false,
@@ -406,7 +406,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     kernel_hello_elf.root_module.addObject(kernel_hello_obj);
-    kernel_hello_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    kernel_hello_elf.setLinkerScript(b.path("src/kernel/user/user_linker.ld"));
     kernel_hello_elf.entry = .{ .symbol_name = "_start" };
 
     const kernel_hello_elf_bin = kernel_hello_elf.getEmittedBin();
@@ -455,7 +455,7 @@ pub fn build(b: *std.Build) void {
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .root_source_file = b.path("src/kernel/kmain.zig"),
             .target = rv_target,
             .optimize = .Debug,
             .strip = false,
@@ -469,7 +469,7 @@ pub fn build(b: *std.Build) void {
     const kernel_kmain_multi_obj = b.addObject(.{
         .name = "kernel-kmain-multi",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .root_source_file = b.path("src/kernel/kmain.zig"),
             .target = rv_target,
             .optimize = .Debug,
             .strip = false,
@@ -483,7 +483,7 @@ pub fn build(b: *std.Build) void {
     const kernel_kmain_fork_obj = b.addObject(.{
         .name = "kernel-kmain-fork",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .root_source_file = b.path("src/kernel/kmain.zig"),
             .target = rv_target,
             .optimize = .Debug,
             .strip = false,
@@ -509,7 +509,7 @@ pub fn build(b: *std.Build) void {
     kernel_elf.root_module.addObject(kernel_mtimer_obj);
     kernel_elf.root_module.addObject(kernel_swtch_obj);
     kernel_elf.root_module.addObject(kernel_kmain_obj);
-    kernel_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_elf.setLinkerScript(b.path("src/kernel/linker.ld"));
     kernel_elf.entry = .{ .symbol_name = "_M_start" };
 
     const install_kernel_elf = b.addInstallArtifact(kernel_elf, .{});
@@ -534,7 +534,7 @@ pub fn build(b: *std.Build) void {
     kernel_multi_elf.root_module.addObject(kernel_mtimer_obj);
     kernel_multi_elf.root_module.addObject(kernel_swtch_obj);
     kernel_multi_elf.root_module.addObject(kernel_kmain_multi_obj);
-    kernel_multi_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_multi_elf.setLinkerScript(b.path("src/kernel/linker.ld"));
     kernel_multi_elf.entry = .{ .symbol_name = "_M_start" };
 
     const install_kernel_multi_elf = b.addInstallArtifact(kernel_multi_elf, .{});
@@ -556,7 +556,7 @@ pub fn build(b: *std.Build) void {
     kernel_fork_elf.root_module.addObject(kernel_mtimer_obj);
     kernel_fork_elf.root_module.addObject(kernel_swtch_obj);
     kernel_fork_elf.root_module.addObject(kernel_kmain_fork_obj);
-    kernel_fork_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_fork_elf.setLinkerScript(b.path("src/kernel/linker.ld"));
     kernel_fork_elf.entry = .{ .symbol_name = "_M_start" };
 
     const install_kernel_fork_elf = b.addInstallArtifact(kernel_fork_elf, .{});
@@ -571,7 +571,7 @@ pub fn build(b: *std.Build) void {
     const verify_e2e = b.addExecutable(.{
         .name = "verify_e2e",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/verify_e2e.zig"),
+            .root_source_file = b.path("tests/e2e/kernel.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -588,7 +588,7 @@ pub fn build(b: *std.Build) void {
     const multiproc_verify = b.addExecutable(.{
         .name = "multiproc_verify_e2e",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/multiproc_verify_e2e.zig"),
+            .root_source_file = b.path("tests/e2e/multiproc.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -605,7 +605,7 @@ pub fn build(b: *std.Build) void {
     const fork_verify = b.addExecutable(.{
         .name = "fork_verify_e2e",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/kernel/fork_verify_e2e.zig"),
+            .root_source_file = b.path("tests/e2e/fork.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -641,7 +641,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    plic_block_boot.root_module.addAssemblyFile(b.path("tests/programs/plic_block_test/boot.S"));
+    plic_block_boot.root_module.addAssemblyFile(b.path("programs/plic_block_test/boot.S"));
 
     const plic_block_test_obj = b.addObject(.{
         .name = "plic-block-test",
@@ -651,7 +651,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    plic_block_test_obj.root_module.addAssemblyFile(b.path("tests/programs/plic_block_test/test.S"));
+    plic_block_test_obj.root_module.addAssemblyFile(b.path("programs/plic_block_test/test.S"));
 
     const plic_block_elf = b.addExecutable(.{
         .name = "plic_block_test.elf",
@@ -665,7 +665,7 @@ pub fn build(b: *std.Build) void {
     });
     plic_block_elf.root_module.addObject(plic_block_boot);
     plic_block_elf.root_module.addObject(plic_block_test_obj);
-    plic_block_elf.setLinkerScript(b.path("tests/programs/plic_block_test/linker.ld"));
+    plic_block_elf.setLinkerScript(b.path("programs/plic_block_test/linker.ld"));
     plic_block_elf.entry = .{ .symbol_name = "_M_start" };
 
     const install_plic_block_elf = b.addInstallArtifact(plic_block_elf, .{});
@@ -676,7 +676,7 @@ pub fn build(b: *std.Build) void {
     const make_img = b.addExecutable(.{
         .name = "make_plic_block_img",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/plic_block_test/make_img.zig"),
+            .root_source_file = b.path("programs/plic_block_test/make_img.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -703,12 +703,12 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    snake_monitor_obj.root_module.addAssemblyFile(b.path("tests/programs/snake/monitor.S"));
+    snake_monitor_obj.root_module.addAssemblyFile(b.path("programs/snake/monitor.S"));
 
     const snake_zig_obj = b.addObject(.{
         .name = "snake-zig",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/snake/snake.zig"),
+            .root_source_file = b.path("programs/snake/snake.zig"),
             .target = rv_target,
             .optimize = .ReleaseSmall,
             .strip = false,
@@ -728,7 +728,7 @@ pub fn build(b: *std.Build) void {
     });
     snake_elf.root_module.addObject(snake_monitor_obj);
     snake_elf.root_module.addObject(snake_zig_obj);
-    snake_elf.setLinkerScript(b.path("tests/programs/snake/linker.ld"));
+    snake_elf.setLinkerScript(b.path("programs/snake/linker.ld"));
     snake_elf.entry = .{ .symbol_name = "_start" };
 
     const install_snake_elf = b.addInstallArtifact(snake_elf, .{});
@@ -736,7 +736,7 @@ pub fn build(b: *std.Build) void {
     snake_elf_step.dependOn(&install_snake_elf.step);
 
     const snake_test_mod = b.createModule(.{
-        .root_source_file = b.path("tests/programs/snake/game.zig"),
+        .root_source_file = b.path("programs/snake/game.zig"),
         .target = b.graph.host,
         .optimize = .Debug,
     });
@@ -757,7 +757,7 @@ pub fn build(b: *std.Build) void {
     const snake_verify_e2e = b.addExecutable(.{
         .name = "snake_verify_e2e",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/snake/verify_e2e.zig"),
+            .root_source_file = b.path("tests/e2e/snake.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -766,7 +766,7 @@ pub fn build(b: *std.Build) void {
     const e2e_snake_run = b.addRunArtifact(snake_verify_e2e);
     e2e_snake_run.addFileArg(exe.getEmittedBin());
     e2e_snake_run.addFileArg(snake_elf.getEmittedBin());
-    e2e_snake_run.addFileArg(b.path("tests/programs/snake/test_input.txt"));
+    e2e_snake_run.addFileArg(b.path("programs/snake/test_input.txt"));
     e2e_snake_run.expectExitCode(0);
 
     const e2e_snake_step = b.step("e2e-snake", "Run snake e2e (deterministic input → GAME OVER + score:0)");
@@ -929,7 +929,7 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
     });
 
-    // Single emulator module exposed via src/lib.zig so demo/web_main.zig
+    // Single emulator module exposed via src/emulator/lib.zig so demo/web_main.zig
     // can import the emulator without escaping its own package root.
     // One module (not six) avoids "file exists in modules X and Y": the
     // emulator files cross-import each other via relative paths, so
@@ -937,7 +937,7 @@ pub fn build(b: *std.Build) void {
     // file into multiple module trees. The shim re-exports the six
     // pieces web_main.zig needs (cpu / memory / elf / halt / uart / clint).
     const ccc_module = b.createModule(.{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path("src/emulator/lib.zig"),
     });
 
     const wasm_exe = b.addExecutable(.{

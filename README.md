@@ -75,10 +75,10 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
 | `zig build snake-elf` | Build the Phase 3 snake demo ELF (M-mode RV32, CLINT timer IRQ + UART poll, 32×16 ASCII game) |
-| `zig build snake-test` | Run `tests/programs/snake/game.zig` unit tests on the native target (pure game logic, target-independent) |
+| `zig build snake-test` | Run `programs/snake/game.zig` unit tests on the native target (pure game logic, target-independent) |
 | `zig build run-snake` | Play `snake.elf` in the CLI under stty raw mode (single-keystroke WASD/q/SPACE input) |
-| `zig build e2e-snake` | Pipe `tests/programs/snake/test_input.txt` through `--input`, assert stdout contains `GAME OVER` + `score: 0` (~4 s wall clock) |
-| `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
+| `zig build e2e-snake` | Pipe `programs/snake/test_input.txt` through `--input`, assert stdout contains `GAME OVER` + `score: 0` (~4 s wall clock) |
+| `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/emulator/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
 | `zig build wasm` | Cross-compile `demo/web_main.zig` to `wasm32-freestanding` (installed to `zig-out/web/ccc.wasm`); also installs `hello.elf` and `snake.elf` into `zig-out/web/` for the demo to fetch at runtime |
 
@@ -224,47 +224,74 @@ Next: Plan 3.D — filesystem + shell.
 
 ```
 src/
-  main.zig          # CLI entry point (ELF default, --raw fallback; --disk/--input/--trace/etc.)
-  lib.zig           # re-export shim consumed by the wasm build (one named module)
-  cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation; idleSpin (wfi)
-  decoder.zig       # RV32IMA + Zicsr + Zifencei + mret/sret/wfi/sfence.vma decoder
-  execute.zig       # instruction execution + trap-routing; wfi → cpu.idleSpin
-  memory.zig        # RAM + MMIO dispatch (UART, CLINT, PLIC, block, halt, tohost) + Sv32 translation
-  csr.zig           # M/S CSRs with field masks, privilege checks, live MTIP/SEIP from devices
-  trap.zig          # sync + async trap entry, mret/sret exit, medeleg/mideleg routing
-  elf.zig           # ELF32 loader (entry + tohost symbol resolution)
-  trace.zig         # --trace one-line-per-instruction formatter + interrupt/block markers
-  devices/
-    uart.zig        # NS16550A UART (TX + 256B RX FIFO + level IRQ via PLIC src 10)
-    halt.zig        # test-only halt device at 0x00100000
-    clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime; raises mip.MTIP; comptime clock branch for wasm)
-    plic.zig        # Platform-Level Interrupt Controller (32 sources, S-context, claim/complete)
-    block.zig       # Simple MMIO block device (4 KB sectors, host-file-backed via --disk)
+  emulator/
+    main.zig          # CLI entry point (ELF default, --raw fallback; --disk/--input/--trace/etc.)
+    lib.zig           # re-export shim consumed by demo/web_main.zig (wasm build)
+    cpu.zig           # hart state: regs, PC, privilege, CSRs, LR/SC reservation; idleSpin (wfi)
+    decoder.zig       # RV32IMA + Zicsr + Zifencei + mret/sret/wfi/sfence.vma decoder
+    execute.zig       # instruction execution + trap-routing; wfi → cpu.idleSpin
+    memory.zig        # RAM + MMIO dispatch (UART, CLINT, PLIC, block, halt, tohost) + Sv32 translation
+    csr.zig           # M/S CSRs with field masks, privilege checks, live MTIP/SEIP from devices
+    trap.zig          # sync + async trap entry, mret/sret exit, medeleg/mideleg routing
+    elf.zig           # ELF32 loader (entry + tohost symbol resolution)
+    trace.zig         # --trace one-line-per-instruction formatter + interrupt/block markers
+    devices/
+      uart.zig        # NS16550A UART (TX + 256B RX FIFO + level IRQ via PLIC src 10)
+      halt.zig        # test-only halt device at 0x00100000
+      clint.zig       # Core-Local Interruptor (msip, mtimecmp, mtime; raises mip.MTIP; comptime clock branch for wasm)
+      plic.zig        # Platform-Level Interrupt Controller (32 sources, S-context, claim/complete)
+      block.zig       # Simple MMIO block device (4 KB sectors, host-file-backed via --disk)
+  kernel/             # Phase 2/3: M-mode boot + S-mode kernel + ptable scheduler + ELF-loaded userprogs
+    kmain.zig         # S-mode entry; allocates PID 1, builds address space, switches to scheduler
+    boot.S            # M-mode boot shim
+    trampoline.S      # user/kernel trampoline
+    mtimer.S          # mtimer ISR
+    swtch.S           # context switch
+    elfload.zig       # in-kernel ELF32 loader (PT_LOAD walker + page-table installer)
+    vm.zig            # Sv32 page table + copyUvm/unmapUser/freeLeavesInL0
+    proc.zig          # Process struct, fork/exec/wait/exit/kill, sleep/wakeup
+    sched.zig         # round-robin scheduler + swtch
+    syscall.zig       # syscall dispatch (write/exit/yield/getpid/sbrk/fork/execve/wait4/...)
+    trap.zig          # S-mode trap dispatcher; killed-flag check on syscall return
+    page_alloc.zig    # free-list page allocator
+    kprintf.zig       # kernel print helper
+    uart.zig          # kernel-side UART driver
+    linker.ld         # kernel.elf load layout
+    user/
+      userprog.zig    # PID 1 user payload (embedded into kernel.elf)
+      userprog2.zig   # PID 2 user payload (embedded into kernel-multi.elf)
+      init.zig        # init userland for kernel-fork.elf (fork+exec+wait)
+      hello.zig       # hello userland for kernel-fork.elf (write+exit)
+      user_linker.ld  # user-side linker script
 demo/
-  web_main.zig      # freestanding wasm entry — runStart/runStep/setMtimeNs/pushInput/consumeOutput, fixed 2 MB ELF buffer (programs fetched at runtime, not embedded)
-web/                # GitHub Pages root (https://cyyeh.github.io/ccc/web/)
-  index.html        # demo page (program selector + focusable terminal + auto-trace panel)
-  demo.css          # palette matches the deck
-  demo.js           # main thread: Worker host, ANSI renderer, program-select handler, keystroke filter
-  runner.js         # Web Worker: chunked runStep loop, ELF fetch, output/trace drain
-  ansi.js           # ~120-line ANSI subset interpreter (CSI 2J/H/?25, UTF-8 reassembly)
-  ccc.wasm          # built artifact (~38 KB; emulator core only) — gitignored
-  hello.elf         # built artifact (~10 KB; fetched at runtime) — gitignored
-  snake.elf         # built artifact (~1.4 MB Debug; fetched at runtime) — gitignored
-  README.md         # how the demo works + how to add another ELF
+  web_main.zig        # freestanding wasm entry — runStart/runStep/setMtimeNs/pushInput/consumeOutput, fixed 2 MB ELF buffer (programs fetched at runtime, not embedded)
+programs/
+  hello/              # Phase 1: RV32I hello-world encoder + Phase 1.D Zig-compiled hello.elf
+  snake/              # Phase 3 demo: bare M-mode RV32 snake game + game.zig pure-logic
+  mul_demo/           # Phase 1: RV32IMA demo encoder (prints "42\n")
+  trap_demo/          # Phase 1.C: privilege demo (prints "trap ok\n")
+  plic_block_test/    # Phase 3.A: asm-only integration test (CMD → IRQ → trap → claim → halt)
 tests/
-  programs/
-    hello/             # Phase 1: RV32I hello-world encoder + Phase 1.D Zig-compiled hello.elf
-    mul_demo/          # Phase 1: RV32IMA demo encoder (prints "42\n")
-    trap_demo/         # Phase 1.C: privilege demo (prints "trap ok\n")
-    kernel/            # Phase 2/3.B: M-mode boot + S-mode kernel + ptable scheduler + ELF-loaded userprogs
-    plic_block_test/   # Phase 3.A: asm-only integration test (CMD → IRQ → trap → claim → halt)
-    snake/             # Phase 3 demo: bare M-mode RV32 snake game + game.zig pure-logic + e2e verifier
-  fixtures/             # tiny hand-crafted ELF used only by elf.zig tests
-  riscv-tests/          # upstream submodule: riscv-software-src/riscv-tests
-  riscv-tests-shim/     # weak handlers + riscv_test.h overrides for the shared test env
-  riscv-tests-p.ld      # linker script for the 'p' (physical/M-mode) environment
-  riscv-tests-s.ld      # linker script for the rv32si-p-* family (S-mode test body)
+  e2e/                # host-side end-to-end verifiers (Zig programs that spawn ccc and assert stdout)
+    kernel.zig        # Plan 2.D verifier (Phase 2 §Definition of done)
+    multiproc.zig     # Plan 3.B verifier (PID 1 + PID 2 interleaving)
+    fork.zig          # Plan 3.C verifier (fork/exec/wait/exit)
+    snake.zig         # snake e2e verifier (deterministic input → GAME OVER)
+  fixtures/           # tiny hand-crafted ELF used only by elf.zig tests
+  riscv-tests/        # upstream submodule: riscv-software-src/riscv-tests
+  riscv-tests-shim/   # weak handlers + riscv_test.h overrides for the shared test env
+  riscv-tests-p.ld    # linker script for the 'p' (physical/M-mode) environment
+  riscv-tests-s.ld    # linker script for the rv32si-p-* family (S-mode test body)
+web/                  # GitHub Pages root (https://cyyeh.github.io/ccc/web/)
+  index.html          # demo page (program selector + focusable terminal + auto-trace panel)
+  demo.css            # palette matches the deck
+  demo.js             # main thread: Worker host, ANSI renderer, program-select handler, keystroke filter
+  runner.js           # Web Worker: chunked runStep loop, ELF fetch, output/trace drain
+  ansi.js             # ~120-line ANSI subset interpreter (CSI 2J/H/?25, UTF-8 reassembly)
+  ccc.wasm            # built artifact (~30 KB; emulator core only) — gitignored
+  hello.elf           # built artifact (~10 KB; fetched at runtime) — gitignored
+  snake.elf           # built artifact (~1.4 MB Debug; fetched at runtime) — gitignored
+  README.md           # how the demo works + how to add another ELF
 scripts/
   qemu-diff.sh           # debug aid: per-instruction trace diff vs qemu-system-riscv32
   qemu-diff-kernel.sh    # same, scoped to kernel.elf (Phase 2 debugging)
