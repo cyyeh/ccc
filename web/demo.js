@@ -1,112 +1,95 @@
-const outputEl   = document.getElementById("output");
-const statusEl   = document.getElementById("status");
-const runBtn     = document.getElementById("run-btn");
+// web/demo.js — main thread: Worker host + terminal renderer.
+
+import { Ansi } from "./ansi.js";
+
+const W = 32, H = 16;
+const ansi = new Ansi(W, H);
+const out = document.getElementById("output");
+const sel = document.getElementById("program-select");
+const hint = document.querySelector(".program-hint");
+
+// Trace controls — element IDs as defined in index.html.
 const traceCb    = document.getElementById("trace-toggle");
 const traceBox   = document.getElementById("trace-details");
-const traceEl    = document.getElementById("trace");
-const traceMeta  = document.getElementById("trace-meta");
-const wasmSizeEl = document.getElementById("wasm-size");
 
-function appendOutput(text, cls) {
-  if (!text) return;
-  const span = document.createElement("span");
-  if (cls) span.className = cls;
-  span.textContent = text;
-  outputEl.appendChild(span);
-  outputEl.scrollTop = outputEl.scrollHeight;
+const worker = new Worker("./runner.js", { type: "module" });
+
+const ALLOWED_KEYS = {
+  "w": 0x77, "W": 0x77,
+  "a": 0x61, "A": 0x61,
+  "s": 0x73, "S": 0x73,
+  "d": 0x64, "D": 0x64,
+  "q": 0x71, "Q": 0x71,
+  " ": 0x20,
+};
+
+function render() {
+  out.textContent = ansi.text();
 }
 
-function setStatus(text) { statusEl.textContent = text; }
-function clearOutput() { outputEl.textContent = ""; }
-function clearTrace()  { traceEl.textContent = ""; traceMeta.textContent = ""; traceBox.hidden = true; }
+function startCurrent() {
+  // Reset display + ANSI state.
+  ansi._reset();
+  ansi.row = 0; ansi.col = 0;
+  render();
 
-function fmtBytes(n) {
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  if (n >= 1024)        return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
-}
+  const idx = parseInt(sel.value, 10);
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-let instance = null;
-
-async function load() {
-  setStatus("fetching ccc.wasm…");
-  const resp = await fetch("ccc.wasm");
-  if (!resp.ok) throw new Error(`ccc.wasm: HTTP ${resp.status}`);
-  const bytes = await resp.arrayBuffer();
-  const sizeStr = fmtBytes(bytes.byteLength);
-  wasmSizeEl.textContent = sizeStr;
-  const result = await WebAssembly.instantiate(bytes, {});
-  instance = result.instance;
-  setStatus(`loaded · wasm ${sizeStr}`);
-  runBtn.disabled = false;
-  runBtn.textContent = "▶ run ccc hello.elf";
-}
-
-async function runDemo() {
-  if (!instance) return;
-  clearOutput();
-  clearTrace();
-  runBtn.disabled = true;
-
-  const traceEnabled = traceCb.checked;
-  const cmd = traceEnabled ? "./ccc --trace hello.elf" : "./ccc hello.elf";
-
-  // 1. Prompt + animated typing of the command.
-  setStatus("typing…");
-  appendOutput("$ ", "prompt");
-  for (const ch of cmd) {
-    appendOutput(ch, "cmd");
-    await sleep(45 + Math.random() * 55); // 45-100ms per char, gentle jitter
-  }
-  appendOutput("\n");
-
-  // 2. Run the wasm.
-  setStatus(traceEnabled ? "running ccc /hello.elf (with trace)…" : "running ccc /hello.elf…");
-  // Yield once so the "running" status paints before the (sub-millisecond) wasm call.
-  await sleep(0);
-
-  let exitCode = -100;
-  try {
-    exitCode = instance.exports.run(traceEnabled ? 1 : 0);
-  } catch (e) {
-    appendOutput(`runtime error: ${e}\n`, "stderr");
+  // Snake (idx === 1) runs continuously — hide trace toggle to avoid
+  // flooding MBs/sec of trace data. For hello.elf (idx === 0) keep it.
+  if (traceCb) {
+    const isInteractive = idx === 1; // snake
+    if (isInteractive) {
+      traceCb.checked = false;
+      traceCb.disabled = true;
+      if (traceBox) traceBox.hidden = true;
+    } else {
+      traceCb.disabled = false;
+    }
   }
 
-  // 3. Output region (existing behavior).
-  const outPtr = instance.exports.outputPtr();
-  const outLen = instance.exports.outputLen();
-  const outBytes = new Uint8Array(instance.exports.memory.buffer, outPtr, outLen);
-  appendOutput(new TextDecoder().decode(outBytes));
-  appendOutput(`\n[exit ${exitCode}]\n`, "meta");
-
-  // 4. Trailing prompt — implies the shell is ready for another command.
-  appendOutput("$ ", "prompt");
-
-  // 5. Trace region (existing behavior, unchanged).
-  if (traceEnabled) {
-    const tPtr = instance.exports.tracePtr();
-    const tLen = instance.exports.traceLen();
-    const tBytes = new Uint8Array(instance.exports.memory.buffer, tPtr, tLen);
-    const tText = new TextDecoder().decode(tBytes);
-    traceEl.textContent = tText;
-    const lineCount = tText ? tText.split("\n").length - (tText.endsWith("\n") ? 1 : 0) : 0;
-    traceMeta.textContent = `(${fmtBytes(tLen)} · ${lineCount.toLocaleString()} instructions)`;
-    traceBox.hidden = false;
-    traceBox.open = true;
-  }
-
-  setStatus(`done · exit ${exitCode}${traceEnabled ? " · trace captured" : ""}`);
-  runBtn.disabled = false;
-  runBtn.textContent = "▶ run again";
+  const trace = traceCb && traceCb.checked ? 1 : 0;
+  worker.postMessage({ type: "start", idx, trace });
 }
 
-runBtn.addEventListener("click", runDemo);
+worker.onmessage = (e) => {
+  const msg = e.data;
+  if (msg.type === "ready") {
+    worker.postMessage({ type: "select", idx: parseInt(sel.value, 10) });
+    startCurrent();
+    return;
+  }
+  if (msg.type === "output") {
+    ansi.feed(msg.bytes);
+    render();
+    return;
+  }
+  if (msg.type === "halt") {
+    out.textContent = ansi.text() + "\n[program halted — change selection or refresh to replay]";
+    return;
+  }
+};
 
-load()
-  .then(runDemo)
-  .catch((e) => {
-    setStatus(`error: ${e.message}`);
-    appendOutput(`failed to load demo: ${e.message}\n`, "stderr");
-  });
+worker.postMessage({ type: "init", wasmUrl: "./ccc.wasm" });
+
+sel.addEventListener("change", () => {
+  worker.postMessage({ type: "select", idx: parseInt(sel.value, 10) });
+  startCurrent();
+});
+
+out.addEventListener("focus", () => {
+  if (hint) hint.classList.add("hidden");
+});
+
+out.addEventListener("blur", () => {
+  if (hint) hint.classList.remove("hidden");
+});
+
+out.addEventListener("keydown", (e) => {
+  const byte = ALLOWED_KEYS[e.key];
+  if (byte === undefined) return;
+  e.preventDefault();
+  worker.postMessage({ type: "input", byte });
+});
+
+out.addEventListener("click", () => out.focus());
