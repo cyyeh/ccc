@@ -107,6 +107,10 @@ pub const Cpu = struct {
     trap_taken: bool = false,
     // Optional writer for instruction trace. Wired by --trace in main.zig.
     trace_writer: ?*std.Io.Writer = null,
+    // When true, idleSpin() returns immediately instead of spinning.
+    // Set by stepOne() so the chunked wasm loop can call WFI-containing
+    // guest code without blocking the JS Worker thread.
+    step_mode: bool = false,
 
     pub fn init(memory: *Memory, entry: u32) Cpu {
         return .{
@@ -119,6 +123,7 @@ pub const Cpu = struct {
             .halt_on_trap = false,
             .trap_taken = false,
             .trace_writer = null,
+            .step_mode = false,
         };
     }
 
@@ -217,6 +222,21 @@ pub const Cpu = struct {
         }
     }
 
+    /// Execute exactly one instruction (or service one pending interrupt).
+    /// Unlike run(), this is safe to call from a chunked wasm loop because
+    /// wfi will NOT block: step_mode is set before calling step(), which
+    /// makes idleSpin() return immediately instead of spinning. The caller
+    /// is responsible for checking halt.exit_code before the next call.
+    pub fn stepOne(self: *Cpu) StepError!void {
+        self.step_mode = true;
+        defer self.step_mode = false;
+        self.trap_taken = false;
+        try self.step();
+        if (self.trap_taken and self.halt_on_trap) {
+            return StepError.FatalTrap;
+        }
+    }
+
     /// Idle the CPU until a deliverable interrupt arrives or 10s wall-clock
     /// elapses. Called by execute.zig's wfi arm.
     ///
@@ -224,7 +244,11 @@ pub const Cpu = struct {
     /// (if a UART pump is wired); check for deliverable interrupts. If a trap
     /// fires, return early — the caller's step() will detect cpu.trap_taken
     /// and skip the +4 PC advance. If nothing happens, sleep ~1 ms and loop.
+    ///
+    /// When step_mode is true (set by stepOne()), returns immediately without
+    /// spinning so the chunked wasm loop is never blocked inside a wfi.
     pub fn idleSpin(self: *Cpu) void {
+        if (self.step_mode) return;
         const max_ns: i128 = 10_000_000_000; // 10 s
         const start = monotonicNs();
         while (true) {
@@ -800,4 +824,45 @@ test "WFI returns promptly when a deliverable interrupt arrives during idle" {
     try std.testing.expectEqual(@as(u32, 0x8000_0500), rig.cpu.pc);
     try std.testing.expectEqual(@as(u32, (1 << 31) | 9), rig.cpu.csr.scause);
     try std.testing.expect(!rig.cpu.memory.block.pending_irq); // serviced
+}
+
+test "stepOne: executes exactly one instruction and advances PC" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    // Place two NOPs at PC.
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE, 0x00000013); // nop
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 4, 0x00000013); // nop
+    const pc0 = rig.cpu.pc;
+    try rig.cpu.stepOne();
+    try std.testing.expectEqual(pc0 + 4, rig.cpu.pc);
+    // Only one instruction was executed — PC did not advance a second time.
+    try std.testing.expectEqual(pc0 + 4, rig.cpu.pc);
+}
+
+test "stepOne: wfi with no pending interrupt returns without blocking (step_mode)" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    // Place WFI in M-mode. No interrupt is pending, so idleSpin would normally
+    // spin up to 10 s. With step_mode=true, idleSpin returns immediately.
+    // WFI opcode: 0x10500073.
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE, 0x10500073); // wfi
+    const pc0 = rig.cpu.pc;
+    // M-mode wfi is legal; no interrupt → PC advances past wfi.
+    try rig.cpu.stepOne();
+    try std.testing.expectEqual(pc0 + 4, rig.cpu.pc);
+    // step_mode is reset to false after stepOne returns.
+    try std.testing.expect(!rig.cpu.step_mode);
+}
+
+test "stepOne: halt propagates StepError.Halt" {
+    var rig = try cpuRig();
+    defer rig.deinit();
+    // Hand-encode halt sequence: lui t0, 0x100; sb zero, 0(t0)
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE, 0x001002B7); // lui t0, 0x100
+    try rig.mem.storeWordPhysical(mem_mod.RAM_BASE + 4, 0x00028023); // sb zero, 0(t0)
+    // First stepOne executes lui (no halt yet).
+    try rig.cpu.stepOne();
+    // Second stepOne executes sb which triggers halt.
+    const result = rig.cpu.stepOne();
+    try std.testing.expectError(StepError.Halt, result);
 }

@@ -531,6 +531,84 @@ pub fn build(b: *std.Build) void {
     const e2e_plic_block_step = b.step("e2e-plic-block", "Run the Phase 3.A PLIC + block integration test");
     e2e_plic_block_step.dependOn(&e2e_plic_block_run.step);
 
+    // === Snake demo (Phase 3) ===
+    const snake_monitor_obj = b.addObject(.{
+        .name = "snake-monitor",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+        }),
+    });
+    snake_monitor_obj.root_module.addAssemblyFile(b.path("tests/programs/snake/monitor.S"));
+
+    const snake_zig_obj = b.addObject(.{
+        .name = "snake-zig",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/snake/snake.zig"),
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const snake_elf = b.addExecutable(.{
+        .name = "snake.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    snake_elf.root_module.addObject(snake_monitor_obj);
+    snake_elf.root_module.addObject(snake_zig_obj);
+    snake_elf.setLinkerScript(b.path("tests/programs/snake/linker.ld"));
+    snake_elf.entry = .{ .symbol_name = "_start" };
+
+    const install_snake_elf = b.addInstallArtifact(snake_elf, .{});
+    const snake_elf_step = b.step("snake-elf", "Build the Phase 3 snake.elf demo");
+    snake_elf_step.dependOn(&install_snake_elf.step);
+
+    const snake_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/programs/snake/game.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const snake_test = b.addTest(.{ .root_module = snake_test_mod });
+    const snake_test_run = b.addRunArtifact(snake_test);
+    const snake_test_step = b.step("snake-test", "Run game.zig unit tests on native");
+    snake_test_step.dependOn(&snake_test_run.step);
+
+    const run_snake_cmd = b.addSystemCommand(&.{
+        "bash",
+        "scripts/run-snake.sh",
+    });
+    run_snake_cmd.step.dependOn(b.getInstallStep());
+    run_snake_cmd.step.dependOn(&install_snake_elf.step);
+    const run_snake_step = b.step("run-snake", "Play snake.elf in the CLI (tty raw mode)");
+    run_snake_step.dependOn(&run_snake_cmd.step);
+
+    const snake_verify_e2e = b.addExecutable(.{
+        .name = "snake_verify_e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/snake/verify_e2e.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const e2e_snake_run = b.addRunArtifact(snake_verify_e2e);
+    e2e_snake_run.addFileArg(exe.getEmittedBin());
+    e2e_snake_run.addFileArg(snake_elf.getEmittedBin());
+    e2e_snake_run.addFileArg(b.path("tests/programs/snake/test_input.txt"));
+    e2e_snake_run.expectExitCode(0);
+
+    const e2e_snake_step = b.step("e2e-snake", "Run snake e2e (deterministic input → GAME OVER + score:0)");
+    e2e_snake_step.dependOn(&e2e_snake_run.step);
+
     // === Minimal ELF fixture (Plan 1.C Task 11) ===
     const min_elf_encoder = b.addExecutable(.{
         .name = "encode_minimal_elf",
@@ -713,27 +791,17 @@ pub fn build(b: *std.Build) void {
     wasm_exe.entry = .disabled;        // we call our own export, not _start
     wasm_exe.rdynamic = true;          // expose `export fn` symbols
 
-    // Expose hello.elf as an importable module so web_main.zig can
-    // @embedFile it without escaping demo/'s package root. WriteFile
-    // step that co-locates a tiny Zig stub with hello.elf in a single
-    // output dir; the stub `pub const BLOB = @embedFile(...)` resolves
-    // relative to itself, so the .elf must be its sibling. Mirrors
-    // the user_blob pattern used by kernel.elf (see above).
-    const hello_blob_dir = b.addWriteFiles();
-    const hello_blob_zig = hello_blob_dir.add(
-        "hello_elf.zig",
-        "pub const BLOB = @embedFile(\"hello.elf\");\n",
-    );
-    _ = hello_blob_dir.addCopyFile(hello_elf.getEmittedBin(), "hello.elf");
-    wasm_exe.root_module.addAnonymousImport("hello_elf", .{
-        .root_source_file = hello_blob_zig,
-    });
-
     const install_wasm = b.addInstallArtifact(wasm_exe, .{
         .dest_dir = .{ .override = .{ .custom = "web" } },
     });
-    // Make sure hello.elf is built before we try to @embedFile it.
-    install_wasm.step.dependOn(&install_hello_elf.step);
     const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-freestanding");
     wasm_step.dependOn(&install_wasm.step);
+
+    // Install hello.elf and snake.elf alongside the wasm so the demo
+    // can fetch them at runtime. Keeps the wasm tiny (~50 KB instead of
+    // ~1.5 MB) and lets new programs be dropped in without recompiling.
+    const install_web_hello = b.addInstallFile(hello_elf.getEmittedBin(), "web/hello.elf");
+    const install_web_snake = b.addInstallFile(snake_elf.getEmittedBin(), "web/snake.elf");
+    wasm_step.dependOn(&install_web_hello.step);
+    wasm_step.dependOn(&install_web_snake.step);
 }

@@ -5,8 +5,10 @@ OS, networking, and a tiny text-mode web browser. No Linux. No TLS. No
 graphics.
 
 **Live demo:** [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
-— `ccc` cross-compiled to `wasm32-freestanding`, running `hello.elf` in your
-browser. Same Zig core as the CLI; new ~80-line entry point for the browser.
+— `ccc` cross-compiled to `wasm32-freestanding`, running RV32 binaries in
+your browser. Pick `snake.elf` (default — WASD to play) or `hello.elf` (auto-runs
++ shows the instruction trace). Same Zig core as the CLI; the browser hosts
+the emulator in a Web Worker that drives execution in chunks.
 
 ## Goal
 
@@ -71,9 +73,13 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
+| `zig build snake-elf` | Build the Phase 3 snake demo ELF (M-mode RV32, CLINT timer IRQ + UART poll, 32×16 ASCII game) |
+| `zig build snake-test` | Run `tests/programs/snake/game.zig` unit tests on the native target (pure game logic, target-independent) |
+| `zig build run-snake` | Play `snake.elf` in the CLI under stty raw mode (single-keystroke WASD/q/SPACE input) |
+| `zig build e2e-snake` | Pipe `tests/programs/snake/test_input.txt` through `--input`, assert stdout contains `GAME OVER` + `score: 0` (~4 s wall clock) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
-| `zig build wasm` | Cross-compile `demo/web_main.zig` to `wasm32-freestanding` (installed to `zig-out/web/ccc.wasm`; powers the live web demo) |
+| `zig build wasm` | Cross-compile `demo/web_main.zig` to `wasm32-freestanding` (installed to `zig-out/web/ccc.wasm`); also installs `hello.elf` and `snake.elf` into `zig-out/web/` for the demo to fetch at runtime |
 
 ## Running programs
 
@@ -113,21 +119,39 @@ The browser demo cross-compiles the same emulator core
 (`cpu.zig` / `memory.zig` / `elf.zig` / `devices/*.zig`) to
 `wasm32-freestanding` via a thin entry point at `demo/web_main.zig`
 (plus a one-file `src/lib.zig` shim that exposes the emulator as a
-single named module). `hello.elf` is embedded into the wasm at
-compile time; the JS side fetches `ccc.wasm`, instantiates it with
-no imports, calls a single `run(trace) -> i32` export, and copies
-the captured UART output out of linear memory via `outputPtr()` /
-`outputLen()`. Zero JS dependencies, zero WASM imports.
+single named module). `ccc.wasm` is just the emulator (~30 KB);
+RV32 ELFs are served as separate static files (`web/hello.elf`,
+`web/snake.elf`) and **fetched at runtime** when the user picks one
+from the program selector. Zero JS dependencies, zero WASM imports.
 
-The page renders a terminal-style session — typed `$ ./ccc hello.elf`
-prompt followed by the captured `hello world` output. A
-`show instruction trace` checkbox enables `cpu.trace_writer` and
-exposes the per-instruction CPU log in a collapsible panel below the
-output.
+**Architecture.** A Web Worker hosts the wasm and turns the
+chunked-step crank itself: each turn it pushes the current real-time
+clock via `setMtimeNs(BigInt)`, runs ~50K instructions via
+`runStep(N)`, drains UART output via `consumeOutput()`, forwards any
+queued keystrokes via `pushInput(byte)`, then yields to the JS event
+loop with `setTimeout(0)`. This is what lets the snake game (which
+never halts on its own) coexist with responsive output rendering and
+keyboard input — the worker is never blocked inside a long-running
+`run()` call.
+
+**Programs.**
+- `snake.elf` — 32×16 ASCII snake, WASD to play, SPACE to restart on
+  game over, `q` to quit. Runs as a bare M-mode RV32 program with a
+  CLINT-driven 8 Hz tick. Click the terminal area to focus before
+  pressing keys.
+- `hello.elf` — auto-runs and prints `hello world`, then expands the
+  per-instruction trace panel (cpu.trace_writer captured into wasm
+  linear memory and copied out on halt). Snake doesn't get a trace
+  because a continuous trace at 8 Hz × full-redraw would be MBs/sec.
+
+**Adding a new program.** Build it as an RV32 ELF with a `tohost`
+symbol for halt (same convention as `hello.elf`/riscv-tests), drop
+it next to `web/ccc.wasm`, and add an `<option>` + entry to
+`ELF_URLS` in `web/demo.js`. No Zig recompile.
 
 Local dev:
 
-    ./scripts/stage-web.sh              # zig build wasm + copy into web/
+    ./scripts/stage-web.sh              # zig build wasm + copy ccc.wasm + ELFs into web/
     python3 -m http.server -d . 8000
     open http://localhost:8000/web/
 
@@ -235,11 +259,16 @@ src/
     plic.zig        # Platform-Level Interrupt Controller (32 sources, S-context, claim/complete)
     block.zig       # Simple MMIO block device (4 KB sectors, host-file-backed via --disk)
 demo/
-  web_main.zig      # freestanding wasm entry — embeds hello.elf, exports run/outputPtr/outputLen + tracePtr/traceLen
+  web_main.zig      # freestanding wasm entry — runStart/runStep/setMtimeNs/pushInput/consumeOutput, fixed 2 MB ELF buffer (programs fetched at runtime, not embedded)
 web/                # GitHub Pages root (https://cyyeh.github.io/ccc/web/)
-  index.html        # demo page (terminal-style typed-command UI + optional trace panel)
+  index.html        # demo page (program selector + focusable terminal + auto-trace panel)
   demo.css          # palette matches the deck
-  demo.js           # ~80 lines: instantiate, type cmd, call run(), copy output, render trace
+  demo.js           # main thread: Worker host, ANSI renderer, program-select handler, keystroke filter
+  runner.js         # Web Worker: chunked runStep loop, ELF fetch, output/trace drain
+  ansi.js           # ~120-line ANSI subset interpreter (CSI 2J/H/?25, UTF-8 reassembly)
+  ccc.wasm          # built artifact (~30 KB; emulator core only)
+  hello.elf         # built artifact (10 KB; fetched at runtime)
+  snake.elf         # built artifact (~1.4 MB Debug; fetched at runtime)
   README.md         # how the demo works + how to add another ELF
 tests/
   programs/
@@ -248,6 +277,7 @@ tests/
     trap_demo/         # Phase 1.C: privilege demo (prints "trap ok\n")
     kernel/            # Phase 2/3.B: M-mode boot + S-mode kernel + ptable scheduler + ELF-loaded userprogs
     plic_block_test/   # Phase 3.A: asm-only integration test (CMD → IRQ → trap → claim → halt)
+    snake/             # Phase 3 demo: bare M-mode RV32 snake game + game.zig pure-logic + e2e verifier
   fixtures/             # tiny hand-crafted ELF used only by elf.zig tests
   riscv-tests/          # upstream submodule: riscv-software-src/riscv-tests
   riscv-tests-shim/     # weak handlers + riscv_test.h overrides for the shared test env
@@ -256,7 +286,8 @@ tests/
 scripts/
   qemu-diff.sh           # debug aid: per-instruction trace diff vs qemu-system-riscv32
   qemu-diff-kernel.sh    # same, scoped to kernel.elf (Phase 2 debugging)
-  stage-web.sh           # local dev: zig build wasm + copy ccc.wasm into web/
+  stage-web.sh           # local dev: zig build wasm + copy ccc.wasm + hello.elf + snake.elf into web/
+  run-snake.sh           # CLI snake wrapper (stty raw mode + restore on exit)
 docs/
   superpowers/
     specs/          # design docs per phase (brainstormed + approved)

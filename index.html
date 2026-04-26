@@ -362,19 +362,6 @@
     <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A and 3.B</strong> — the emulator-side substrate and the kernel-side multi-process foundation that drives it.</div>
   </section>
 
-  <!-- 3: Prologue · the demo -->
-  <section data-label="Prologue · the demo">
-    <div class="slide-label">prologue · the demo</div>
-    <h2 class="slide-title">What we're going to <span class="accent">unpack</span></h2>
-    <p class="plain"><strong>ccc</strong> is a RISC-V CPU emulator written from scratch in Zig. One command compiles a tiny program, runs it through ccc, and prints <code>hello world</code>. The six chapters that follow — one per phase plan — walk every layer of machinery between the <code>$</code> and the output.</p>
-    <pre class="code">$ zig build hello-elf
-$ ./zig-out/bin/ccc zig-out/bin/hello.elf
-<span class="a">hello world</span>
-$ echo $?
-<span class="a">0</span></pre>
-    <a class="demo-link" href="web/">▶ run this in your browser</a>
-  </section>
-
   <!-- 3: Chapter 1.A · baseline -->
   <section data-label="Ch 1.A · baseline">
     <div class="slide-label">chapter 1.a · the baseline</div>

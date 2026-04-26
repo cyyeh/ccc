@@ -127,20 +127,7 @@ pre.output .meta   { color: var(--dim); }
 }
 .footer-links a:hover { color: var(--fg); }
 
-/* ----- trace toggle + trace block ----- */
-
-.trace-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 14px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  cursor: pointer;
-  user-select: none;
-}
-.trace-toggle input { cursor: pointer; }
-.trace-toggle:hover { color: var(--fg); }
+/* ----- trace block (auto-shown after halt for trace-enabled programs) ----- */
 
 .trace-details {
   margin: 0 0 32px;
@@ -184,3 +171,34 @@ pre.trace {
 
 pre.output .prompt { color: var(--accent); font-weight: 600; }
 pre.output .cmd    { color: var(--fg); }
+
+/* ----- program selector + focusable terminal ----- */
+
+.program-selector {
+  margin-bottom: 0.5rem;
+  font-family: var(--mono, monospace);
+  color: var(--ink, #cccccc);
+}
+.program-selector select {
+  background: transparent;
+  color: inherit;
+  border: 1px solid currentColor;
+  padding: 0.1rem 0.3rem;
+  font-family: inherit;
+  font-size: inherit;
+}
+.program-hint {
+  margin-left: 0.5rem;
+  opacity: 0.6;
+}
+#output {
+  outline: none;
+  cursor: text;
+}
+#output:focus {
+  outline: 2px solid var(--accent, #66ff99);
+  outline-offset: 2px;
+}
+.program-hint.hidden {
+  display: none;
+}
