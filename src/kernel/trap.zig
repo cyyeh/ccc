@@ -105,6 +105,8 @@ comptime {
 const kprintf = @import("kprintf.zig");
 const syscall = @import("syscall.zig");
 const proc = @import("proc.zig");
+const plic = @import("plic.zig");
+const block = @import("block.zig");
 
 fn readScause() u32 {
     return asm volatile ("csrr %[out], scause"
@@ -159,6 +161,24 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         clearSipSsip();
         proc.cur().ticks_observed +%= 1;
         proc.yield();
+        return;
+    }
+
+    if (is_interrupt and cause == 9) {
+        // Supervisor external interrupt (PLIC). Claim the source, dispatch
+        // to its ISR, then complete so the device can re-assert when the
+        // next edge fires.
+        //
+        // 3.D wires only IRQ #1 (block); 3.E will add IRQ #10 (UART RX).
+        // An unknown/0 source means a spurious interrupt — the spec
+        // permits 0 here when claim races a clear; we panic to surface
+        // any kernel bug that wires a source we can't service.
+        const irq = plic.claim();
+        switch (irq) {
+            plic.IRQ_BLOCK => block.isr(),
+            else => kprintf.panic("unhandled PLIC src: {d}", .{irq}),
+        }
+        plic.complete(irq);
         return;
     }
 
