@@ -340,8 +340,8 @@
       <div class="toc-row">
         <div class="toc-num">3</div>
         <div class="toc-body">
-          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a + 3.b done</span></div>
-          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plans 3.A + 3.B landed:</strong> emulator PLIC + block + UART RX, plus the kernel-side <code class="inline">ptable</code> / scheduler / <code class="inline">swtch</code> / ELF loader running two ELFs as PID 1 + PID 2.</div>
+          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a + 3.b + 3.c done</span></div>
+          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plans 3.A + 3.B + 3.C landed:</strong> emulator PLIC + block + UART RX, the kernel-side <code class="inline">ptable</code> / scheduler / <code class="inline">swtch</code> / ELF loader, and the full Unix-shaped <code class="inline">fork</code> / <code class="inline">exec</code> / <code class="inline">wait</code> / <code class="inline">exit</code> / kill-flag lifecycle — <code class="inline">init</code> forks <code class="inline">/bin/hello</code> end-to-end.</div>
         </div>
       </div>
       <div class="toc-row">
@@ -359,7 +359,7 @@
         </div>
       </div>
     </div>
-    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A and 3.B</strong> — the emulator-side substrate and the kernel-side multi-process foundation that drives it.</div>
+    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A, 3.B, and 3.C</strong> — the emulator-side substrate, the kernel-side multi-process foundation, and the Unix-shaped process lifecycle that runs <code class="inline">fork</code> / <code class="inline">exec</code> / <code class="inline">wait</code> end-to-end.</div>
   </section>
 
   <!-- 3: Prologue · the demo -->
@@ -874,11 +874,86 @@ sysExit pid == 1?
     <div class="caption"><strong>e2e-multiproc-stub:</strong> spawns <code class="inline">ccc kernel-multi.elf</code> (two embedded ELFs), asserts stdout contains both <code class="inline">hello from u-mode\n</code> and <code class="inline">[2] hello from u-mode\n</code> plus a <code class="inline">ticks observed: N\n</code> trailer (any N), exit 0. Interleaving is non-deterministic — verifier checks substrings, not byte-for-byte. <strong>Phase 2's <code class="inline">e2e-kernel</code> stays green:</strong> <code class="inline">sysExit</code> halts only when <code class="inline">cur.pid == 1</code>.</div>
   </section>
 
-  <!-- 20: Epilogue · where we are -->
+  <!-- 20: Chapter 3.C · primitives -->
+  <section data-label="Ch 3.C · fork/exec/wait/exit">
+    <div class="slide-label">chapter 3.c · fork + exec + wait + exit + kill</div>
+    <h2 class="slide-title">A real <span class="accent">process lifecycle</span></h2>
+    <p class="plain">Plan 3.B gave the kernel a process table and a scheduler; Plan 3.C gives processes the Unix-shaped lifecycle that hangs off them. Five new primitives, plus the VM helpers and sleep/wakeup machinery they ride on. <strong>The emulator doesn't change</strong>: 3.C is kernel-side only.</p>
+    <div class="three-col">
+      <div class="panel">
+        <h4>vm helpers</h4>
+        <p style="font-size: 24px;"><code class="inline">copyUvm(src, dst, sz)</code> walks every user PTE and deep-copies each leaf into a fresh frame; <code class="inline">unmapUser(pgdir, sz, policy)</code> frees every user leaf, the L0 tables that backed them, and (optionally) the L1 root. Both rollback to a consistent state on OOM. The pair turns <code class="inline">proc.free</code>'s 3.B panic stub into a real reaper.</p>
+      </div>
+      <div class="panel">
+        <h4>fork · exec · wait · exit</h4>
+        <p style="font-size: 24px;"><code class="inline">fork</code> = full-AS clone (<code class="inline">copy_uvm</code> + dup tf, <code class="inline">child.tf.a0 = 0</code>). <code class="inline">exec</code> = build the new pgdir in scratch, write the System-V argv tail to the new user stack, then <code class="inline">csrw satp</code> + tear down the old AS. <code class="inline">wait</code> sleeps on self until a Zombie child appears. <code class="inline">exit</code> reparents children to PID 1, marks Zombie, wakes the parent.</p>
+      </div>
+      <div class="panel">
+        <h4>sleep · wakeup · kill</h4>
+        <p style="font-size: 24px;">xv6-style <code class="inline">sleep(chan)</code> sets <code class="inline">.Sleeping</code> + <code class="inline">swtch</code>; <code class="inline">wakeup(chan)</code> flips matching sleepers to <code class="inline">.Runnable</code>. <code class="inline">kill(pid)</code> sets the <code class="inline">killed</code> flag (and wakes if sleeping); the trap dispatcher checks it on every syscall return. <strong>Invariant:</strong> S-mode runs interrupts-off; only U-mode runs them on.</p>
+      </div>
+    </div>
+    <div class="caption">New syscalls wired: <code class="inline">220</code> (clone → flagless fork) · <code class="inline">221</code> (execve) · <code class="inline">260</code> (wait4) · <code class="inline">5000</code> (set_fg_pid, accept-and-discard until 3.E) · <code class="inline">5001</code> (console_set_mode, accept-and-discard until 3.E). The killed-check sits in <code class="inline">trap.zig</code>'s ECALL branch, right before <code class="inline">sret</code> — inert in 3.C, ready for 3.E's <code class="inline">^C</code> path.</div>
+  </section>
+
+  <!-- 21: Chapter 3.C · the lifecycle -->
+  <section data-label="Ch 3.C · the lifecycle">
+    <div class="slide-label">chapter 3.c · init forks /bin/hello</div>
+    <h2 class="slide-title"><code>init</code> forks <code>hello</code>, parent <span class="accent">reaps</span>, exits 0</h2>
+    <p class="plain"><code>kernel-fork.elf</code> embeds two userland ELFs (<code>init.elf</code> + <code>hello.elf</code>) and a comptime blob registry mapping <code>"/bin/hello"</code> → <code>HELLO_ELF</code>. <code>init</code> forks; the child <code>execve</code>s <code>/bin/hello</code> (which the kernel resolves via that registry); the parent <code>wait4</code>s on its own pointer; <code>exit</code> wakes it; <code>init</code> prints and halts. End-to-end fork/exec/wait/exit on real ELFs.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="k">pub fn</span> fork() i32 {
+    <span class="k">const</span> parent = cur();
+    <span class="k">const</span> child = alloc()
+        <span class="k">orelse return</span> -1;
+    <span class="k">const</span> root = vm.allocRoot()
+        <span class="k">orelse</span> { freeKstackOnly(child);
+                  <span class="k">return</span> -1; };
+    vm.mapKernelAndMmio(root);
+    <span class="k">try</span> vm.copyUvm(parent.pgdir,
+                    root, parent.sz);
+    <span class="k">try</span> vm.copyUserStack(parent.pgdir, root);
+    child.pgdir = root;
+    child.satp  = SATP_SV32 | (root &gt;&gt; 12);
+    child.sz    = parent.sz;
+    child.tf    = parent.tf;
+    <span class="c">// child returns 0 from the same ecall</span>
+    child.tf.a0 = 0;
+    child.parent = parent;
+    child.state  = .Runnable;
+    <span class="k">return</span> @intCast(child.pid);
+}</pre>
+      <pre class="flow" style="margin: 0; font-size: 20px; line-height: 1.45;">kmain   alloc init
+sched   pick init
+U       init: fork() ──┐
+S       <span class="arrow">copy_uvm</span> + dup tf
+S       child.tf.a0 = 0
+        parent.a0 = child.pid ◄─┘
+U       parent: <span class="dim">wait4</span> ─► sleep(self)
+sched   pick child
+U       child: execve(<span class="dim">"/bin/hello"</span>)
+S       lookupBlob ─► HELLO_ELF
+S       new pgdir + argv tail
+S       csrw satp · free old AS
+U       child: write <span class="dim">"hello from /bin/hello\n"</span>
+U       child: exit(0) ─► Zombie
+S       <span class="arrow">wakeup</span>(parent)
+sched   pick parent
+S       wait reaps · free(child)
+U       parent: write <span class="dim">"init: reaped\n"</span>
+U       parent: exit(0) ─► PID 1
+sysExit pid == 1?
+          kprintf <span class="dim">"ticks observed: N\n"</span>
+          halt MMIO ← <span class="n">0</span></pre>
+    </div>
+    <div class="caption"><strong>e2e-fork:</strong> spawns <code class="inline">ccc kernel-fork.elf</code>, asserts stdout contains <code class="inline">hello from /bin/hello\n</code> + <code class="inline">init: reaped\n</code> + <code class="inline">ticks observed: N\n</code>, exit 0. Order is deterministic (init forks → wait sleeps → child runs → child exits → wakeup → init reaps → init exits) but the verifier checks substrings to stay robust against future scheduler tweaks. <strong>Both Plan 3.B regressions stay green</strong> — sysExit's PID-1 trailer + halt is preserved byte-for-byte.</div>
+  </section>
+
+  <!-- 22: Epilogue · where we are -->
   <section data-label="Where we are">
     <div class="slide-label">epilogue · where we are</div>
     <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">complete</span>. Phase 3 · <span class="accent">underway</span>.</h2>
-    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> landed the emulator-side hardware (PLIC, block device, UART RX); <strong>Plan 3.B</strong> just landed the kernel-side multi-process foundation: a free-list page allocator, a 16-slot <code>ptable</code>, a round-robin scheduler with <code>swtch</code>, and a kernel-side ELF loader running two embedded ELFs as PID 1 + PID 2.</p>
+    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> landed the emulator-side hardware (PLIC, block device, UART RX); <strong>Plan 3.B</strong> landed the kernel-side multi-process foundation (free-list <code>page_alloc</code>, <code>ptable[16]</code>, round-robin scheduler with <code>swtch</code>, kernel-side ELF loader); <strong>Plan 3.C</strong> just landed the full Unix-shaped process lifecycle — <code>fork</code>, <code>execve</code>, <code>wait4</code>, <code>exit</code>, and a kill-flag — with <code>init</code> forking <code>/bin/hello</code> end-to-end on real ELFs.</p>
     <div class="two-col" style="grid-template-columns: 1.25fr 1fr; gap: 64px;">
       <div class="check-list">
         <div class="row">
@@ -921,12 +996,16 @@ sysExit pid == 1?
           <div class="head">✓ 3.B · ptable + scheduler + ELF loader</div>
           <div class="sub">Free-list <code class="inline">page_alloc</code> · <code class="inline">Context</code> + <code class="inline">swtch.S</code> · <code class="inline">ptable[16]</code> + <code class="inline">Cpu</code> · round-robin scheduler · kernel-side ELF loader · <code class="inline">getpid</code>/<code class="inline">sbrk</code>/<code class="inline">yield</code> · PID 1 + PID 2 · <code class="inline">e2e-multiproc-stub</code></div>
         </div>
+        <div class="row">
+          <div class="head">✓ 3.C · fork + exec + wait + exit + kill</div>
+          <div class="sub"><code class="inline">vm.copyUvm</code>/<code class="inline">unmapUser</code> · real <code class="inline">proc.free</code> · <code class="inline">sleep</code>/<code class="inline">wakeup</code> · <code class="inline">fork</code>/<code class="inline">execve</code>/<code class="inline">wait4</code>/<code class="inline">exit</code> · killed-check on syscall return · <code class="inline">init</code> forks <code class="inline">/bin/hello</code> · <code class="inline">e2e-fork</code></div>
+        </div>
       </div>
       <div class="panel" style="align-self: center;">
-        <h4>Next · plan 3.c</h4>
+        <h4>Next · plan 3.d</h4>
         <p style="font-size: 28px; line-height: 1.5;">
-          Full process lifecycle.<br><br>
-          <code class="inline">fork</code> · <code class="inline">exec</code> · <code class="inline">wait</code> · <code class="inline">exit</code> · kill flag. <code class="inline">init</code> becomes an embedded ELF that <code class="inline">fork</code>s an embedded <code class="inline">hello</code>, parent reaps the child, both exit cleanly. Milestone: <code class="inline">e2e-fork</code>.
+          Filesystem + shell.<br><br>
+          Bufcache · block-device driver · inode FS (4 KB blocks · single-level indirect) · <code class="inline">openat</code>/<code class="inline">read</code>/<code class="inline">close</code>/<code class="inline">lseek</code>/<code class="inline">fstat</code>. <code class="inline">init</code> stops being embedded — it loads from <code class="inline">fs.img</code>. Milestone: <code class="inline">e2e-fs</code>.
         </p>
       </div>
     </div>
