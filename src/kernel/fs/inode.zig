@@ -101,6 +101,17 @@ pub fn iput(ip: *InMemInode) void {
     // the dinode + bwrite the inode block. 3.D never reaches this branch.
 }
 
+/// Flush this inode's in-memory dinode back to its slot in the inode table.
+pub fn iupdate(ip: *InMemInode) void {
+    const blk = layout.INODE_START_BLK + ip.inum / layout.INODES_PER_BLOCK;
+    const slot = ip.inum % layout.INODES_PER_BLOCK;
+    const buf = bufcache.bread(blk);
+    const inodes: [*]layout.DiskInode = @ptrCast(@alignCast(&buf.data[0]));
+    inodes[slot] = ip.dinode;
+    bufcache.bwrite(buf);
+    bufcache.brelse(buf);
+}
+
 /// Map logical block index `bn` (0-based) within the file to its on-disk
 /// block number. Returns 0 for blocks past the file's allocated extent
 /// (caller's readi treats 0 as a hole / EOF).
