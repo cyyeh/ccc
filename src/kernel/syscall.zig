@@ -20,7 +20,15 @@ const file = @import("file.zig");
 const console = @import("console.zig");
 const inode = @import("fs/inode.zig");
 const path_mod = @import("fs/path.zig");
+const fsops = @import("fs/fsops.zig");
 const layout = @import("fs/layout.zig");
+
+pub const O_RDONLY: u32 = 0x000;
+pub const O_WRONLY: u32 = 0x001;
+pub const O_RDWR:   u32 = 0x002;
+pub const O_CREAT:  u32 = 0x040;
+pub const O_TRUNC:  u32 = 0x200;
+pub const O_APPEND: u32 = 0x400;
 
 const SSTATUS_SUM: u32 = 1 << 18;
 
@@ -99,16 +107,26 @@ fn sysSbrk(incr_signed: u32) u32 {
     return old_sz;
 }
 
-/// 56 openat(dirfd, path, flags) — 3.D ignores dirfd and flags
-/// (read-only existing file). Returns fd ≥ 0 or -1.
+/// 56 openat(dirfd, path, flags) — handles O_CREAT, O_TRUNC, O_APPEND.
+/// Returns fd ≥ 0 or -1.
 fn sysOpenat(dirfd: u32, path_user_va: u32, flags: u32) i32 {
     _ = dirfd;
-    _ = flags;
 
     var pbuf: [path_mod.MAX_PATH]u8 = undefined;
     const p = copyStrFromUser(path_user_va, &pbuf) orelse return -1;
 
-    const ip = path_mod.namei(p) orelse return -1;
+    // Resolve, or O_CREAT a new file.
+    const ip = path_mod.namei(p) orelse blk: {
+        if ((flags & O_CREAT) == 0) return -1;
+        break :blk fsops.create(p, .File) orelse return -1;
+    };
+
+    // O_TRUNC on a regular file: free all data blocks, reset size to 0.
+    if ((flags & O_TRUNC) != 0) {
+        inode.ilock(ip);
+        if (ip.dinode.type == .File) inode.itrunc(ip);
+        inode.iunlock(ip);
+    }
 
     const fidx = file.alloc() orelse {
         inode.iput(ip);
@@ -116,9 +134,16 @@ fn sysOpenat(dirfd: u32, path_user_va: u32, flags: u32) i32 {
     };
     file.ftable[fidx].type = .Inode;
     file.ftable[fidx].ip = ip;
-    file.ftable[fidx].off = 0;
 
-    // Allocate the lowest free fd in cur.ofile.
+    // O_APPEND: seek to EOF.
+    if ((flags & O_APPEND) != 0) {
+        inode.ilock(ip);
+        file.ftable[fidx].off = ip.dinode.size;
+        inode.iunlock(ip);
+    } else {
+        file.ftable[fidx].off = 0;
+    }
+
     const cur_p = proc.cur();
     var fd: u32 = 0;
     while (fd < proc.NOFILE) : (fd += 1) {
@@ -127,8 +152,6 @@ fn sysOpenat(dirfd: u32, path_user_va: u32, flags: u32) i32 {
             return @intCast(fd);
         }
     }
-
-    // No free fd — release the file table entry + inode.
     file.close(fidx);
     return -1;
 }
