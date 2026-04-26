@@ -41,7 +41,9 @@ fn putUint(fd: u32, n: u32, base: u32) void {
 fn putInt(fd: u32, n: i32, base: u32) void {
     if (n < 0) {
         putc(fd, '-');
-        putUint(fd, @intCast(-n), base);
+        // -i32.MIN overflows i32; bit-cast through u32 to get the magnitude.
+        const abs: u32 = if (n == -2147483648) 2147483648 else @intCast(-n);
+        putUint(fd, abs, base);
     } else {
         putUint(fd, @intCast(n), base);
     }
