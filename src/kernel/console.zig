@@ -15,6 +15,7 @@
 // Single-hart: all state is global and uninstanced.
 
 const uart = @import("uart.zig");
+const proc = @import("proc.zig");
 
 pub const ConsoleMode = enum(u32) { Cooked = 0, Raw = 1 };
 pub const INPUT_BUF_SIZE: u32 = 128;
@@ -73,11 +74,74 @@ pub fn write(src_va: u32, n: u32) i32 {
     return @intCast(n);
 }
 
-// Stubs for Tasks 3 + 4. Return safe defaults so the module compiles
-// with no callers exercising them.
 pub fn feedByte(b: u8) void {
-    _ = b;
+    if (mode == .Raw) {
+        // Raw: append, wake, no echo, no special handling.
+        if (input.e -% input.r >= INPUT_BUF_SIZE) return; // buf full — drop
+        input.buf[input.e % INPUT_BUF_SIZE] = b;
+        input.e += 1;
+        input.w = input.e;
+        proc.wakeup(@intFromPtr(&input.r));
+        return;
+    }
+
+    // Cooked.
+    switch (b) {
+        0x03 => { // ^C
+            // Erase any in-progress line (between w and e).
+            while (input.e != input.w) : (input.e -%= 1) {
+                uart.writeByte(0x08);
+                uart.writeByte(' ');
+                uart.writeByte(0x08);
+            }
+            uart.writeByte('^');
+            uart.writeByte('C');
+            uart.writeByte('\n');
+            // Discard any committed-but-not-yet-read bytes too — clean slate.
+            input.r = input.w;
+            // Kill foreground.
+            if (fg_pid != 0) _ = proc.kill(fg_pid);
+            proc.wakeup(@intFromPtr(&input.r));
+        },
+        0x15 => { // ^U — kill current line
+            while (input.e != input.w) : (input.e -%= 1) {
+                uart.writeByte(0x08);
+                uart.writeByte(' ');
+                uart.writeByte(0x08);
+            }
+        },
+        0x08, 0x7F => { // backspace / DEL
+            if (input.e != input.w) {
+                input.e -%= 1;
+                uart.writeByte(0x08);
+                uart.writeByte(' ');
+                uart.writeByte(0x08);
+            }
+        },
+        0x04 => { // ^D EOF
+            // Commit whatever's typed; reader will see r == w after consuming.
+            input.w = input.e;
+            proc.wakeup(@intFromPtr(&input.r));
+        },
+        else => {
+            const c: u8 = if (b == '\r') '\n' else b;
+            // Drop unprintable control bytes other than \n.
+            if (c != '\n' and (c < 0x20 or c == 0x7F)) return;
+            // Drop if buf is full.
+            if (input.e -% input.r >= INPUT_BUF_SIZE) return;
+            input.buf[input.e % INPUT_BUF_SIZE] = c;
+            input.e += 1;
+            uart.writeByte(c);
+            if (c == '\n') {
+                input.w = input.e;
+                proc.wakeup(@intFromPtr(&input.r));
+            }
+        },
+    }
 }
+
+// Stub for Task 4. Return safe defaults so the module compiles
+// with no callers exercising them.
 
 pub fn read(dst_va: u32, n: u32) i32 {
     _ = dst_va;
