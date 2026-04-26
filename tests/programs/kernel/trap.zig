@@ -137,6 +137,14 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         // so sret returns to the next instruction.
         tf.sepc +%= 4;
         syscall.dispatch(tf);
+
+        // Kill-flag check: if a ^C (or other source) flagged this proc
+        // mid-syscall (or before re-entry), divert to exit(-1) instead
+        // of returning to user. 3.C lands the check; 3.E lands the only
+        // path that sets the flag (console line discipline).
+        if (proc.cur().killed != 0) {
+            syscall.sysExit(@as(u32, @bitCast(@as(i32, -1))));
+        }
         return;
     }
 

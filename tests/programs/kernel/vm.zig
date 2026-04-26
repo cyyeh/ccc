@@ -206,6 +206,169 @@ pub const USER_STACK_TOP: u32 = 0x0003_2000;
 pub const USER_STACK_BOTTOM: u32 = 0x0003_0000;
 pub const USER_STACK_PAGES: u32 = 2;
 
+pub const RootPolicy = enum { leave_root, free_root };
+
+/// Walk one L0 table and free every U-flagged leaf via the supplied callback.
+/// Returns true iff at least one leaf was found (used by callers to decide
+/// whether the L0 table itself is reclaimable).
+///
+/// Takes a pointer rather than a PA so the host test can pass a stack-
+/// allocated table whose address might exceed u32 range. The production
+/// caller (`unmapUser`) converts its u32 PA via `@ptrFromInt`.
+pub fn freeLeavesInL0(
+    table: *volatile [1024]u32,
+    free_fn: *const fn (u32) void,
+) bool {
+    var any: bool = false;
+    var i: u32 = 0;
+    while (i < 1024) : (i += 1) {
+        const v = table[i];
+        if ((v & PTE_V) == 0) continue;
+        if ((v & PTE_U) == 0) continue;
+        const leaf_pa = ppnOfPte(v) << 12;
+        free_fn(leaf_pa);
+        table[i] = 0;
+        any = true;
+    }
+    return any;
+}
+
+/// Tear down all user mappings under `pgdir`. Frees every U-flagged leaf
+/// page, the L0 tables that hosted them, and (if `policy == .free_root`)
+/// the L1 root itself. Kernel + MMIO leaves (which carry G=1 and lack
+/// PTE_U) are left intact.
+pub fn unmapUser(pgdir: u32, sz: u32, policy: RootPolicy) void {
+    _ = sz; // 3.C walks every L1 entry; sz is only used as a hint by future plans.
+
+    // Walk every L1 entry.
+    var l1_idx: u32 = 0;
+    while (l1_idx < 1024) : (l1_idx += 1) {
+        const l1_e = ptePtr(pgdir, l1_idx);
+        const l1_v = l1_e.*;
+        if ((l1_v & PTE_V) == 0) continue;
+        // Reject superpages (Plan 2 invariant — never written by mapPage).
+        if ((l1_v & (PTE_R | PTE_W | PTE_X)) != 0) continue;
+
+        const l0_pa = ppnOfPte(l1_v) << 12;
+
+        // Determine if the L0 table backs ANY user mapping by walking it.
+        // freeLeavesInL0 frees the user leaves and reports whether any
+        // were freed. If yes, the L0 table itself is purely user-purpose
+        // (kernel + MMIO live at non-overlapping L1 indexes), so we free
+        // it too.
+        const l0_table: *volatile [1024]u32 = @ptrFromInt(l0_pa);
+        const had_user = freeLeavesInL0(l0_table, &page_alloc.free);
+        if (had_user) {
+            page_alloc.free(l0_pa);
+            l1_e.* = 0;
+        }
+    }
+
+    if (policy == .free_root) {
+        page_alloc.free(pgdir);
+    }
+}
+
+test "freeLeavesInL0 frees user leaves and skips kernel/MMIO leaves" {
+    if (@import("builtin").os.tag != .freestanding) {
+        const std = @import("std");
+
+        var table: [1024]u32 align(PAGE_SIZE) = .{0} ** 1024;
+
+        // makeLeaf preserves only the low 8 PTE bits (USER_RWX/KERNEL_DATA
+        // don't include PTE_V), so OR it in here to mimic mapPage.
+        // Slot 0: U leaf at PA 0x1000.
+        table[0] = makeLeaf(0x1000, USER_RWX | PTE_V);
+        // Slot 1: kernel leaf (G=1, no U) at PA 0x2000.
+        table[1] = makeLeaf(0x2000, KERNEL_DATA | PTE_V);
+        // Slot 2: invalid (V=0).
+        table[2] = 0;
+        // Slot 3: U leaf at PA 0x4000.
+        table[3] = makeLeaf(0x4000, USER_RWX | PTE_V);
+
+        const Recorder = struct {
+            var freed: [16]u32 = undefined;
+            var n: usize = 0;
+            fn cb(pa: u32) void {
+                freed[n] = pa;
+                n += 1;
+            }
+        };
+        Recorder.n = 0;
+
+        const any = freeLeavesInL0(&table, &Recorder.cb);
+
+        try std.testing.expect(any);
+        try std.testing.expectEqual(@as(usize, 2), Recorder.n);
+        try std.testing.expectEqual(@as(u32, 0x1000), Recorder.freed[0]);
+        try std.testing.expectEqual(@as(u32, 0x4000), Recorder.freed[1]);
+        // U slots are zeroed; kernel slot is preserved.
+        try std.testing.expectEqual(@as(u32, 0), table[0]);
+        try std.testing.expect(table[1] != 0);
+        try std.testing.expectEqual(@as(u32, 0), table[3]);
+    }
+}
+
+pub const CopyError = error{OutOfMemory};
+
+/// Walk every user PTE in `src` from VA 0 up to `sz` (page-rounded up),
+/// allocate a fresh frame in `dst`, copy 4 KB from src PA to dst PA, and
+/// install at the same VA in `dst` with USER_RWX flags.
+///
+/// On any allocation failure: free every dst leaf already installed
+/// (via unmapUser with .leave_root), and return error.OutOfMemory.
+/// `dst`'s root is NOT freed by this function — caller owns root teardown.
+pub fn copyUvm(src: u32, dst: u32, sz: u32) CopyError!void {
+    const end_va = (sz + (PAGE_SIZE - 1)) & ~@as(u32, PAGE_SIZE - 1);
+    var va: u32 = 0;
+    while (va < end_va) : (va += PAGE_SIZE) {
+        const src_pa = lookupPA(src, va) orelse continue;
+
+        const dst_pa = page_alloc.alloc() orelse {
+            // Rollback: free every leaf already installed in dst.
+            unmapUser(dst, end_va, .leave_root);
+            return CopyError.OutOfMemory;
+        };
+
+        // Direct copy via kernel-direct-mapped PA pointers.
+        const src_ptr: [*]const volatile u8 = @ptrFromInt(src_pa);
+        const dst_ptr: [*]volatile u8 = @ptrFromInt(dst_pa);
+        var i: u32 = 0;
+        while (i < PAGE_SIZE) : (i += 1) dst_ptr[i] = src_ptr[i];
+
+        mapPage(dst, va, dst_pa, USER_RWX);
+    }
+}
+
+/// Copy the 2-page user stack region from `src` to `dst`. Allocates two
+/// fresh frames in `dst`, memcpys 4 KB each, installs as USER_RW at
+/// USER_STACK_BOTTOM .. USER_STACK_BOTTOM + 8 KB.
+///
+/// On allocation failure, frees the (possibly partial) stack pages
+/// already installed in `dst`. `dst`'s root is NOT freed.
+pub fn copyUserStack(src: u32, dst: u32) CopyError!void {
+    var i: u32 = 0;
+    while (i < USER_STACK_PAGES) : (i += 1) {
+        const va = USER_STACK_BOTTOM + i * PAGE_SIZE;
+        const src_pa = lookupPA(src, va) orelse continue;
+
+        const dst_pa = page_alloc.alloc() orelse {
+            // Rollback only the user-stack range (leave the rest of dst
+            // intact; copyUvm's caller may still want to use other pages).
+            // We use unmapUser which is idempotent and only touches U leaves.
+            unmapUser(dst, USER_STACK_TOP, .leave_root);
+            return CopyError.OutOfMemory;
+        };
+
+        const src_ptr: [*]const volatile u8 = @ptrFromInt(src_pa);
+        const dst_ptr: [*]volatile u8 = @ptrFromInt(dst_pa);
+        var k: u32 = 0;
+        while (k < PAGE_SIZE) : (k += 1) dst_ptr[k] = src_ptr[k];
+
+        mapPage(dst, va, dst_pa, USER_RW);
+    }
+}
+
 /// Allocate USER_STACK_PAGES (2) zeroed frames, map them at
 /// USER_STACK_BOTTOM..USER_STACK_TOP with U+R+W. Returns false on OOM,
 /// in which case partial mappings remain in pgdir (caller frees).

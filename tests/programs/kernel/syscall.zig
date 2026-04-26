@@ -2,7 +2,8 @@
 //
 // Syscalls dispatched in Phase 3.B:
 //   - 64  (write): copies user bytes to UART via SSTATUS.SUM.
-//   - 93  (exit):  prints "ticks observed: N\n" then halts via MMIO.
+//   - 93  (exit):  delegates to proc.exit (reparent + zombie + wake parent;
+//                  PID 1 also prints "ticks observed: N\n" and halts).
 //   - 124 (yield): calls proc.yield() to voluntarily relinquish the CPU.
 //
 // proc.cur() is used for any per-process state reads (currently always
@@ -13,7 +14,6 @@
 
 const trap = @import("trap.zig");
 const uart = @import("uart.zig");
-const kprintf = @import("kprintf.zig");
 const proc = @import("proc.zig");
 const page_alloc = @import("page_alloc.zig");
 const vm = @import("vm.zig");
@@ -50,28 +50,8 @@ fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
     return len;
 }
 
-fn sysExit(status: u32) noreturn {
-    const p = proc.cur();
-    p.xstate = @bitCast(status);
-    p.state = .Zombie;
-
-    if (p.pid == 1) {
-        // Phase 2 §Definition of done: print "ticks observed: N\n" before
-        // halting. We use this proc's own ticks_observed; the multi-proc
-        // test arranges for PID 1 to be the last to exit.
-        kprintf.print("ticks observed: {d}\n", .{p.ticks_observed});
-        const halt: *volatile u8 = @ptrFromInt(0x00100000);
-        halt.* = @intCast(status & 0xFF);
-        while (true) asm volatile ("wfi");
-    }
-
-    // Non-PID-1 proc: yield back to scheduler forever. 3.C will reap
-    // zombies via wait(); for 3.B's multi-proc demo, the scheduler keeps
-    // cycling between PID 1 and PID 2 (now Zombie, skipped) until PID 1
-    // exits and halts. Loop here defensively so a future 3.C scheduler
-    // tweak that allows Zombie wakeups can't accidentally execute past
-    // sysExit.
-    while (true) proc.sched();
+pub fn sysExit(status: u32) noreturn {
+    proc.exit(@bitCast(status));
 }
 
 fn sysYield() u32 {
@@ -108,6 +88,22 @@ fn sysSbrk(incr_signed: u32) u32 {
     return old_sz;
 }
 
+/// 5000 set_fg_pid: shell-only API for telling the console what process
+/// `^C` should target. 3.C accepts and discards; 3.E (when the console
+/// line discipline lands) wires this to the actual fg_pid global.
+fn sysSetFgPid(pid: u32) u32 {
+    _ = pid;
+    return 0;
+}
+
+/// 5001 console_set_mode: editor-only API for switching cooked vs raw
+/// line discipline. 3.C accepts and discards; 3.E wires this to the
+/// console state machine.
+fn sysConsoleSetMode(mode: u32) u32 {
+    _ = mode;
+    return 0;
+}
+
 pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
         64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
@@ -115,6 +111,11 @@ pub fn dispatch(tf: *trap.TrapFrame) void {
         124 => tf.a0 = sysYield(),
         172 => tf.a0 = sysGetpid(),
         214 => tf.a0 = sysSbrk(tf.a0),
+        220 => tf.a0 = @bitCast(proc.fork()),
+        221 => tf.a0 = @bitCast(proc.exec(tf.a0, tf.a1)),
+        260 => tf.a0 = @bitCast(proc.wait(tf.a1)),
+        5000 => tf.a0 = sysSetFgPid(tf.a0),
+        5001 => tf.a0 = sysConsoleSetMode(tf.a0),
         else => tf.a0 = @bitCast(@as(i32, -38)), // -ENOSYS
     }
 }

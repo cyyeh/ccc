@@ -56,6 +56,21 @@ pub fn build(b: *std.Build) void {
     const kernel_host_tests_run = b.addRunArtifact(kernel_host_tests);
     test_step.dependOn(&kernel_host_tests_run.step);
 
+    // Host-runnable tests for vm.zig's pure-arithmetic helpers
+    // (Plan 3.C Task 1: freeLeavesInL0 walk over a synthetic L0 table).
+    // vm.zig's page_alloc + kprintf imports are lazily evaluated; tests
+    // exercise only the pure helpers and never reach the freestanding-only
+    // code paths, so a host-targeted compile succeeds without stubs.
+    const vm_host_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/vm.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const vm_host_tests_run = b.addRunArtifact(vm_host_tests);
+    test_step.dependOn(&vm_host_tests_run.step);
+
     // === Hand-crafted hello world demo (Task 17) ===
     // The encoder is a host tool that emits a raw RV32I binary.
     const hello_encoder = b.addExecutable(.{
@@ -289,10 +304,18 @@ pub fn build(b: *std.Build) void {
     const boot_config_stub_dir = b.addWriteFiles();
     const boot_config_zig = boot_config_stub_dir.add(
         "boot_config.zig",
+        \\const std = @import("std");
         \\pub const MULTI_PROC: bool = false;
+        \\pub const FORK_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
-        \\pub const USERPROG2_ELF: []const u8 = &.{};
-        \\
+        \\pub const USERPROG2_ELF: []const u8 = "";
+        \\pub const INIT_ELF: []const u8 = "";
+        \\pub const HELLO_ELF: []const u8 = "";
+        \\pub fn lookupBlob(path: []const u8) ?[]const u8 {
+        \\    _ = path;
+        \\    return null;
+        \\}
+        ,
     );
     _ = boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
 
@@ -331,16 +354,103 @@ pub fn build(b: *std.Build) void {
     const userprog2_step = b.step("kernel-user2", "Build the Phase 3.B userprog2.elf");
     userprog2_step.dependOn(&install_userprog2_elf.step);
 
+    const kernel_init_obj = b.addObject(.{
+        .name = "init",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/user/init.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const kernel_init_elf = b.addExecutable(.{
+        .name = "init.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_init_elf.root_module.addObject(kernel_init_obj);
+    kernel_init_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    kernel_init_elf.entry = .{ .symbol_name = "_start" };
+
+    const kernel_init_elf_bin = kernel_init_elf.getEmittedBin();
+    const install_kernel_init_elf = b.addInstallFile(kernel_init_elf_bin, "init.elf");
+    const kernel_init_step = b.step("kernel-init", "Build the Phase 3.C init.elf");
+    kernel_init_step.dependOn(&install_kernel_init_elf.step);
+
+    const kernel_hello_obj = b.addObject(.{
+        .name = "hello",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/user/hello.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const kernel_hello_elf = b.addExecutable(.{
+        .name = "hello.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_hello_elf.root_module.addObject(kernel_hello_obj);
+    kernel_hello_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    kernel_hello_elf.entry = .{ .symbol_name = "_start" };
+
+    const kernel_hello_elf_bin = kernel_hello_elf.getEmittedBin();
+    const install_kernel_hello_elf = b.addInstallFile(kernel_hello_elf_bin, "hello.elf");
+    const kernel_hello_step = b.step("kernel-hello", "Build the Phase 3.C hello.elf");
+    kernel_hello_step.dependOn(&install_kernel_hello_elf.step);
+
     const multi_boot_config_stub_dir = b.addWriteFiles();
     const multi_boot_config_zig = multi_boot_config_stub_dir.add(
         "boot_config.zig",
+        \\const std = @import("std");
         \\pub const MULTI_PROC: bool = true;
+        \\pub const FORK_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
         \\pub const USERPROG2_ELF: []const u8 = @embedFile("userprog2.elf");
-        \\
+        \\pub const INIT_ELF: []const u8 = "";
+        \\pub const HELLO_ELF: []const u8 = "";
+        \\pub fn lookupBlob(path: []const u8) ?[]const u8 {
+        \\    _ = path;
+        \\    return null;
+        \\}
+        ,
     );
     _ = multi_boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
     _ = multi_boot_config_stub_dir.addCopyFile(userprog2_elf_bin, "userprog2.elf");
+
+    const fork_boot_config_stub_dir = b.addWriteFiles();
+    const fork_boot_config_zig = fork_boot_config_stub_dir.add(
+        "boot_config.zig",
+        \\const std = @import("std");
+        \\pub const MULTI_PROC: bool = false;
+        \\pub const FORK_DEMO: bool = true;
+        \\pub const USERPROG_ELF: []const u8 = "";
+        \\pub const USERPROG2_ELF: []const u8 = "";
+        \\pub const INIT_ELF: []const u8 = @embedFile("init.elf");
+        \\pub const HELLO_ELF: []const u8 = @embedFile("hello.elf");
+        \\pub fn lookupBlob(path: []const u8) ?[]const u8 {
+        \\    if (std.mem.eql(u8, path, "/bin/hello")) return HELLO_ELF;
+        \\    return null;
+        \\}
+        ,
+    );
+    _ = fork_boot_config_stub_dir.addCopyFile(kernel_init_elf_bin, "init.elf");
+    _ = fork_boot_config_stub_dir.addCopyFile(kernel_hello_elf_bin, "hello.elf");
 
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
@@ -368,6 +478,20 @@ pub fn build(b: *std.Build) void {
     });
     kernel_kmain_multi_obj.root_module.addAnonymousImport("boot_config", .{
         .root_source_file = multi_boot_config_zig,
+    });
+
+    const kernel_kmain_fork_obj = b.addObject(.{
+        .name = "kernel-kmain-fork",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_kmain_fork_obj.root_module.addAnonymousImport("boot_config", .{
+        .root_source_file = fork_boot_config_zig,
     });
 
     const kernel_elf = b.addExecutable(.{
@@ -417,6 +541,28 @@ pub fn build(b: *std.Build) void {
     const kernel_multi_step = b.step("kernel-multi", "Build the Phase 3.B multi-proc kernel.elf");
     kernel_multi_step.dependOn(&install_kernel_multi_elf.step);
 
+    const kernel_fork_elf = b.addExecutable(.{
+        .name = "kernel-fork.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_fork_elf.root_module.addObject(kernel_boot_obj);
+    kernel_fork_elf.root_module.addObject(kernel_trampoline_obj);
+    kernel_fork_elf.root_module.addObject(kernel_mtimer_obj);
+    kernel_fork_elf.root_module.addObject(kernel_swtch_obj);
+    kernel_fork_elf.root_module.addObject(kernel_kmain_fork_obj);
+    kernel_fork_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_fork_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_kernel_fork_elf = b.addInstallArtifact(kernel_fork_elf, .{});
+    const kernel_fork_step = b.step("kernel-fork", "Build the Phase 3.C fork-demo kernel.elf");
+    kernel_fork_step.dependOn(&install_kernel_fork_elf.step);
+
     // End-to-end: Plan 2.D uses a host-compiled verifier that spawns ccc
     // on kernel.elf, captures stdout, and asserts the Phase 2 §Definition
     // of done shape ("hello from u-mode\nticks observed: N\n" with N > 0
@@ -455,6 +601,23 @@ pub fn build(b: *std.Build) void {
 
     const e2e_multiproc_step = b.step("e2e-multiproc-stub", "Run the Phase 3.B multi-proc e2e test (PID 1 + PID 2)");
     e2e_multiproc_step.dependOn(&e2e_multiproc_run.step);
+
+    const fork_verify = b.addExecutable(.{
+        .name = "fork_verify_e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/fork_verify_e2e.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const e2e_fork_run = b.addRunArtifact(fork_verify);
+    e2e_fork_run.addFileArg(exe.getEmittedBin());
+    e2e_fork_run.addFileArg(kernel_fork_elf.getEmittedBin());
+    e2e_fork_run.expectExitCode(0);
+
+    const e2e_fork_step = b.step("e2e-fork", "Run the Phase 3.C fork+exec+wait+exit e2e test");
+    e2e_fork_step.dependOn(&e2e_fork_run.step);
 
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
