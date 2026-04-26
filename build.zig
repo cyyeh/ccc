@@ -516,6 +516,30 @@ pub fn build(b: *std.Build) void {
     const fs_img_step = b.step("fs-img", "Build fs.img from staged userland + mkfs");
     fs_img_step.dependOn(&install_fs_img.step);
 
+    // Phase 3.E: shell-fs.img — install init_shell as /bin/init plus the
+    // six utility binaries (sh, ls, cat, echo, mkdir, rm). The shell-fs/
+    // staging tree carries /etc/motd and the empty /tmp/ directory.
+    const shell_fs_bin_stage = b.addWriteFiles();
+    _ = shell_fs_bin_stage.addCopyFile(init_shell_exe.getEmittedBin(), "init");
+    _ = shell_fs_bin_stage.addCopyFile(sh_exe.getEmittedBin(), "sh");
+    _ = shell_fs_bin_stage.addCopyFile(ls_exe.getEmittedBin(), "ls");
+    _ = shell_fs_bin_stage.addCopyFile(cat_exe.getEmittedBin(), "cat");
+    _ = shell_fs_bin_stage.addCopyFile(echo_exe.getEmittedBin(), "echo");
+    _ = shell_fs_bin_stage.addCopyFile(mkdir_exe.getEmittedBin(), "mkdir");
+    _ = shell_fs_bin_stage.addCopyFile(rm_exe.getEmittedBin(), "rm");
+
+    const shell_fs_img_run = b.addRunArtifact(mkfs_exe);
+    shell_fs_img_run.addArg("--root");
+    shell_fs_img_run.addDirectoryArg(b.path("src/kernel/userland/shell-fs"));
+    shell_fs_img_run.addArg("--bin");
+    shell_fs_img_run.addDirectoryArg(shell_fs_bin_stage.getDirectory());
+    shell_fs_img_run.addArg("--out");
+    const shell_fs_img = shell_fs_img_run.addOutputFileArg("shell-fs.img");
+
+    const install_shell_fs_img = b.addInstallFile(shell_fs_img, "shell-fs.img");
+    const shell_fs_img_step = b.step("shell-fs-img", "Build shell-fs.img with all Phase 3.E binaries");
+    shell_fs_img_step.dependOn(&install_shell_fs_img.step);
+
     const multi_boot_config_stub_dir = b.addWriteFiles();
     const multi_boot_config_zig = multi_boot_config_stub_dir.add(
         "boot_config.zig",
