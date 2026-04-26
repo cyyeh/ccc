@@ -17,6 +17,7 @@ const std = @import("std");
 const trap = @import("trap.zig");
 const page_alloc = @import("page_alloc.zig");
 const kprintf = @import("kprintf.zig");
+const vm = @import("vm.zig");
 
 pub extern fn swtch(old: *Context, new: *Context) void;
 
@@ -156,7 +157,7 @@ pub fn free(p: *Process) void {
     // + free the L1 root. Kernel + MMIO leaves are preserved (G=1,
     // !PTE_U). vm.unmapUser walks the full pgdir; sz is a 3.E hint, not
     // used in 3.C.
-    @import("vm.zig").unmapUser(p.pgdir, p.sz, .free_root);
+    vm.unmapUser(p.pgdir, p.sz, .free_root);
 
     // Free the kernel stack page.
     page_alloc.free(p.kstack);
@@ -285,4 +286,52 @@ pub fn kill(pid: u32) bool {
         }
     }
     return false;
+}
+
+const SATP_MODE_SV32: u32 = 1 << 31;
+
+/// Full-AS fork. Returns child pid in parent (positive), 0 in child,
+/// or -1 on failure. The child resumes at the same instruction as the
+/// parent's post-ecall (s_trap_dispatch advanced sepc by 4 BEFORE
+/// dispatching, so child.tf.sepc inherits the post-advance value).
+pub fn fork() i32 {
+    const parent = cur();
+
+    const child = alloc() orelse return -1;
+
+    // Allocate a root pgdir and map kernel + MMIO into it.
+    const new_root = vm.allocRoot() orelse {
+        freeKstackOnly(child);
+        return -1;
+    };
+    vm.mapKernelAndMmio(new_root);
+
+    // Copy user .text/.data/.bss/heap (VA 0..sz).
+    vm.copyUvm(parent.pgdir, new_root, parent.sz) catch {
+        vm.unmapUser(new_root, parent.sz, .free_root);
+        freeKstackOnly(child);
+        return -1;
+    };
+
+    // Copy the user stack (above sz; copyUvm doesn't reach it).
+    vm.copyUserStack(parent.pgdir, new_root) catch {
+        vm.unmapUser(new_root, vm.USER_STACK_TOP, .free_root);
+        freeKstackOnly(child);
+        return -1;
+    };
+
+    // Wire process state. tf is copied wholesale (including sepc), then
+    // overridden so child sees a0 = 0 from the same ecall. Parent's tf
+    // is untouched here; the syscall dispatcher writes child.pid into
+    // parent.tf.a0 on return.
+    child.pgdir = new_root;
+    child.satp = SATP_MODE_SV32 | (new_root >> 12);
+    child.sz = parent.sz;
+    child.tf = parent.tf;
+    child.tf.a0 = 0;
+    child.parent = parent;
+    @memcpy(&child.name, &parent.name);
+    child.state = .Runnable;
+
+    return @as(i32, @intCast(child.pid));
 }
