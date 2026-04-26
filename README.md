@@ -6,8 +6,7 @@ graphics.
 
 **Live demo:** [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
 — `ccc` cross-compiled to `wasm32-freestanding`, running RV32 binaries in
-your browser. Pick `snake.elf` (default — WASD to play) or `hello.elf` (auto-runs
-+ shows the instruction trace). Same Zig core as the CLI; the browser hosts
+your browser. Pick `snake.elf` (default — WASD to play) or `hello.elf` (auto-runs + shows the instruction trace). Same Zig core as the CLI; the browser hosts
 the emulator in a Web Worker that drives execution in chunks.
 
 ## Goal
