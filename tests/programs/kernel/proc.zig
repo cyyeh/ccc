@@ -269,3 +269,20 @@ pub fn wakeup(chan: u32) void {
         }
     }
 }
+
+/// Set the kill flag on `pid`'s process. If the target is sleeping, also
+/// flip it to Runnable so the killed-check on syscall return fires. No
+/// effect if `pid` is unknown or refers to an Unused slot. Returns true
+/// iff a matching slot was found.
+pub fn kill(pid: u32) bool {
+    var i: u32 = 0;
+    while (i < NPROC) : (i += 1) {
+        const p = &ptable[i];
+        if (p.pid == pid and p.state != .Unused) {
+            p.killed = 1;
+            if (p.state == .Sleeping) p.state = .Runnable;
+            return true;
+        }
+    }
+    return false;
+}
