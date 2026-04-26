@@ -1,6 +1,6 @@
 # Folder restructure — design
 
-**Status:** approved 2026-04-26
+**Status:** approved 2026-04-26 (amended 2026-04-26: e2e verifiers → `tests/e2e/`; `demo/` stays top-level)
 **Branch / worktree:** TBD (suggest `folder-restructure` at `.worktrees/folder-restructure`)
 **Goal:** Reorganize the repo so the kernel (a substantial deliverable from Phase 2 onward) and the user-facing guest programs live in directories whose names match their roles, while keeping every existing `zig build` target green and every public link (Pages demo, README path references) intact.
 
@@ -29,33 +29,36 @@ The current layout has three problems:
 src/
   emulator/                # current src/* moved here
     main.zig               # CLI entry
-    lib.zig                # wasm-facing module shim
-    wasm_main.zig          # NEW location of demo/web_main.zig
+    lib.zig                # wasm-facing module shim (consumed by demo/web_main.zig)
     cpu.zig  decoder.zig  execute.zig  memory.zig
     csr.zig  trap.zig  elf.zig  trace.zig
     devices/
       uart.zig  clint.zig  plic.zig  block.zig  halt.zig
-  kernel/                  # current tests/programs/kernel/* moved here
+  kernel/                  # current tests/programs/kernel/* moved here (minus host-side e2e verifiers)
     kmain.zig
     boot.S  trampoline.S  mtimer.S  swtch.S
     elfload.zig
     linker.ld
-    verify_e2e.zig
-    multiproc_verify_e2e.zig
     user/
       userprog.zig  userprog2.zig  user_linker.ld
 programs/                  # guest binaries that run inside the emulator
   hello/                   # current tests/programs/hello/
-  snake/                   # current tests/programs/snake/ (incl. game.zig + verify_e2e.zig + test_input.txt)
+  snake/                   # current tests/programs/snake/ (incl. game.zig + test_input.txt; verify_e2e.zig moves to tests/e2e/snake.zig)
   mul_demo/                # current tests/programs/mul_demo/
   trap_demo/               # current tests/programs/trap_demo/
   plic_block_test/         # current tests/programs/plic_block_test/
 tests/                     # host-side test scaffolding ONLY
+  e2e/                     # NEW: host-side end-to-end verifiers
+    kernel.zig             # was tests/programs/kernel/verify_e2e.zig
+    multiproc.zig          # was tests/programs/kernel/multiproc_verify_e2e.zig
+    snake.zig              # was tests/programs/snake/verify_e2e.zig
   fixtures/                # ELFs for src/emulator/elf.zig unit tests
   riscv-tests/             # submodule (UNCHANGED PATH)
   riscv-tests-shim/        # (UNCHANGED PATH)
   riscv-tests-p.ld
   riscv-tests-s.ld
+demo/                      # wasm host wrapper (UNCHANGED — stays top-level)
+  web_main.zig
 web/                       # GitHub Pages root (UNCHANGED)
 scripts/                   # (UNCHANGED)
 docs/                      # (UNCHANGED)
@@ -69,40 +72,38 @@ README.md                  # Layout + Building tables refreshed at the end
 
 1. **Kernel's embedded user payloads stay nested under the kernel.** `userprog.zig`, `userprog2.zig`, `user_linker.ld` move with the kernel to `src/kernel/user/`. They are build-time blobs the kernel embeds; not standalone programs the user runs.
 
-2. **Per-program e2e verifiers stay next to their target.** `verify_e2e.zig` / `multiproc_verify_e2e.zig` move to `src/kernel/`. `tests/programs/snake/verify_e2e.zig` moves to `programs/snake/`. Co-located = easier to navigate; `tests/` stays focused on shared scaffolding (riscv-tests, fixtures for `src/emulator/elf.zig`).
+2. **Host-side e2e verifiers consolidate under `tests/e2e/`.** `tests/programs/kernel/verify_e2e.zig` → `tests/e2e/kernel.zig`. `tests/programs/kernel/multiproc_verify_e2e.zig` → `tests/e2e/multiproc.zig`. `tests/programs/snake/verify_e2e.zig` → `tests/e2e/snake.zig`. Renaming is forced — three files would otherwise collide on `verify_e2e.zig`. Build targets (`e2e-kernel`, `e2e-multiproc-stub`, `e2e-snake`) keep their current names.
 
-3. **`demo/` collapses into `src/emulator/`.** `demo/web_main.zig` becomes `src/emulator/wasm_main.zig` and the empty `demo/` directory is removed. It's not a demo, it's a wasm entry point for the emulator.
+3. **`demo/` stays as a top-level directory.** No move. `demo/web_main.zig` and the wasm build target remain untouched. (Reversed from an earlier draft of this spec.)
 
 ### Migration plan (chunked, each chunk green before the next)
 
 Each chunk = (a) `git mv` files; (b) update `build.zig` `b.path(...)` arguments; (c) update Zig `@import` paths where the relative path changed; (d) run the verification gate; (e) commit.
 
 **Chunk 1 — `src/*` → `src/emulator/*`**
-- Move the eleven `.zig` files and the `devices/` subdirectory.
+- Move the ten `.zig` files (`main.zig`, `lib.zig`, `cpu.zig`, `decoder.zig`, `execute.zig`, `memory.zig`, `csr.zig`, `trap.zig`, `elf.zig`, `trace.zig`) and the `devices/` subdirectory.
 - Update `build.zig` references.
+- Update `demo/web_main.zig`'s `@import` of the emulator's `lib.zig` to the new path.
 - Intra-emulator `@import("...")` calls between siblings stay valid.
-- Imports from *outside* `src/` (kernel verifier, `demo/web_main.zig`) update in later chunks.
+- Imports from kernel verifier files update in Chunk 2.
 - Gate: full verification suite.
 
-**Chunk 2 — `tests/programs/kernel/*` → `src/kernel/*`**
-- Move `kmain.zig`, all `.S` files, `elfload.zig`, `linker.ld`, both `*verify_e2e.zig` files, and the `user/` subdirectory.
+**Chunk 2 — `tests/programs/kernel/*` → `src/kernel/*` + `tests/e2e/`**
+- `git mv` `kmain.zig`, all `.S` files, `elfload.zig`, `linker.ld`, and the `user/` subdirectory to `src/kernel/`.
+- `git mv tests/programs/kernel/verify_e2e.zig tests/e2e/kernel.zig`.
+- `git mv tests/programs/kernel/multiproc_verify_e2e.zig tests/e2e/multiproc.zig`.
 - Update `build.zig` references.
-- Update any `@import` from kernel files to `src/emulator/lib.zig` (or whichever emulator module the verifier uses).
+- Update any `@import` from kernel or e2e files to `src/emulator/lib.zig` (or whichever emulator module the verifier uses).
 - Gate: `e2e-kernel`, `e2e-multiproc-stub`, `kernel-elf`, `kernel-multi`, plus full suite.
 
-**Chunk 3 — `tests/programs/{hello,snake,mul_demo,trap_demo,plic_block_test}/` → `programs/*`**
-- Five `git mv` operations.
+**Chunk 3 — `tests/programs/{hello,snake,mul_demo,trap_demo,plic_block_test}/` → `programs/*` + snake e2e to `tests/e2e/`**
+- Five `git mv` operations for the program directories.
+- `git mv programs/snake/verify_e2e.zig tests/e2e/snake.zig` (after the snake folder move; or do the rename in a single step from `tests/programs/snake/verify_e2e.zig`).
 - Update `build.zig` references (~25 path strings).
 - Update the `--input` path arg in the snake e2e step (`programs/snake/test_input.txt`).
 - Gate: `e2e-hello-elf`, `e2e-snake`, `e2e`, `e2e-mul`, `e2e-trap`, `e2e-plic-block`, plus full suite.
 
-**Chunk 4 — `demo/web_main.zig` → `src/emulator/wasm_main.zig`**
-- `git mv` the file; remove the empty `demo/` directory.
-- Update `build.zig` wasm target's `b.path(...)`.
-- Update the `@import` of `lib.zig` inside the file if its relative path changed.
-- Gate: `zig build wasm`, then `scripts/stage-web.sh` and a visual check that `web/index.html` runs both `hello.elf` and `snake.elf`.
-
-**Chunk 5 — README updates**
+**Chunk 4 — README updates**
 - Top-level `README.md`: rewrite the "Layout" tree block; spot-check the "Building" table for any path mentions in flag/file columns.
 - `web/README.md`: update path references (most are relative to `web/`, but check).
 - `scripts/README.md`: update if any script descriptions reference moved paths.
@@ -129,7 +130,7 @@ zig build plic-block-test
 zig build fixtures
 ```
 
-Chunk 4 additionally runs `scripts/stage-web.sh` and asks for a visual check (snake plays, hello prints, ANSI rendering intact). The `web/` directory's gitignored `.elf` and `.wasm` artifacts are regenerated by the build; not manually moved.
+After the program move (Chunk 3), the `web/` artifacts are regenerated by `zig build wasm` and `scripts/stage-web.sh`; do a visual check that `hello.elf` and `snake.elf` still run in `web/index.html`. The gitignored `.elf` and `.wasm` files in `web/` are not manually moved.
 
 ## Risks
 
