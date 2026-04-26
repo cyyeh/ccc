@@ -362,33 +362,116 @@
     <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A, 3.B, and 3.C</strong> — the emulator-side substrate, the kernel-side multi-process foundation, and the Unix-shaped process lifecycle that runs <code class="inline">fork</code> / <code class="inline">exec</code> / <code class="inline">wait</code> end-to-end.</div>
   </section>
 
-  <!-- 3: Chapter 1.A · baseline -->
-  <section data-label="Ch 1.A · baseline">
-    <div class="slide-label">chapter 1.a · the baseline</div>
-    <h2 class="slide-title">40 instructions, 128 MB, <span class="accent">one UART</span></h2>
-    <p class="plain">Start with nothing. Build a single RV32I hart that steps real instructions, a flat chunk of RAM for code and data, and two memory-mapped devices so the guest can say something and then stop.</p>
-    <div class="three-col">
+  <!-- 3: Chapter 1.A · the hart -->
+  <section data-label="Ch 1.A · the hart">
+    <div class="slide-label">chapter 1.a · the hart</div>
+    <h2 class="slide-title">A register file and a <span class="accent">fetch-decode loop</span></h2>
+    <p class="plain">Phase 1 starts with nothing. A <code>Cpu</code> struct holds <strong>32 general-purpose registers</strong> (x0 hardwired to zero) plus a program counter. The main loop fetches four bytes at PC, decodes them into a tagged <code class="inline">Instruction</code>, dispatches on the variant, and steps PC.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 22px; padding: 18px 22px;"><span class="k">pub const</span> Cpu = <span class="k">struct</span> {
+    regs: [<span class="n">32</span>]u32,        <span class="c">// x0..x31</span>
+    pc:   u32,             <span class="c">// program counter</span>
+    mem:  *Memory,
+
+    <span class="k">pub fn</span> writeReg(self: *Cpu,
+                       i: u5, v: u32) <span class="k">void</span> {
+        <span class="k">if</span> (i == <span class="n">0</span>) <span class="k">return</span>;  <span class="c">// x0 hardwired</span>
+        self.regs[i] = v;
+    }
+
+    <span class="k">pub fn</span> step(self: *Cpu) !<span class="k">void</span> {
+        <span class="k">const</span> raw = <span class="k">try</span> self.mem.fetch(self.pc);
+        <span class="k">const</span> insn = <span class="k">try</span> decode(raw);
+        <span class="k">try</span> self.execute(insn);
+    }
+};</pre>
       <div class="panel">
-        <h4>Decoder</h4>
-        <p style="font-size: 26px;">All <strong>40 RV32I</strong> integer instructions decode into a tagged <code class="inline">Instruction</code>. LUI · AUIPC · JAL · JALR · 6 branches · 8 loads/stores · 9 ALU-imm · 10 ALU-reg.</p>
-      </div>
-      <div class="panel">
-        <h4>Memory</h4>
-        <p style="font-size: 26px;"><strong>128 MB</strong> of flat RAM at <code class="inline">0x80000000</code>. Little-endian byte, halfword, and word load/store.</p>
-      </div>
-      <div class="panel">
-        <h4>MMIO</h4>
-        <p style="font-size: 26px;">NS16550A <strong>UART</strong> at <code class="inline">0x10000000</code>. <strong>Halt device</strong> at <code class="inline">0x00100000</code>.</p>
+        <h4>40 RV32I instructions</h4>
+        <p style="font-size: 22px; line-height: 1.65;">
+          <strong>2</strong> · LUI · AUIPC<br>
+          <strong>2</strong> · JAL · JALR<br>
+          <strong>6</strong> · BEQ · BNE · BLT · BGE · BLTU · BGEU<br>
+          <strong>5</strong> · LB · LH · LW · LBU · LHU<br>
+          <strong>3</strong> · SB · SH · SW<br>
+          <strong>9</strong> · ADDI · SLTI · SLTIU · XORI · ORI · ANDI · SLLI · SRLI · SRAI<br>
+          <strong>10</strong> · ADD · SUB · SLL · SLT · SLTU · XOR · SRL · SRA · OR · AND<br>
+          <strong>3</strong> · FENCE · ECALL · EBREAK
+        </p>
       </div>
     </div>
-    <div class="caption"><strong>78 inline unit tests.</strong> <code class="inline">zig build e2e</code> loads a hand-encoded RV32I program that loops over a string, bangs each byte into the UART, then halts.</div>
+    <div class="caption">All 40 decode into a single tagged <code class="inline">Instruction</code> union — <code class="inline">execute</code> switches on the tag, no opcode-bit shenanigans in the hot path. <strong>78 inline unit tests</strong> pin encode/decode round-trips and arithmetic edge cases.</div>
   </section>
 
-  <!-- 4: Chapter 1.B · IMA extensions -->
-  <section data-label="Ch 1.B · IMA extensions">
-    <div class="slide-label">chapter 1.b · ima extensions</div>
-    <h2 class="slide-title">Multiply, divide, <span class="accent">atomics</span></h2>
-    <p class="plain">The ISA baseline for a Linux-class kernel. <strong>M</strong> gives us multiply and divide — with every edge case (signed overflow, divide-by-zero return values). <strong>A</strong> gives us load-reserved / store-conditional plus nine atomic memory operations.</p>
+  <!-- 4: Chapter 1.A · memory + MMIO -->
+  <section data-label="Ch 1.A · memory + MMIO">
+    <div class="slide-label">chapter 1.a · memory + mmio</div>
+    <h2 class="slide-title">128 MB of RAM, <span class="accent">two devices, one halt</span></h2>
+    <p class="plain">Memory is one flat allocation at <code>0x8000_0000</code>. Loads and stores route through a single <code>Memory</code> object: addresses inside the RAM range hit the buffer; a small set of MMIO ranges shortcut to device handlers. Two devices is the minimum needed to make the guest <em>do</em> something visible: print bytes, then stop.</p>
+    <div class="two-col">
+      <pre class="flow" style="font-size: 22px; margin: 0;"><span class="dim">guest physical address space</span>
+
+ 0x0000_0000  ┐
+              │  invalid · access fault
+ 0x0010_0000  ┤  <span class="arrow">halt MMIO</span>   <span class="dim">(1 byte)</span>
+              │
+ 0x1000_0000  ┤  <span class="arrow">UART</span>        <span class="dim">(NS16550A subset)</span>
+              │
+              │  invalid
+ 0x8000_0000  ┤  <span class="arrow">RAM</span>         <span class="dim">128 MB, flat</span>
+              │
+ 0x8800_0000  ┘
+</pre>
+      <div class="panel">
+        <h4>UART · 0x1000_0000</h4>
+        <p style="font-size: 22px; margin-bottom: 18px;">NS16550A subset. THR (offset 0) byte-stores forward to host stdout; LSR (offset 5) reports <code class="inline">THR_EMPTY | TX_IDLE</code> so the guest's spin-wait completes immediately.</p>
+        <h4 style="margin-top: 0;">Halt · 0x0010_0000</h4>
+        <p style="font-size: 22px;">A single byte. Any store snapshots the low byte as the host process's exit code, then breaks the fetch-decode loop.</p>
+      </div>
+    </div>
+    <div class="caption"><code class="inline">zig build e2e</code> loads a hand-encoded RV32I program at <code class="inline">0x8000_0000</code> that loops over <code class="inline">"hello world\n"</code>, byte-stores each character to the UART THR, then byte-stores 0 to the halt device. <strong>The first end-to-end signal that the emulator is real.</strong></div>
+  </section>
+
+  <!-- 5: Chapter 1.B · M extension -->
+  <section data-label="Ch 1.B · M extension">
+    <div class="slide-label">chapter 1.b · m extension</div>
+    <h2 class="slide-title">Multiply, divide, <span class="accent">every edge case</span></h2>
+    <p class="plain">RV32M adds <strong>8 instructions</strong>. Multiply is straightforward — except the high-word variants (<code>mulh</code> / <code>mulhu</code> / <code>mulhsu</code>) need 64-bit intermediates with the right signedness on each operand. Divide and remainder are required to behave a specific way on the two cases that would otherwise trap on real silicon: <strong>divide by zero</strong> and <strong>signed overflow</strong>.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 22px; padding: 18px 22px;"><span class="c">// rv32m: 8 ops, all OP-major (0x33),</span>
+<span class="c">// distinguished by funct7 = 0000001</span>
+
+<span class="c">// multiply</span>
+mul    rd, rs1, rs2     <span class="c">// (rs1 * rs2)[31:0]</span>
+mulh   rd, rs1, rs2     <span class="c">// (s64 × s64)[63:32]</span>
+mulhu  rd, rs1, rs2     <span class="c">// (u64 × u64)[63:32]</span>
+mulhsu rd, rs1, rs2     <span class="c">// (s64 × u64)[63:32]</span>
+
+<span class="c">// divide / remainder</span>
+div    rd, rs1, rs2     <span class="c">// signed</span>
+divu   rd, rs1, rs2     <span class="c">// unsigned</span>
+rem    rd, rs1, rs2     <span class="c">// signed</span>
+remu   rd, rs1, rs2     <span class="c">// unsigned</span></pre>
+      <div class="panel">
+        <h4>Edge cases · spec-mandated</h4>
+        <p style="font-size: 22px; line-height: 1.65;">
+          <strong>Divide by zero</strong><br>
+          <code class="inline">div / divu</code> → <code class="inline">0xFFFF_FFFF</code><br>
+          <code class="inline">rem / remu</code> → dividend<br><br>
+          <strong>Signed overflow</strong> <span style="color: var(--muted);">(<code class="inline">INT_MIN</code> ÷ <code class="inline">-1</code>)</span><br>
+          <code class="inline">div</code> → <code class="inline">INT_MIN</code><br>
+          <code class="inline">rem</code> → <code class="inline">0</code><br><br>
+          <span style="color: var(--muted);">No traps. Ever. The result is what the hardware <em>must</em> return.</span>
+        </p>
+      </div>
+    </div>
+    <div class="caption"><code class="inline">execute</code> casts to <code class="inline">i64</code>/<code class="inline">u64</code> with the correct signedness per opcode, then truncates to the requested half. ~30 new unit tests pin every edge case from the table above.</div>
+  </section>
+
+  <!-- 6: Chapter 1.B · A extension -->
+  <section data-label="Ch 1.B · A extension">
+    <div class="slide-label">chapter 1.b · a extension</div>
+    <h2 class="slide-title">LR/SC plus <span class="accent">nine atomic ops</span></h2>
+    <p class="plain">RV32A adds <strong>11 instructions</strong>. Load-reserved / store-conditional gives us a compare-and-swap-shaped primitive; the nine AMOs (atomic-memory-operation) are read-modify-write opcodes that return the original value. Single-hart semantics — the <code>aq</code>/<code>rl</code> ordering bits decode but don't reorder anything. A small <code class="inline">reservation: ?u32</code> field on the hart tracks live LR/SC state.</p>
     <pre class="code">    <span class="c"># 6 × 7 = 42, atomically stored, split for display</span>
     li    t1, <span class="n">6</span>
     li    t2, <span class="n">7</span>
@@ -397,49 +480,92 @@
     <span class="a">divu</span>  t6, t4, <span class="n">10</span>           <span class="c"># tens  = 4                    (RV32M)</span>
     <span class="a">remu</span>  t4, t4, <span class="n">10</span>           <span class="c"># ones  = 2                    (RV32M)</span>
     <span class="a">fence.i</span>                     <span class="c"># instruction fence          (Zifencei)</span></pre>
-    <div class="caption"><strong>8 M-ops</strong> (mul/mulh/mulhu/mulhsu · div/divu/rem/remu) · <strong>11 A-ops</strong> (lr.w/sc.w + 9 AMOs: swap/add/xor/and/or/min/max/minu/maxu) · <strong>1 Zifencei</strong>. ~50 new unit tests green. A <code class="inline">reservation: ?u32</code> field tracks LR/SC coherence.</div>
+    <div class="caption"><strong>11 A-ops</strong> · <code class="inline">lr.w</code> · <code class="inline">sc.w</code> + 9 AMOs <span style="color: var(--muted);">(swap · add · xor · and · or · min · max · minu · maxu)</span> · <strong>1 Zifencei</strong> — <code class="inline">fence.i</code> is a no-op (we have no I-cache). <code class="inline">lr.w</code> sets the reservation; <code class="inline">sc.w</code> reads it, returns 0 on success / 1 on miss, then clears it. ~50 new unit tests green.</div>
   </section>
 
-  <!-- 5: Chapter 1.C · privilege + traps + conformance -->
-  <section data-label="Ch 1.C · privilege + traps">
-    <div class="slide-label">chapter 1.c · privilege + traps + conformance</div>
-    <h2 class="slide-title">CSRs, a trap handler, <span class="accent">the real test suite</span></h2>
-    <p class="plain">The machinery that separates kernel code from user code: control and status registers, two privilege levels, a synchronous trap path. Then we point the official RISC-V conformance tests at it.</p>
+  <!-- 7: Chapter 1.C · privilege + CSRs -->
+  <section data-label="Ch 1.C · privilege + CSRs">
+    <div class="slide-label">chapter 1.c · privilege + csrs</div>
+    <h2 class="slide-title">Two privileges, <span class="accent">a control file</span></h2>
+    <p class="plain">Up to now the hart had one mode and zero state besides registers and PC. Plan 1.C adds the machinery that separates kernel code from user code: a second privilege level (<strong>U</strong>), a small file of <strong>control and status registers</strong>, and the <code>Zicsr</code> instructions that read and write them. U-mode access to M-CSRs traps as illegal — the boundary becomes enforceable.</p>
     <div class="two-col">
       <div class="panel">
-        <h4>Trap mechanics</h4>
+        <h4>Zicsr · 6 instructions</h4>
+        <pre class="code" style="margin: 12px 0 0 0; font-size: 22px; padding: 18px 22px;">csrrw  rd, csr, rs1   <span class="c"># swap</span>
+csrrs  rd, csr, rs1   <span class="c"># set bits</span>
+csrrc  rd, csr, rs1   <span class="c"># clear bits</span>
+csrrwi rd, csr, uimm5
+csrrsi rd, csr, uimm5
+csrrci rd, csr, uimm5
+
+<span class="c"># side-effect rules:</span>
+<span class="c">#   rd  = x0 → suppress read</span>
+<span class="c">#   rs1 = x0 → suppress write</span></pre>
+      </div>
+      <div class="panel">
+        <h4>M-mode CSR file</h4>
+        <p style="font-size: 22px; line-height: 1.65;">
+          <strong>writable</strong><br>
+          <code class="inline">mstatus</code> · <code class="inline">mtvec</code> · <code class="inline">mepc</code><br>
+          <code class="inline">mcause</code> · <code class="inline">mtval</code><br>
+          <code class="inline">mie</code> · <code class="inline">mip</code> · <code class="inline">mscratch</code><br>
+          <code class="inline">mtimecmp</code> <span style="color: var(--muted);">(via CLINT mirror)</span><br><br>
+          <strong>read-only</strong><br>
+          <code class="inline">misa</code> = <code class="inline">0x4014_1101</code> <span style="color: var(--muted);">(RV32 I·M·A·U)</span><br>
+          <code class="inline">mhartid</code> · <code class="inline">mvendor/arch/impid</code> · zero<br><br>
+          U-mode CSR access → illegal instruction trap.
+        </p>
+      </div>
+    </div>
+    <div class="caption"><code class="inline">mstatus</code>'s key bits: <strong>MIE</strong> (interrupts enabled), <strong>MPIE</strong> (saved MIE), <strong>MPP</strong> (previous privilege — restored by <code class="inline">mret</code>). Setting <code class="inline">MPP=00</code> then <code class="inline">mret</code> downgrades to U-mode. The whole privilege transition is one instruction.</div>
+  </section>
+
+  <!-- 8: Chapter 1.C · traps + conformance -->
+  <section data-label="Ch 1.C · traps + conformance">
+    <div class="slide-label">chapter 1.c · traps + the real test suite</div>
+    <h2 class="slide-title">Synchronous traps, <span class="accent">a real test suite</span></h2>
+    <p class="plain">A trap is a tightly choreographed dance of CSR writes. Six fields snapshot the cause, the faulting PC, and the previous privilege; PC jumps to <code>mtvec</code>. <code>mret</code> reverses it. Eight causes cover everything an RV32IMA hart can throw without supervisor mode. Then we point the official <strong>RISC-V conformance tests</strong> at it.</p>
+    <div class="two-col">
+      <div class="panel">
+        <h4>Trap entry · mret</h4>
         <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">  U-mode code
      │  ecall / fault
      ▼
   mcause ← cause code
   mepc   ← pc of faulting inst
+  mtval  ← fault info
   mstatus.MPP  ← prev priv
-  mstatus.MPIE ← MIE;  MIE ← 0
+  mstatus.MPIE ← MIE; MIE ← 0
   pc     ← mtvec
      │
      ▼
   M-mode handler
      │  <span class="arrow">mret</span>
      ▼
-  resume at mepc</pre>
+  pc     ← mepc
+  priv   ← mstatus.MPP
+  MIE    ← mstatus.MPIE
+     │
+     ▼
+  resume
+
+<span class="dim">8 causes · ecall_u/m · ebreak ·</span>
+<span class="dim">illegal · ld/st misaligned · ld/st fault</span></pre>
       </div>
       <div class="panel">
-        <h4>What's in the box</h4>
-        <p style="font-size: 24px; line-height: 1.6;">
-          <strong>6 Zicsr insns</strong> <span style="color: var(--muted);">(csrrw/s/c + *i)</span><br><br>
-          <strong>M-mode CSR file:</strong><br>
-          <span style="color: var(--muted);">mstatus · mtvec · mepc · mcause · mtval · mie · mip · mscratch …</span><br><br>
-          <strong>M / U</strong> privilege · U-mode CSR access traps illegal<br><br>
-          <strong>8 trap causes</strong> · <code class="inline">mret</code><br><br>
-          CLINT @ <code class="inline">0x02000000</code> <span style="color: var(--muted);">(msip · mtimecmp · mtime)</span><br><br>
-          Hand-rolled <strong>ELF32 loader</strong> · resolves <code class="inline">tohost</code>
-        </p>
+        <h4>Conformance · riscv-tests</h4>
+        <pre style="background: transparent; border: none; padding: 0; margin: 12px 0 0 0; font-family: ui-monospace, Menlo, monospace; font-size: 22px; line-height: 1.55; color: var(--fg); white-space: pre;">$ zig build riscv-tests
+<span style="color: var(--dim);"># 66/66 pass</span>
+<span style="color: var(--dim);">#   rv32ui  39   integer</span>
+<span style="color: var(--dim);">#   rv32um   8   multiply/divide</span>
+<span style="color: var(--dim);">#   rv32ua  10   atomics</span>
+<span style="color: var(--dim);">#   rv32mi   9   M-mode + traps</span></pre>
+        <p style="font-size: 22px; line-height: 1.55; margin-top: 16px;">Each test is an ELF that runs under our hand-rolled <strong>ELF32 loader</strong>; success is signaled by writing 1 to the linker symbol <code class="inline">tohost</code>. CLINT lives at <code class="inline">0x0200_0000</code> for the <code class="inline">rv32mi</code> timer tests.</p>
       </div>
     </div>
-    <div class="caption"><strong>riscv-tests conformance:</strong> <code class="inline">rv32ui-p-*</code> · <code class="inline">rv32um-p-*</code> · <code class="inline">rv32ua-p-*</code> · <code class="inline">rv32mi-p-*</code> — all green.</div>
   </section>
 
-  <!-- 6: Chapter 1.D · two halves -->
+  <!-- 9: Chapter 1.D · two halves -->
   <section data-label="Ch 1.D · hello.elf">
     <div class="slide-label">chapter 1.d · hello.elf · two halves</div>
     <h2 class="slide-title">Two halves, one binary</h2>
@@ -458,7 +584,7 @@
     </div>
   </section>
 
-  <!-- 7: Chapter 1.D · boot flow -->
+  <!-- 10: Chapter 1.D · boot flow -->
   <section data-label="Ch 1.D · boot flow">
     <div class="slide-label">chapter 1.d · hello.elf · boot flow</div>
     <h2 class="slide-title">Control flow, end to end</h2>
@@ -478,7 +604,7 @@
   halt MMIO 0x00100000          <span class="dim">← exit code</span></pre>
   </section>
 
-  <!-- 8: Chapter 1.D · monitor._start -->
+  <!-- 11: Chapter 1.D · monitor._start -->
   <section data-label="Ch 1.D · monitor.S">
     <div class="slide-label">chapter 1.d · hello.elf · monitor.S</div>
     <h2 class="slide-title">_start: configure the hart, drop to U-mode</h2>
@@ -495,7 +621,7 @@
     <div class="caption">PMP setup omitted for clarity — the real <code class="inline">monitor.S</code> installs a PMP entry granting U-mode RWX on all of RAM so QEMU and ccc run the same binary.</div>
   </section>
 
-  <!-- 9: Chapter 1.D · u_entry -->
+  <!-- 12: Chapter 1.D · u_entry -->
   <section data-label="Ch 1.D · hello.zig">
     <div class="slide-label">chapter 1.d · hello.elf · hello.zig</div>
     <h2 class="slide-title">The entire U-mode program</h2>
@@ -517,7 +643,7 @@
 }</pre>
   </section>
 
-  <!-- 10: Chapter 1.D · ecall + dispatch -->
+  <!-- 13: Chapter 1.D · ecall + dispatch -->
   <section data-label="Ch 1.D · trap + dispatch">
     <div class="slide-label">chapter 1.d · hello.elf · the trap</div>
     <h2 class="slide-title"><code class="inline" style="font-size: 0.95em;">ecall</code> → <code class="inline" style="font-size: 0.95em;">trap_vector</code></h2>
@@ -549,7 +675,7 @@
     </div>
   </section>
 
-  <!-- 11: Chapter 1.D · sys_write + sys_exit -->
+  <!-- 14: Chapter 1.D · sys_write + sys_exit -->
   <section data-label="Ch 1.D · devices">
     <div class="slide-label">chapter 1.d · hello.elf · the devices</div>
     <h2 class="slide-title">Bytes out · <span class="accent">exit code in</span></h2>
@@ -572,7 +698,7 @@
     </div>
   </section>
 
-  <!-- 12: Chapter 1.D · verification -->
+  <!-- 15: Chapter 1.D · verification -->
   <section data-label="Ch 1.D · verification">
     <div class="slide-label">chapter 1.d · hello.elf · verification</div>
     <h2 class="slide-title">Verified against QEMU, <span class="accent">instruction by instruction</span></h2>
@@ -604,11 +730,50 @@ $ zig build riscv-tests
     </div>
   </section>
 
-  <!-- 13: Chapter 2.A · S-mode + Sv32 -->
-  <section data-label="Ch 2.A · S-mode + Sv32">
-    <div class="slide-label">chapter 2.a · s-mode + sv32</div>
-    <h2 class="slide-title">A third privilege, <span class="accent">virtual memory</span></h2>
-    <p class="plain">Phase 2 starts by teaching the hart the missing privilege level between the monitor and the user program. With <strong>supervisor mode</strong> comes the page table, and with the page table comes virtual memory — addresses the CPU translates on every fetch and every load.</p>
+  <!-- 16: Chapter 2.A · S-mode -->
+  <section data-label="Ch 2.A · S-mode">
+    <div class="slide-label">chapter 2.a · the missing privilege</div>
+    <h2 class="slide-title">A third privilege: <span class="accent">supervisor</span></h2>
+    <p class="plain">Phase 1's hart had two modes — M and U. A real OS sits in the middle, where it can run system code without owning the firmware. Plan 2.A adds <strong>S-mode</strong>, plus its own slice of CSRs that mirror the M-mode set. <code>sstatus</code>, <code>sie</code>, and <code>sip</code> are <strong>masked views</strong> over the same underlying mstatus/mie/mip storage — the kernel never sees machine-only bits.</p>
+    <div class="three-col">
+      <div class="panel">
+        <h4>S-mode CSRs</h4>
+        <p style="font-size: 22px; line-height: 1.65;">
+          <code class="inline">sstatus</code> <span style="color: var(--muted);">(SIE/SPIE/SPP/SUM/MXR)</span><br>
+          <code class="inline">sie</code> · <code class="inline">sip</code> <span style="color: var(--muted);">(SSI/STI/SEI bits only)</span><br>
+          <code class="inline">stvec</code> · <code class="inline">sepc</code> · <code class="inline">scause</code><br>
+          <code class="inline">stval</code> · <code class="inline">sscratch</code><br>
+          <code class="inline">satp</code> <span style="color: var(--muted);">(MODE · ASID · root PPN)</span>
+        </p>
+      </div>
+      <div class="panel">
+        <h4>Two new instructions</h4>
+        <p style="font-size: 22px; line-height: 1.65;">
+          <code class="inline">sret</code> — the S-mode counterpart of <code class="inline">mret</code>. Restores PC ← <code class="inline">sepc</code>, priv ← <code class="inline">sstatus.SPP</code>, SIE ← SPIE.<br><br>
+          <code class="inline">sfence.vma</code> — TLB / page-table fence. We don't model a TLB, so this is effectively a no-op — but the encoding decodes and privilege-checks.
+        </p>
+      </div>
+      <div class="panel">
+        <h4>Privilege ladder</h4>
+        <pre class="flow" style="font-size: 22px; line-height: 1.5; margin: 0;">  M  <span class="dim">(firmware)</span>
+   ↓  mret
+  S  <span class="dim">(kernel)</span>
+   ↓  sret
+  U  <span class="dim">(user)</span>
+
+<span class="dim">misa now</span>
+0x4014_1101
+<span class="dim">RV32 I·M·A·U·S</span></pre>
+      </div>
+    </div>
+    <div class="caption">U-mode access to <em>any</em> S-CSR traps as illegal. M-mode can read or write S-CSRs freely. Every Phase 1 test stays green — adding a privilege level shouldn't break anything below it.</div>
+  </section>
+
+  <!-- 17: Chapter 2.A · Sv32 paging -->
+  <section data-label="Ch 2.A · Sv32 paging">
+    <div class="slide-label">chapter 2.a · sv32 paging</div>
+    <h2 class="slide-title">Virtual addresses, <span class="accent">a two-level walk</span></h2>
+    <p class="plain">When <code>satp.MODE = 1</code> and the effective privilege is S or U, every address the hart touches goes through the page table. Two levels of 10 bits index 4 KB tables of 32-bit PTEs; the leaf carries an R/W/X/U/V/A/D flag set and the physical page number. Permission checks happen on every walk; failures raise one of three new <strong>page-fault</strong> causes.</p>
     <div class="two-col">
       <pre class="flow" style="font-size: 22px; margin: 0;"><span class="dim">Sv32 virtual address</span>
 
@@ -626,27 +791,29 @@ $ zig build riscv-tests
 <span class="dim">page-fault causes</span>
  <span class="arrow">12</span> inst    <span class="arrow">13</span> load    <span class="arrow">15</span> store</pre>
       <div class="panel">
-        <h4>S-mode additions</h4>
-        <p style="font-size: 24px; line-height: 1.6;">
-          New privilege: <strong>S</strong> &nbsp;<span style="color: var(--muted);">(M / S / U)</span><br><br>
-          <strong>S-CSRs:</strong> sstatus · sie · sip <span style="color: var(--muted);">(masked views)</span> · stvec · sepc · scause · stval · sscratch · <strong>satp</strong><br><br>
-          <strong>2 instructions:</strong> <code class="inline">sret</code> · <code class="inline">sfence.vma</code><br><br>
-          <strong>PTE flags:</strong> V · R · W · X · U · G · A · D<br><br>
-          <code class="inline">misa</code> updated to <code class="inline">0x40141101</code>
+        <h4>PTE layout · 32 bits</h4>
+        <pre class="flow" style="font-size: 18px; line-height: 1.5; margin: 0;"> 31     20 19    10 9 8 7 6 5 4 3 2 1 0
+┌─────────┬───────┬───┬─┬─┬─┬─┬─┬─┬─┬─┐
+│  PPN[1] │PPN[0] │RSW│D│A│G│U│X│W│R│V│
+└─────────┴───────┴───┴─┴─┴─┴─┴─┴─┴─┴─┘</pre>
+        <p style="font-size: 22px; margin-top: 18px; line-height: 1.55;">
+          <strong>V</strong> · valid &nbsp; <strong>R/W/X</strong> · perms &nbsp; <strong>U</strong> · user-accessible<br>
+          <strong>G</strong> · global &nbsp; <strong>A</strong> · accessed &nbsp; <strong>D</strong> · dirty<br><br>
+          Leaf vs intermediate: a leaf has any of R·W·X set. An intermediate has none — the walk continues.
         </p>
       </div>
     </div>
-    <div class="caption"><strong>rv32si-p-*:</strong> csr · dirty · illegal · ma_fetch · sbreak · scall · wfi — all green. Every Phase 1 test still green.</div>
+    <div class="caption"><strong>rv32si-p-*:</strong> csr · dirty · illegal · ma_fetch · sbreak · scall · wfi — all green. Permission check uses both the U-bit on the PTE and the <code class="inline">SUM</code>/<code class="inline">MXR</code> bits in <code class="inline">sstatus</code>. A/D bits update in place on access if the PTE allows.</div>
   </section>
 
-  <!-- 14: Chapter 2.B · delegation + async -->
-  <section data-label="Ch 2.B · delegation + async">
-    <div class="slide-label">chapter 2.b · delegation + interrupts</div>
-    <h2 class="slide-title">Delegated traps, <span class="accent">async timers</span></h2>
-    <p class="plain">Instead of every trap landing in M and the monitor ping-ponging down to S, we teach the CPU to route traps straight to supervisor mode. And for the first time, traps can arrive <strong>from outside the instruction stream</strong> — an asynchronous timer interrupt fired by the CLINT.</p>
+  <!-- 18: Chapter 2.B · delegation -->
+  <section data-label="Ch 2.B · delegation">
+    <div class="slide-label">chapter 2.b · trap delegation</div>
+    <h2 class="slide-title">Bypass M, <span class="accent">land in S</span></h2>
+    <p class="plain">Without delegation, every fault from S-mode and U-mode lands in M-mode, and the firmware has to ping-pong everything down to the kernel. Real hardware doesn't do that. <code>medeleg</code> and <code>mideleg</code> are bitmask CSRs — set bit <em>N</em> means cause <em>N</em> routes straight to S-mode (filling <code>sepc</code>/<code>scause</code>/<code>stvec</code> instead of their M-counterparts). M-mode itself never delegates.</p>
     <div class="two-col">
       <div class="panel">
-        <h4>Delegation routing</h4>
+        <h4>Delegation decision</h4>
         <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">  fault / interrupt
   in U or S
        │
@@ -660,50 +827,91 @@ $ zig build riscv-tests
     ▼       ▼
   S-mode   M-mode
   sepc     mepc
-  stvec    mtvec</pre>
+  scause   mcause
+  stvec    mtvec
+  sstatus  mstatus
+   .SPP    .MPP</pre>
       </div>
       <div class="panel">
+        <h4>What can be delegated</h4>
+        <p style="font-size: 22px; line-height: 1.6;">
+          <strong>Synchronous (medeleg):</strong><br>
+          ecall_u · ebreak · illegal<br>
+          ld/st misaligned · ld/st fault<br>
+          page faults <span style="color: var(--muted);">(12 · 13 · 15)</span><br><br>
+          <strong>Interrupt (mideleg):</strong><br>
+          SSI <span style="color: var(--muted);">(1)</span> · STI <span style="color: var(--muted);">(5)</span> · SEI <span style="color: var(--muted);">(9)</span><br><br>
+          M-only causes <span style="color: var(--muted);">(MSI/MTI/MEI/ecall_m)</span> are never delegable — those bits in medeleg/mideleg are WARL-zero.
+        </p>
+      </div>
+    </div>
+    <div class="caption">A trap that fires <em>in M-mode</em> always lands in M-mode regardless of delegation — delegation is "exit early to S on the way down", not "redirect M". The supervisor can finally service its own faults without the firmware in the loop.</div>
+  </section>
+
+  <!-- 19: Chapter 2.B · async interrupts -->
+  <section data-label="Ch 2.B · async interrupts">
+    <div class="slide-label">chapter 2.b · async interrupts</div>
+    <h2 class="slide-title">Traps from <span class="accent">outside the instruction stream</span></h2>
+    <p class="plain">Up until now, every trap was synchronous — it came <em>from</em> an instruction. Plan 2.B introduces <strong>asynchronous</strong> interrupts: between every fetch, the hart checks <code>mip &amp; mie</code> against the current privilege and the WFI/MIE state, and if any pending interrupt is enabled, it traps before the next instruction runs. The CLINT is the first source — <code>mtime ≥ mtimecmp</code> drives <code>mip.MTIP</code> live.</p>
+    <div class="two-col">
+      <div class="panel">
         <h4>Interrupt priority</h4>
-        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">MEI &gt; MSI &gt; MTI &gt; SEI &gt; SSI &gt; STI
+        <pre class="flow" style="font-size: 20px; line-height: 1.5; margin-top: 6px;">MEI &gt; MSI &gt; MTI &gt; SEI &gt; SSI &gt; STI
 (11)  (3)   (7)   (9)   (1)   (5)
 
-<span class="dim">CLINT drives MTIP live:</span>
- mtime ≥ mtimecmp
-   → mip.MTIP = 1
+<span class="dim">at each instruction fetch:</span>
+ if mip &amp; mie &amp; (priv-mask)
+   take highest-priority bit
+   trap (cause &amp; 0x80000000 set)
 
 <span class="dim">mie / mip are WARL-masked.</span>
 <span class="dim">MTIP is hardware-only on write;</span>
 <span class="dim">reads see CLINT's truth.</span></pre>
       </div>
+      <div class="panel">
+        <h4>CLINT · live MTIP</h4>
+        <pre class="flow" style="font-size: 20px; line-height: 1.5; margin-top: 6px;">CLINT @ 0x0200_0000
+  msip      [4 B · MSI source]
+  mtimecmp  [8 B · timer threshold]
+  mtime     [8 B · 10 MHz clock]
+
+<span class="dim">read of mip recomputes MTIP:</span>
+ mip.MTIP = (mtime ≥ mtimecmp)
+
+<span class="dim">writes to mip.MTIP are ignored —</span>
+<span class="dim">it's hardware-driven, not software.</span></pre>
+      </div>
     </div>
-    <div class="caption"><strong>Round-trip integration test:</strong> CLINT fires MTIP → M-mode ISR acks timer, sets <code class="inline">mip.SSIP</code> → S-mode ISR receives delegated software interrupt, clears it, writes sentinel. One test, every layer.</div>
+    <div class="caption"><strong>Round-trip integration test:</strong> CLINT fires MTIP → M-mode ISR acks the timer, sets <code class="inline">mip.SSIP</code> → S-mode ISR receives a delegated software interrupt, clears it, writes a sentinel. One test, every layer of routing exercised.</div>
   </section>
 
-  <!-- 15: Chapter 2.C · kernel skeleton -->
-  <section data-label="Ch 2.C · kernel skeleton">
-    <div class="slide-label">chapter 2.c · kernel skeleton</div>
-    <h2 class="slide-title">Three privileges, <span class="accent">one program</span></h2>
-    <p class="plain">Plans 2.A and 2.B built the CPU substrate. 2.C composes it into a real kernel. An M-mode boot shim sets up delegation and the timer, drops to S at <code class="inline">kmain</code>; the S-mode kernel builds an Sv32 page table, installs a trap dispatcher, and <code class="inline">sret</code>s into a U-mode program that prints <code>hello from u-mode</code> via the <code class="inline">write</code> and <code class="inline">exit</code> syscalls.</p>
-    <div class="two-col">
-      <div class="panel">
-        <h4>Single address space</h4>
-        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;"><span class="dim">process page table</span>
- 0x00010000  user .text/.rodata   <span class="dim">U R W X</span>
- 0x00030000  user stack (2 pages) <span class="dim">U R W</span>
- 0x00100000  halt MMIO            <span class="dim">S R W</span>
- 0x02000000  CLINT                <span class="dim">S R W</span>
- 0x10000000  UART                 <span class="dim">S R W</span>
- 0x80000000  kernel .text         <span class="dim">S R X</span>
-            kernel .rodata       <span class="dim">S R</span>
-            kernel .data/.bss    <span class="dim">S R W</span>
-            kernel stack (16 KB) <span class="dim">S R W</span>
+  <!-- 20: Chapter 2.C · kernel address space -->
+  <section data-label="Ch 2.C · kernel address space">
+    <div class="slide-label">chapter 2.c · the address space</div>
+    <h2 class="slide-title">Three privileges, <span class="accent">one address space</span></h2>
+    <p class="plain">Plans 2.A and 2.B built the CPU substrate. 2.C composes it into a real kernel. The first decision: <strong>one Sv32 page table</strong>, shared by kernel and user. Kernel pages are mapped <em>identity</em> (VA == PA) with S-only perms; user pages live at <code>0x0001_0000</code> with U=R/W/X. <code>G=1</code> on every leaf so the (modeled-as-no-op) TLB doesn't need flushes when we'd switch contexts.</p>
+    <pre class="flow" style="margin: 0;"><span class="dim">process page table</span>
+ 0x0001_0000  user .text / .rodata    <span class="dim">U R W X</span>
+ 0x0003_0000  user stack (2 pages)    <span class="dim">U R W</span>
+ 0x0010_0000  halt MMIO               <span class="dim">S R W</span>
+ 0x0200_0000  CLINT                   <span class="dim">S R W</span>
+ 0x1000_0000  UART                    <span class="dim">S R W</span>
+ 0x8000_0000  kernel .text            <span class="dim">S R X</span>
+              kernel .rodata          <span class="dim">S R</span>
+              kernel .data / .bss     <span class="dim">S R W</span>
+              kernel stack (16 KB)    <span class="dim">S R W</span>
 
-<span class="dim">kernel VA == kernel PA</span>
-<span class="dim">(direct-mapped, G=1 throughout)</span></pre>
-      </div>
-      <div class="panel">
-        <h4>Boot → hello from u-mode</h4>
-        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">M   boot.S zero BSS
+<span class="dim">kernel VA == kernel PA · direct-mapped · G=1 throughout</span></pre>
+    <div class="caption"><strong>Why one address space?</strong> Phase 2.C runs exactly one user program, and kernel-side virtual addresses (which include MMIO and the kernel image) need to be reachable from inside trap handlers without a context switch. Splitting into per-process page tables waits for Plan 3.B.</div>
+  </section>
+
+  <!-- 21: Chapter 2.C · boot flow -->
+  <section data-label="Ch 2.C · boot flow">
+    <div class="slide-label">chapter 2.c · m → s → u</div>
+    <h2 class="slide-title">Boot to <span class="accent">hello from u-mode</span></h2>
+    <p class="plain">A tiny <code>boot.S</code> in M-mode sets up delegation, the trap vector, and the timer, then drops into the S-mode kernel's <code>kmain</code>. <code>kmain</code> initializes the page allocator, builds the Sv32 root, maps everything in the table on the previous slide, installs the S-mode trap entry, and <code>sret</code>s into the user payload. The payload prints <code>hello from u-mode</code> via <code>write</code> and <code>exit</code>, and the emulator returns 0.</p>
+    <div class="two-col">
+      <pre class="flow" style="margin: 0; font-size: 20px; line-height: 1.45;">M   boot.S zero BSS
 M   medeleg / mideleg
 M   mtvec = m_trap_vector
 M   mtimecmp = mtime + 1e6
@@ -714,47 +922,69 @@ S   vm.allocRoot
 S   vm.mapKernelAndMmio
 S   vm.mapUser(blob)
 S   stvec = s_trap_entry
-S   sscratch = &the_tf
+S   sscratch = &amp;the_tf
 S   csrw satp; sfence.vma
 S   sret ──────────────► U
 U   ecall (write 64)   ◄─┐
 S   sys_write → UART     │
 U   ecall (exit 93)    ◄─┤
 S   sys_exit → halt      └──► emulator exit 0</pre>
+      <div class="panel">
+        <h4>Two syscalls</h4>
+        <p style="font-size: 24px; line-height: 1.55;">
+          <strong>sys_write</strong> <span style="color: var(--muted);">(a7=64)</span> · loops over <code class="inline">a1[0..a2]</code>, byte-stores each character to the UART THR.<br><br>
+          <strong>sys_exit</strong> <span style="color: var(--muted);">(a7=93)</span> · stores <code class="inline">a0</code>'s low byte to the halt MMIO, halting the emulator with that exit code.<br><br>
+          <span style="color: var(--muted);">Both arrive via <code class="inline">ecall</code>, are delegated to S, dispatched in <code class="inline">trap.zig</code>, and return via <code class="inline">sret</code>.</span>
+        </p>
       </div>
     </div>
     <div class="caption"><strong>e2e-kernel:</strong> <code class="inline">ccc kernel.elf</code> prints exactly <code>hello from u-mode\n</code> and exits 0. No <code class="inline">Process</code> struct, no scheduler, no <code class="inline">yield</code> — those arrive in Plan 2.D.</div>
   </section>
 
-  <!-- 16: Chapter 2.D · processes + scheduler + ticks -->
-  <section data-label="Ch 2.D · processes + ticks">
-    <div class="slide-label">chapter 2.d · processes + scheduler + ticks</div>
-    <h2 class="slide-title">One process, <span class="accent">counting ticks</span></h2>
-    <p class="plain">Plan 2.D finishes Phase 2. A <code class="inline">Process</code> struct owns per-process state; a two-function scheduler stub is wired into the timer ISR and a new <code class="inline">yield</code> syscall; every forwarded timer tick bumps a counter the user program eventually prints. The Phase 2 §Definition of done: <code>hello from u-mode\nticks observed: N\n</code> with N &gt; 0.</p>
+  <!-- 22: Chapter 2.D · process struct -->
+  <section data-label="Ch 2.D · process struct">
+    <div class="slide-label">chapter 2.d · process · scheduler stub</div>
+    <h2 class="slide-title">A <code>Process</code>, a <span class="accent">scheduler stub</span>, a <code>yield</code></h2>
+    <p class="plain">Plan 2.D finishes Phase 2 by giving the kernel state to <em>describe</em> a running program. The <code>Process</code> struct holds the trapframe (already saved on every trap), the page-table root, the kernel stack, a state, an exit code, and a per-process tick counter. <code>schedule()</code> is a one-line stub that returns the singleton — but everything downstream is wired as if it were a real picker.</p>
     <div class="two-col">
-      <div class="panel">
-        <h4>proc.zig + sched.zig</h4>
-        <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="k">pub const</span> Process = <span class="k">extern struct</span> {
-    tf: trap.TrapFrame,  <span class="c">// offset 0</span>
+      <pre class="code" style="margin: 0; font-size: 22px; padding: 18px 22px;"><span class="k">pub const</span> Process = <span class="k">extern struct</span> {
+    tf:   trap.TrapFrame,  <span class="c">// offset 0</span>
     satp: u32,
     kstack_top: u32,
-    state: State,        <span class="c">// Runnable/Running/Exited</span>
+    state: State,          <span class="c">// Runnable</span>
+                           <span class="c">// /Running/Exited</span>
     ticks_observed: u32,
     exit_code: u32,
 };
-<span class="k">pub export var</span> the_process: Process = <span class="k">undefined</span>;
+<span class="k">pub export var</span> the_process: Process
+    = <span class="k">undefined</span>;
 
 <span class="k">pub fn</span> schedule() *Process {
-    <span class="k">return</span> &amp;proc.the_process;  <span class="c">// singleton</span>
+    <span class="k">return</span> &amp;proc.the_process;
 }
 
 <span class="k">pub fn</span> context_switch_to(p: *Process) <span class="k">void</span> {
-    <span class="c">// csrw satp, p.satp; sfence.vma zero, zero</span>
+    <span class="c">// csrw satp, p.satp</span>
+    <span class="c">// sfence.vma zero, zero</span>
 }</pre>
-      </div>
       <div class="panel">
-        <h4>Timer tick · end to end</h4>
-        <pre class="flow" style="font-size: 20px; line-height: 1.4; margin-top: 6px;">M   CLINT: mtime ≥ mtimecmp
+        <h4>The yield syscall</h4>
+        <p style="font-size: 24px; line-height: 1.55;">
+          <strong>sys_yield</strong> <span style="color: var(--muted);">(a7=1)</span> — a no-op handler that returns immediately via <code class="inline">sret</code>. Because every trap return goes through <code class="inline">schedule()</code>, calling yield gives the scheduler a clean reason to <em>pretend</em> it picked the same process.<br><br>
+          <span style="color: var(--muted);">The structure is real even though the picker is trivial. When Plan 3.B replaces <code class="inline">schedule()</code> with a round-robin scan, none of this code changes — only the body of one function.</span>
+        </p>
+      </div>
+    </div>
+    <div class="caption">Trap-frame at offset 0 of <code class="inline">Process</code> matters: the trampoline always treats <code class="inline">sscratch</code> as a <code class="inline">*TrapFrame</code>, never a <code class="inline">*Process</code>. The two pointers are interchangeable as long as <code class="inline">tf</code> stays first — an invariant that survives into Plan 3.B and beyond.</div>
+  </section>
+
+  <!-- 23: Chapter 2.D · tick flow -->
+  <section data-label="Ch 2.D · tick flow">
+    <div class="slide-label">chapter 2.d · the tick</div>
+    <h2 class="slide-title">One process, <span class="accent">counting ticks</span></h2>
+    <p class="plain">Phase 2's <strong>Definition of Done</strong>: <code>hello from u-mode\nticks observed: N\n</code> with <code>N &gt; 0</code>. The path the timer takes to bump that counter touches every layer below: CLINT raises MTIP, M-mode's ISR re-arms <code>mtimecmp</code> and forwards via <code>mip.SSIP</code>, S-mode's dispatcher catches the delegated software interrupt, increments the counter, calls <code>schedule()</code>, and <code>sret</code>s back to the same user PC.</p>
+    <div class="two-col">
+      <pre class="flow" style="font-size: 20px; line-height: 1.45; margin: 0;">M   CLINT: mtime ≥ mtimecmp
 M   mip.MTIP = 1   <span class="dim">(async)</span>
 M   timer ISR: clear MTIP
 M                bump mtimecmp
@@ -771,34 +1001,76 @@ U   li a7, <span class="n">93</span> ; ecall    <span class="dim">(exit)</span>
 S   sys_exit:
       kprintf <span class="s">"ticks observed: 19\n"</span>
       halt MMIO ← <span class="n">0</span></pre>
+      <div class="panel">
+        <h4>Tuning the slice</h4>
+        <p style="font-size: 24px; line-height: 1.55;">
+          <strong>TIMESLICE</strong> tuned from <code class="inline">1 M</code> → <code class="inline">10 K</code> CLINT cycles (≈ 1 ms) so ticks accumulate during the user program's ~300 K-cycle busy-loop.<br><br>
+          <strong>verify_e2e.zig</strong> — host tool asserts stdout matches <code class="inline">hello from u-mode\nticks observed: (\d+)\n</code> with N&nbsp;&gt;&nbsp;0 and exit 0.<br><br>
+          <strong style="color: var(--accent);">Phase 2 §Definition of done · met.</strong>
+        </p>
       </div>
     </div>
-    <div class="caption"><strong>verify_e2e.zig</strong> — host tool asserts stdout matches <code class="inline">hello from u-mode\nticks observed: (\d+)\n</code> with N &gt; 0 and exit 0. <strong>TIMESLICE</strong> tuned from 1 M → 10 K CLINT cycles (≈ 1 ms) so ticks accumulate during the user program's ~300 K-cycle busy-loop. <strong>Phase 2 §Definition of done: met.</strong></div>
   </section>
 
-  <!-- 17: Chapter 3.A · PLIC + block + UART RX -->
-  <section data-label="Ch 3.A · PLIC + block + UART RX">
-    <div class="slide-label">chapter 3.a · plic + block + uart rx</div>
-    <h2 class="slide-title">Three new devices, <span class="accent">one delegated IRQ</span></h2>
-    <p class="plain">Phase 3 begins under the kernel. The emulator gains the hardware a multi-process OS needs from the platform: a <strong>PLIC</strong> aggregating 32 external sources for one S-mode hart context, a simple <strong>block device</strong> moving 4 KB sectors between RAM and a host-backed image file, and a <strong>UART RX</strong> path with a 256-byte FIFO. <code>wfi</code> becomes a real idle. <strong>No kernel-side code yet</strong> — Plan 3.A is emulator-only.</p>
-    <div class="three-col">
+  <!-- 24: Chapter 3.A · PLIC -->
+  <section data-label="Ch 3.A · PLIC">
+    <div class="slide-label">chapter 3.a · plic</div>
+    <h2 class="slide-title">PLIC · 32 sources, <span class="accent">one S-context</span></h2>
+    <p class="plain">Phase 3 begins under the kernel. The emulator gains the platform-level interrupt controller — a tiny piece of memory-mapped state that aggregates many <em>external</em> interrupt sources behind a single S-mode external interrupt (<code>SEIP</code>). One S-context, 32 sources, per-source priority, per-source enable, per-context threshold, and a claim/complete handshake every external IRQ flows through. <strong>No kernel-side code yet</strong> — Plan 3.A is emulator-only.</p>
+    <div class="two-col">
+      <pre class="flow" style="margin: 0; font-size: 20px; line-height: 1.5;">PLIC @ 0x0c00_0000
+
+ 0x0000_0000  source priority   <span class="dim">[32 × 4]</span>
+ 0x0000_1000  pending           <span class="dim">[1 × 4]</span>
+ 0x0000_2080  enable[ctx 0]     <span class="dim">[1 × 4]</span>
+ 0x0020_1000  threshold[ctx 0]  <span class="dim">[1 × 4]</span>
+ 0x0020_1004  claim / complete  <span class="dim">[1 × 4]</span>
+
+<span class="dim">SEIP wiring (mirror of MTIP pattern)</span>
+ read of sip recomputes SEIP:
+   sip.SEIP = (any enabled source
+                pending &amp; pri &gt; thr)
+
+<span class="dim">delegation</span>
+ mideleg.SEIP = 1
+ → external IRQs land in S directly</pre>
       <div class="panel">
-        <h4>PLIC @ 0x0c00_0000</h4>
-        <p style="font-size: 24px;"><strong>32 sources</strong> · 1 S-context · per-source priority · enable/threshold registers · <code class="inline">claim</code>/<code class="inline">complete</code>. Live <code class="inline">SEIP</code> in <code class="inline">mip</code>/<code class="inline">sip</code> mirrors PLIC truth — same pattern Phase 2.B used for MTIP. <code class="inline">mideleg.SEIP = 1</code> routes external interrupts straight to S.</p>
-      </div>
-      <div class="panel">
-        <h4>Block @ 0x1000_1000</h4>
-        <p style="font-size: 24px;">Four registers: <code class="inline">SECTOR</code> · <code class="inline">BUFFER</code> · <code class="inline">CMD</code> · <code class="inline">STATUS</code>. <strong>4 KB sectors</strong>, host-file-backed via <code class="inline">--disk PATH</code>. Every <code class="inline">CMD</code> write transfers synchronously, then raises PLIC source <strong>#1</strong> on the next instruction boundary.</p>
-      </div>
-      <div class="panel">
-        <h4>UART RX</h4>
-        <p style="font-size: 24px;"><strong>256-byte ring buffer</strong>. <code class="inline">LSR.DR</code> tracks live FIFO state. Empty → non-empty asserts PLIC source <strong>#10</strong>; draining via <code class="inline">RBR</code> de-asserts. <code class="inline">--input PATH</code> streams a host file into the FIFO for scripted tests; otherwise the idle path drains host stdin.</p>
+        <h4>Claim · complete</h4>
+        <p style="font-size: 24px; line-height: 1.55;">
+          <strong>Claim</strong> reads the highest-priority enabled-and-pending source, returns its ID, and atomically clears its pending bit.<br><br>
+          <strong>Complete</strong> writes the source ID back when the handler is done — re-arms the source for future asserts.<br><br>
+          <span style="color: var(--muted);">Same shape as real silicon: the kernel never sees the priority arbiter, only the winner.</span>
+        </p>
       </div>
     </div>
-    <div class="caption"><strong>e2e-plic-block:</strong> M-mode <code class="inline">boot.S</code> sets <code class="inline">mideleg.SEIP</code>, programs PLIC enables/threshold, drops to S. The S-mode test issues a block read, executes <code class="inline">wfi</code>, takes a delegated S-external interrupt, claims source 1, verifies sector 0's magic bytes, completes, halts 0. <code class="inline">wfi</code> sleeps via <code class="inline">poll(2)</code> until an interrupt-edge fires — no busy spin.</div>
+    <div class="caption"><code class="inline">wfi</code> becomes a <em>real</em> idle: the emulator sleeps in <code class="inline">poll(2)</code> until any device's pending edge fires. No more burning host CPU on the spin path.</div>
   </section>
 
-  <!-- 18: Chapter 3.B · building blocks -->
+  <!-- 25: Chapter 3.A · block + UART RX -->
+  <section data-label="Ch 3.A · block + UART RX">
+    <div class="slide-label">chapter 3.a · the two sources</div>
+    <h2 class="slide-title">A disk and <span class="accent">a keyboard</span></h2>
+    <p class="plain">The PLIC by itself isn't useful — it needs sources. Plan 3.A wires the two devices Phase 3.D's filesystem and 3.E's shell will need: a synchronous <strong>block device</strong> backed by a host file (PLIC source #1), and a <strong>UART RX</strong> path with a 256-byte ring buffer (PLIC source #10). Both follow the same shape: an MMIO write or host-side edge raises a pending bit, the kernel claims it, services the device, completes.</p>
+    <div class="two-col">
+      <div class="panel">
+        <h4>Block · 0x1000_1000 · src #1</h4>
+        <p style="font-size: 22px; line-height: 1.55;">
+          Four registers: <code class="inline">SECTOR</code> · <code class="inline">BUFFER</code> · <code class="inline">CMD</code> · <code class="inline">STATUS</code>. <strong>4 KB sectors</strong>, host-file-backed via <code class="inline">--disk PATH</code>.<br><br>
+          Every <code class="inline">CMD</code> write transfers synchronously into the guest's <code class="inline">BUFFER</code> address, then raises PLIC source #1 on the next instruction boundary. Sync I/O behind an async-shaped interface — easy to retrofit a real driver later.
+        </p>
+      </div>
+      <div class="panel">
+        <h4>UART RX · src #10</h4>
+        <p style="font-size: 22px; line-height: 1.55;">
+          <strong>256-byte ring buffer</strong>. <code class="inline">LSR.DR</code> tracks live FIFO state. Empty → non-empty asserts source #10; draining via <code class="inline">RBR</code> de-asserts.<br><br>
+          <code class="inline">--input PATH</code> streams a host file into the FIFO for scripted tests; otherwise the idle path drains host stdin. Same UART register file as Phase 1's TX-only model — RX is purely additive.
+        </p>
+      </div>
+    </div>
+    <div class="caption"><strong>e2e-plic-block:</strong> M-mode <code class="inline">boot.S</code> sets <code class="inline">mideleg.SEIP</code>, programs PLIC enables/threshold, drops to S. The S-mode test issues a block read, executes <code class="inline">wfi</code>, takes a delegated S-external interrupt, claims source 1, verifies sector 0's magic bytes, completes, halts 0.</div>
+  </section>
+
+  <!-- 26: Chapter 3.B · building blocks -->
   <section data-label="Ch 3.B · building blocks">
     <div class="slide-label">chapter 3.b · ptable + swtch + elf loader</div>
     <h2 class="slide-title">From <span class="accent">one process</span> to many</h2>
@@ -820,7 +1092,45 @@ S   sys_exit:
     <div class="caption"><strong>elfload.zig</strong> — kernel-side ELF32 loader walks every <code class="inline">PT_LOAD</code> header, allocates <code class="inline">ceil(p_memsz / 4 KB)</code> zeroed user pages, copies <code class="inline">p_filesz</code> bytes, maps at <code class="inline">p_vaddr</code>. Replaces Phase 2's objcopy flatten — userprogs now embed as <strong>raw ELFs</strong>. New syscalls: <code class="inline">getpid</code> (#172) · <code class="inline">sbrk</code> (#214).</div>
   </section>
 
-  <!-- 19: Chapter 3.B · the dance -->
+  <!-- 27: Chapter 3.B · swtch.S -->
+  <section data-label="Ch 3.B · swtch.S">
+    <div class="slide-label">chapter 3.b · the context switch</div>
+    <h2 class="slide-title">30 lines of asm, <span class="accent">one ret</span></h2>
+    <p class="plain">The mechanical heart of the scheduler. <code>swtch(*old, *new)</code> spills the 14 callee-saved registers — <code>ra</code>, <code>sp</code>, and <code>s0..s11</code> — into <code>*old</code>, refills them from <code>*new</code>, and <code>ret</code>s. The trick: <code>ret</code> jumps to whatever <code>ra</code> the new context was holding, which is the line <em>after</em> that thread's last <code>swtch</code> call. The compiler's caller-saved discipline takes care of everything else.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 22px; padding: 18px 22px;">.equ CTX_RA,   <span class="n">0</span>
+.equ CTX_SP,   <span class="n">4</span>
+.equ CTX_S0,   <span class="n">8</span>
+<span class="c"># ... s1..s10 at offsets 12..48</span>
+.equ CTX_S11, <span class="n">52</span>
+
+.globl swtch
+swtch:
+    <span class="c"># save *old (a0)</span>
+    sw  ra, CTX_RA(a0)
+    sw  sp, CTX_SP(a0)
+    sw  s0, CTX_S0(a0)
+    <span class="c"># ... s1..s11</span>
+
+    <span class="c"># restore *new (a1)</span>
+    lw  ra, CTX_RA(a1)
+    lw  sp, CTX_SP(a1)
+    lw  s0, CTX_S0(a1)
+    <span class="c"># ... s1..s11</span>
+    <span class="a">ret</span>     <span class="c"># PC ← new.ra</span></pre>
+      <div class="panel">
+        <h4>Why it works</h4>
+        <p style="font-size: 22px; line-height: 1.55;">
+          <strong>Callee-saved only.</strong> The RISC-V ABI says the caller is responsible for spilling <code class="inline">a0..a7</code>, <code class="inline">t0..t6</code>, and floats around any function call. <code>swtch</code> is just another function — the compiler already spilled the rest.<br><br>
+          <strong>The first switch into a new process</strong> needs <code class="inline">ra</code> pre-loaded. The fork path stamps the child's context with <code class="inline">ra = forkret</code>, a stub that drops it into U-mode for the very first time.<br><br>
+          <span style="color: var(--muted);">Same primitive every yield, every preempt, every (3.D) wakeup will funnel through.</span>
+        </p>
+      </div>
+    </div>
+    <div class="caption"><strong>No <code class="inline">satp</code> in the context</strong> — that's swapped separately by <code class="inline">switchTo(p)</code> just before <code class="inline">swtch</code>, so the new code starts running with the new page table active. Trap-frame state (caller-saved registers + <code class="inline">sepc</code>) lives on the kernel stack and gets restored by <code class="inline">sret</code> later.</div>
+  </section>
+
+  <!-- 28: Chapter 3.B · the dance -->
   <section data-label="Ch 3.B · the dance">
     <div class="slide-label">chapter 3.b · the scheduler dance</div>
     <h2 class="slide-title">PID 1 and PID 2, <span class="accent">interleaved</span></h2>
@@ -861,7 +1171,7 @@ sysExit pid == 1?
     <div class="caption"><strong>e2e-multiproc-stub:</strong> spawns <code class="inline">ccc kernel-multi.elf</code> (two embedded ELFs), asserts stdout contains both <code class="inline">hello from u-mode\n</code> and <code class="inline">[2] hello from u-mode\n</code> plus a <code class="inline">ticks observed: N\n</code> trailer (any N), exit 0. Interleaving is non-deterministic — verifier checks substrings, not byte-for-byte. <strong>Phase 2's <code class="inline">e2e-kernel</code> stays green:</strong> <code class="inline">sysExit</code> halts only when <code class="inline">cur.pid == 1</code>.</div>
   </section>
 
-  <!-- 20: Chapter 3.C · primitives -->
+  <!-- 29: Chapter 3.C · primitives -->
   <section data-label="Ch 3.C · fork/exec/wait/exit">
     <div class="slide-label">chapter 3.c · fork + exec + wait + exit + kill</div>
     <h2 class="slide-title">A real <span class="accent">process lifecycle</span></h2>
@@ -883,7 +1193,50 @@ sysExit pid == 1?
     <div class="caption">New syscalls wired: <code class="inline">220</code> (clone → flagless fork) · <code class="inline">221</code> (execve) · <code class="inline">260</code> (wait4) · <code class="inline">5000</code> (set_fg_pid, accept-and-discard until 3.E) · <code class="inline">5001</code> (console_set_mode, accept-and-discard until 3.E). The killed-check sits in <code class="inline">trap.zig</code>'s ECALL branch, right before <code class="inline">sret</code> — inert in 3.C, ready for 3.E's <code class="inline">^C</code> path.</div>
   </section>
 
-  <!-- 21: Chapter 3.C · the lifecycle -->
+  <!-- 30: Chapter 3.C · copyUvm -->
+  <section data-label="Ch 3.C · copyUvm">
+    <div class="slide-label">chapter 3.c · address space duplication</div>
+    <h2 class="slide-title">copyUvm — <span class="accent">page by page</span></h2>
+    <p class="plain"><code>fork</code>'s heaviest lift is duplicating the parent's user pages into fresh frames for the child. <code>copyUvm</code> walks every leaf PTE from VA 0 to <code>parent.sz</code>, asks the page allocator for a new frame per source page, copies 4 KB through kernel-direct pointers, and installs the new mapping in the child's page table. <code>copyUserStack</code> handles the 2-page user stack region separately. Both rollback to a consistent state if the allocator runs dry mid-copy.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="k">pub fn</span> copyUvm(src: u32, dst: u32, sz: u32)
+    CopyError!<span class="k">void</span>
+{
+    <span class="k">const</span> end_va = (sz + (PAGE_SIZE - <span class="n">1</span>))
+                  &amp; ~@as(u32, PAGE_SIZE - <span class="n">1</span>);
+    <span class="k">var</span> va: u32 = <span class="n">0</span>;
+    <span class="k">while</span> (va &lt; end_va) : (va += PAGE_SIZE) {
+        <span class="k">const</span> src_pa = lookupPA(src, va)
+            <span class="k">orelse continue</span>;
+        <span class="k">const</span> dst_pa = page_alloc.alloc()
+            <span class="k">orelse</span> {
+                unmapUser(dst, end_va, .leave_root);
+                <span class="k">return</span> CopyError.OutOfMemory;
+            };
+        <span class="c">// kernel-direct 4 KB memcpy</span>
+        <span class="k">const</span> s: [*]<span class="k">const volatile</span> u8
+            = @ptrFromInt(src_pa);
+        <span class="k">const</span> d: [*]<span class="k">volatile</span> u8
+            = @ptrFromInt(dst_pa);
+        <span class="k">var</span> i: u32 = <span class="n">0</span>;
+        <span class="k">while</span> (i &lt; PAGE_SIZE) : (i += <span class="n">1</span>)
+            d[i] = s[i];
+        mapPage(dst, va, dst_pa, USER_RWX);
+    }
+}</pre>
+      <div class="panel">
+        <h4>What makes it tricky</h4>
+        <p style="font-size: 22px; line-height: 1.55;">
+          <strong>Kernel-direct pointers.</strong> The kernel's identity mapping means physical addresses are valid Zig pointers — no double-mapping or temporary windows. The volatile qualifier keeps the compiler from optimizing the byte-loop away.<br><br>
+          <strong>Rollback on OOM.</strong> If <code class="inline">page_alloc.alloc()</code> returns null mid-copy, <code class="inline">unmapUser</code> walks every leaf already installed in <code class="inline">dst</code> and frees it back. The parent is untouched throughout — <code class="inline">fork</code> can still return <code class="inline">-1</code> cleanly.<br><br>
+          <strong>Stack copied separately.</strong> The 2-page user stack lives at a fixed VA above the program's heap; <code class="inline">copyUserStack</code> uses <code class="inline">USER_RW</code> instead of <code class="inline">USER_RWX</code> — no execute on the stack.
+        </p>
+      </div>
+    </div>
+    <div class="caption"><code class="inline">unmapUser(pgdir, sz, policy)</code> is the inverse: walks every user leaf, frees it, and (for <code class="inline">.leave_root</code>) keeps the L1 root for further use or (for <code class="inline">.free_root</code>) tears the whole pgdir down. Together they turn <code class="inline">proc.free</code>'s 3.B panic stub into a real reaper.</div>
+  </section>
+
+  <!-- 31: Chapter 3.C · the lifecycle -->
   <section data-label="Ch 3.C · the lifecycle">
     <div class="slide-label">chapter 3.c · init forks /bin/hello</div>
     <h2 class="slide-title"><code>init</code> forks <code>hello</code>, parent <span class="accent">reaps</span>, exits 0</h2>
@@ -936,7 +1289,7 @@ sysExit pid == 1?
     <div class="caption"><strong>e2e-fork:</strong> spawns <code class="inline">ccc kernel-fork.elf</code>, asserts stdout contains <code class="inline">hello from /bin/hello\n</code> + <code class="inline">init: reaped\n</code> + <code class="inline">ticks observed: N\n</code>, exit 0. Order is deterministic (init forks → wait sleeps → child runs → child exits → wakeup → init reaps → init exits) but the verifier checks substrings to stay robust against future scheduler tweaks. <strong>Both Plan 3.B regressions stay green</strong> — sysExit's PID-1 trailer + halt is preserved byte-for-byte.</div>
   </section>
 
-  <!-- 22: Epilogue · where we are -->
+  <!-- 32: Epilogue · where we are -->
   <section data-label="Where we are">
     <div class="slide-label">epilogue · where we are</div>
     <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">complete</span>. Phase 3 · <span class="accent">underway</span>.</h2>
