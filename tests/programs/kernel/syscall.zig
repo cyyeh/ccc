@@ -50,7 +50,7 @@ fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
     return len;
 }
 
-fn sysExit(status: u32) noreturn {
+pub fn sysExit(status: u32) noreturn {
     const p = proc.cur();
     p.xstate = @bitCast(status);
     p.state = .Zombie;
