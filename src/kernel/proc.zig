@@ -18,14 +18,28 @@ const trap = @import("trap.zig");
 const page_alloc = @import("page_alloc.zig");
 const kprintf = @import("kprintf.zig");
 const vm = @import("vm.zig");
+const file = @import("file.zig");
+const inode = @import("fs/inode.zig");
+const path = @import("fs/path.zig");
+const bufcache = @import("fs/bufcache.zig");
 
 pub extern fn swtch(old: *Context, new: *Context) void;
 
 pub const Context = extern struct {
     ra: u32,
     sp: u32,
-    s0: u32, s1: u32, s2: u32, s3: u32, s4: u32, s5: u32,
-    s6: u32, s7: u32, s8: u32, s9: u32, s10: u32, s11: u32,
+    s0: u32,
+    s1: u32,
+    s2: u32,
+    s3: u32,
+    s4: u32,
+    s5: u32,
+    s6: u32,
+    s7: u32,
+    s8: u32,
+    s9: u32,
+    s10: u32,
+    s11: u32,
 };
 
 pub const CTX_RA: u32 = 0;
@@ -86,13 +100,16 @@ pub const State = enum(u32) {
     Zombie = 5,
 };
 
+pub const NOFILE: u32 = 16;
+pub const CWD_PATH_MAX: u32 = 64;
+
 pub const Process = extern struct {
-    tf: trap.TrapFrame,    // offset 0 — trampoline.S depends on this
-    satp: u32,             // offset 128
-    pgdir: u32,            // offset 132
-    sz: u32,               // offset 136
-    kstack: u32,           // offset 140
-    kstack_top: u32,       // offset 144 — referenced by trampoline.S
+    tf: trap.TrapFrame, // offset 0 — trampoline.S depends on this
+    satp: u32, // offset 128
+    pgdir: u32, // offset 132
+    sz: u32, // offset 136
+    kstack: u32, // offset 140
+    kstack_top: u32, // offset 144 — referenced by trampoline.S
     state: State,
     pid: u32,
     chan: u32,
@@ -102,6 +119,11 @@ pub const Process = extern struct {
     context: Context,
     name: [16]u8,
     parent: ?*Process,
+    // Phase 3.D additions — placed after `parent` so existing offsets
+    // pinned by trampoline.S / swtch.S / comptime asserts stay intact.
+    cwd: u32, // *fs.inode.InMemInode cast to u32; 0 = lazy-root
+    cwd_path: [CWD_PATH_MAX]u8, // NUL-terminated; "" = "/"
+    ofile: [NOFILE]u32, // file table indices; 0 = empty
 };
 
 pub const KSTACK_TOP_OFFSET: u32 = 144;
@@ -190,7 +212,7 @@ fn nextPid() u32 {
 // locks arrive.
 extern fn s_return_to_user(tf: *trap.TrapFrame) noreturn;
 
-export fn forkret() callconv(.c) noreturn {
+pub export fn forkret() callconv(.c) noreturn {
     // The scheduler set cpu.cur before swtch'ing into us; this assertion
     // catches any future bug that swtch's into a fresh proc with cpu.cur
     // still null.
@@ -225,8 +247,7 @@ inline fn disableSie() void {
     asm volatile ("csrc sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SIE),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// xv6-style sleep on `chan` (a u32 used purely as identity).
@@ -331,6 +352,25 @@ pub fn fork() i32 {
     child.tf.a0 = 0;
     child.parent = parent;
     @memcpy(&child.name, &parent.name);
+
+    // Inherit parent's open fds.
+    var fi: u32 = 0;
+    while (fi < NOFILE) : (fi += 1) {
+        if (parent.ofile[fi] != 0) {
+            child.ofile[fi] = file.dup(parent.ofile[fi]);
+        }
+    }
+
+    // Inherit parent's cwd. If parent never chdir'd (cwd == 0), child
+    // inherits the same lazy-root and copies the empty cwd_path.
+    if (parent.cwd != 0) {
+        const ip: *inode.InMemInode = @ptrFromInt(parent.cwd);
+        child.cwd = @intFromPtr(inode.idup(ip));
+    } else {
+        child.cwd = 0;
+    }
+    @memcpy(&child.cwd_path, &parent.cwd_path);
+
     child.state = .Runnable;
 
     return @as(i32, @intCast(child.pid));
@@ -343,6 +383,20 @@ pub fn fork() i32 {
 /// e2e-kernel and e2e-multiproc-stub regression behavior).
 pub fn exit(status: i32) noreturn {
     const p = cur();
+
+    // Phase 3.D: close every open fd and release cwd.
+    var fi: u32 = 0;
+    while (fi < NOFILE) : (fi += 1) {
+        if (p.ofile[fi] != 0) {
+            file.close(p.ofile[fi]);
+            p.ofile[fi] = 0;
+        }
+    }
+    if (p.cwd != 0) {
+        const ip: *inode.InMemInode = @ptrFromInt(p.cwd);
+        inode.iput(ip);
+        p.cwd = 0;
+    }
 
     // Reparent every child of `p` to PID 1 (init). PID 1 is hard-wired
     // to slot 0; if 3.D ever changes that, this lookup needs to scan
@@ -384,16 +438,14 @@ inline fn setSum() void {
     asm volatile ("csrs sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SUM),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 inline fn clearSum() void {
     asm volatile ("csrc sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SUM),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// xv6-style wait. Returns the harvested child pid, or -1 if `cur` has
@@ -430,6 +482,14 @@ pub fn wait(status_user_va: u32) i32 {
 
 const elfload = @import("elfload.zig");
 const boot_config = @import("boot_config");
+
+const MAX_EXEC_BYTES: u32 = 64 * 1024;
+const EXEC_SCRATCH_PAGES: u32 = MAX_EXEC_BYTES / vm.PAGE_SIZE;
+
+// Static scratch buffer for FS-mode exec — readi reads the on-disk ELF
+// into here before elfload.load consumes it. Single-threaded kernel so
+// no contention; sized at the spec's 64 KB user-text budget.
+var exec_scratch: [EXEC_SCRATCH_PAGES][vm.PAGE_SIZE]u8 align(4) = undefined;
 
 const MAX_PATH: u32 = 256;
 const MAX_ARGS: u32 = 8;
@@ -484,15 +544,36 @@ pub fn exec(path_user_va: u32, argv_user_va: u32) i32 {
 
     // 1. Copy path string out of user space.
     var path_buf: [MAX_PATH]u8 = undefined;
-    const path = copyStrFromUser(path_user_va, &path_buf) orelse return -1;
+    const path_slice = copyStrFromUser(path_user_va, &path_buf) orelse return -1;
 
     // 2. Copy argv strings out of user space (before old AS is torn down).
     var arg_storage: [MAX_ARGS][MAX_ARG_LEN]u8 = undefined;
     var arg_lens: [MAX_ARGS]u32 = undefined;
     const argc = copyArgvFromUser(argv_user_va, &arg_storage, &arg_lens) orelse return -1;
 
-    // 3. Look up the embedded blob.
-    const blob = boot_config.lookupBlob(path) orelse return -1;
+    // 3. Resolve the blob — embedded (single/multi/fork) or on-disk (fs).
+    const blob = if (boot_config.FS_DEMO) blk: {
+        const ip = path.namei(path_slice) orelse return -1;
+
+        inode.ilock(ip);
+        if (ip.dinode.type != .File) {
+            inode.iunlock(ip);
+            inode.iput(ip);
+            return -1;
+        }
+        const sz = ip.dinode.size;
+        if (sz > MAX_EXEC_BYTES) {
+            inode.iunlock(ip);
+            inode.iput(ip);
+            return -1;
+        }
+        const dst: [*]u8 = @ptrCast(&exec_scratch[0][0]);
+        const got = inode.readi(ip, dst, 0, sz);
+        inode.iunlock(ip);
+        inode.iput(ip);
+        if (got != sz) return -1;
+        break :blk dst[0..sz];
+    } else (boot_config.lookupBlob(path_slice) orelse return -1);
 
     // 4. Build new pgdir + map kernel/MMIO.
     const new_root = vm.allocRoot() orelse return -1;
@@ -630,8 +711,7 @@ pub fn exec(path_user_va: u32, argv_user_va: u32) i32 {
         \\ sfence.vma zero, zero
         :
         : [s] "r" (me.satp),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 
     // Tear down the old AS now that we're committed.
     vm.unmapUser(old_pgdir, old_sz, .free_root);

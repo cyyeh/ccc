@@ -13,6 +13,9 @@
 
 const proc = @import("proc.zig");
 
+extern fn s_trap_entry() void;
+extern fn s_kernel_trap_entry() void;
+
 pub fn scheduler() noreturn {
     var start: u32 = 0; // round-robin start index: advances past last-picked slot
     while (true) {
@@ -57,8 +60,7 @@ pub fn scheduler() noreturn {
                 :
                 : [pa] "r" (p_addr),
                   [s] "r" (p.satp),
-                : .{ .memory = true }
-            );
+                : .{ .memory = true });
             proc.swtch(&proc.cpu.sched_context, &p.context);
             // p has yielded back; swtch left us here.
             proc.cpu.cur = null;
@@ -72,8 +74,28 @@ pub fn scheduler() noreturn {
             halt.* = @truncate(@as(u32, @bitCast(last_xstatus)));
             while (true) asm volatile ("wfi");
         }
-        // Else: spin (timer tick will fire and re-enter sched's caller —
-        // but we're not anyone's callee. We just busy-loop until something
-        // becomes Runnable. 3.D adds proper WFI here.)
+        // Nothing runnable but something is alive (embryo / sleeping /
+        // zombie). Open a one-instruction SIE window so a pending PLIC
+        // block IRQ (or timer SSI) can be delivered. While the window
+        // is open, swap stvec to s_kernel_trap_entry — the user vector
+        // would clobber the sleeping proc's tf and kstack. The kernel
+        // vector saves caller-saved regs on the current (scheduler)
+        // stack, runs s_kernel_trap_dispatch, restores, and srets back
+        // here. SPIE is forced to 0 by the dispatcher so the trailing
+        // csrc closes the window without re-trapping on a still-pending
+        // timer SSI.
+        const kvec: u32 = @intCast(@intFromPtr(&s_kernel_trap_entry));
+        const uvec: u32 = @intCast(@intFromPtr(&s_trap_entry));
+        const SSTATUS_SIE: u32 = 1 << 1;
+        asm volatile (
+            \\ csrw stvec, %[k]
+            \\ csrs sstatus, %[b]
+            \\ csrc sstatus, %[b]
+            \\ csrw stvec, %[u]
+            :
+            : [k] "r" (kvec),
+              [u] "r" (uvec),
+              [b] "r" (SSTATUS_SIE),
+            : .{ .memory = true });
     }
 }

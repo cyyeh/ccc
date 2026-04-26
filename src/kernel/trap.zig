@@ -105,6 +105,8 @@ comptime {
 const kprintf = @import("kprintf.zig");
 const syscall = @import("syscall.zig");
 const proc = @import("proc.zig");
+const plic = @import("plic.zig");
+const block = @import("block.zig");
 
 fn readScause() u32 {
     return asm volatile ("csrr %[out], scause"
@@ -127,10 +129,56 @@ fn clearSipSsip() void {
     );
 }
 
+/// S-from-S trap dispatcher. Installed via stvec only while sched.scheduler
+/// holds its SIE window open. We expect device-IRQ + spurious timer SSI;
+/// both clear themselves and don't yield. SPIE is forced to 0 so the
+/// pending csrc closes the window cleanly on sret.
+export fn s_kernel_trap_dispatch() callconv(.c) void {
+    const scause = readScause();
+    const is_interrupt = (scause >> 31) & 1 == 1;
+    const cause = scause & 0x7fff_ffff;
+
+    // SPP must be S here (caller is the kernel SIE window). Clear SPIE
+    // so the post-sret csrc closes the window without re-trapping on
+    // another pending IRQ.
+    asm volatile ("csrc sstatus, %[m]"
+        :
+        : [m] "r" (@as(u32, 1 << 5)),
+        : .{ .memory = true });
+
+    if (is_interrupt and cause == 1) {
+        clearSipSsip();
+        return;
+    }
+    if (is_interrupt and cause == 9) {
+        const irq = plic.claim();
+        switch (irq) {
+            plic.IRQ_BLOCK => block.isr(),
+            else => kprintf.panic("unhandled PLIC src in kernel trap: {d}", .{irq}),
+        }
+        plic.complete(irq);
+        return;
+    }
+    kprintf.panic("unexpected kernel trap: scause={x}", .{scause});
+}
+
 export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
     const scause = readScause();
     const is_interrupt = (scause >> 31) & 1 == 1;
     const cause = scause & 0x7fff_ffff;
+
+    const sstatus_val = asm volatile ("csrr %[v], sstatus"
+        : [v] "=r" (-> u32),
+    );
+    if ((sstatus_val & (1 << 8)) != 0) {
+        // S-from-S into the user vector means stvec was wrong at trap
+        // time. Should never happen — the scheduler swaps to
+        // s_kernel_trap_entry around its SIE window.
+        const satp_val = asm volatile ("csrr %[v], satp"
+            : [v] "=r" (-> u32),
+        );
+        kprintf.panic("S-from-S user vector: scause={x} stval={x} sepc={x} satp={x}", .{ scause, readStval(), tf.sepc, satp_val });
+    }
 
     if (!is_interrupt and cause == 8) {
         // ECALL from U — advance sepc past the ecall instruction (4 bytes)
@@ -156,16 +204,46 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         // 3. Pick next process. In Phase 2 this is always the same one,
         //    but we exercise the code path so Plan 3's picker drops in
         //    without a signature change.
+        //
+        // 3.D: when cpu.cur is null, this trap fired inside the scheduler
+        // (SIE window opened to wait for a device IRQ — the timer SSI is
+        // collateral). Yielding would re-enter the scheduler from its top
+        // via swtch(&p.context, &sched_context), wiping its loop state.
+        // Just clear SSIP and return; the scheduler will close its SIE
+        // window and re-scan ptable on its own.
         clearSipSsip();
-        proc.cur().ticks_observed +%= 1;
-        proc.yield();
+        if (proc.cpu.cur != null) {
+            proc.cur().ticks_observed +%= 1;
+            proc.yield();
+        }
+        return;
+    }
+
+    if (is_interrupt and cause == 9) {
+        // Supervisor external interrupt (PLIC). Claim the source, dispatch
+        // to its ISR, then complete so the device can re-assert when the
+        // next edge fires.
+        //
+        // 3.D wires only IRQ #1 (block); 3.E will add IRQ #10 (UART RX).
+        // An unknown/0 source means a spurious interrupt — the spec
+        // permits 0 here when claim races a clear; we panic to surface
+        // any kernel bug that wires a source we can't service.
+        const irq = plic.claim();
+        switch (irq) {
+            plic.IRQ_BLOCK => block.isr(),
+            else => kprintf.panic("unhandled PLIC src: {d}", .{irq}),
+        }
+        plic.complete(irq);
         return;
     }
 
     // Synchronous faults — kernel-origin bugs in Phase 2. Panic with
     // scause + stval so the cause is visible.
+    const satp_val = asm volatile ("csrr %[v], satp"
+        : [v] "=r" (-> u32),
+    );
     kprintf.panic(
-        "unhandled S-mode trap: scause={x} stval={x} sepc={x}",
-        .{ scause, readStval(), tf.sepc },
+        "unhandled S-mode trap: scause={x} stval={x} sepc={x} satp={x} spp_s={d}",
+        .{ scause, readStval(), tf.sepc, satp_val, @intFromBool((sstatus_val & (1 << 8)) != 0) },
     );
 }

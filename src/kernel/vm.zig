@@ -199,6 +199,16 @@ pub fn mapKernelAndMmio(root_pa: u32) void {
     mapPage(root_pa, 0x0200_4000, 0x0200_4000, KERNEL_MMIO);
     // UART is one page.
     mapPage(root_pa, 0x1000_0000, 0x1000_0000, KERNEL_MMIO);
+    // Block device (Phase 3.D) — one page at 0x10001000.
+    mapPage(root_pa, 0x1000_1000, 0x1000_1000, KERNEL_MMIO);
+    // PLIC (Phase 3.A/D). The PLIC register window is 4 MB but the
+    // kernel only touches priorities (0x0C000000 first page), the
+    // S-context enable bit (0x0C002080), and the S-context threshold/
+    // claim (0x0C201000 area). We map two pages each side rather than
+    // the full 4 MB to keep the page table compact.
+    mapPage(root_pa, 0x0c00_0000, 0x0c00_0000, KERNEL_MMIO); // priorities
+    mapPage(root_pa, 0x0c00_2000, 0x0c00_2000, KERNEL_MMIO); // S-context enables
+    mapPage(root_pa, 0x0c20_1000, 0x0c20_1000, KERNEL_MMIO); // S-context threshold/claim
 }
 
 pub const USER_TEXT_VA: u32 = 0x0001_0000;

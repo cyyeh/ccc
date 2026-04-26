@@ -108,7 +108,11 @@ s_trap_entry:
     # takes the tf pointer in a0, and we need to keep it accessible.
     mv      a0, sp
 
-    # Switch sp to the per-process kernel stack.
+    # Switch sp to the per-process kernel stack. (S-from-S handling is
+    # done by the separate s_kernel_trap_entry vector that the scheduler
+    # installs while its SIE window is open; if a trap reaches THIS
+    # vector with SPP=S, that's a kernel bug — assert by panic in the
+    # dispatcher.)
     lw      sp, KSTACK_TOP_OFFSET(a0)
 
     # Call s_trap_dispatch(tf).
@@ -176,4 +180,56 @@ s_return_to_user:
     # base pointer, but we don't need it after this.
     lw      x10, TF_A0(a0)
 
+    sret
+
+
+# ---- S-from-S trap entry. ---------------------------------------------
+# Used only while the scheduler holds its SIE window open waiting for a
+# device IRQ. Differs from s_trap_entry: no sscratch dance, no proc tf
+# touch — saves caller-saved + sepc to the current S-mode stack, runs
+# s_kernel_trap_dispatch (Zig), restores, srets back into the scheduler.
+# Caller-saved set is the RV32I ABI subset used by C / Zig calling
+# convention — s_kernel_trap_dispatch may freely clobber t0..t6, a0..a7,
+# ra; everything else (s0..s11, sp, gp, tp) is callee-saved across the
+# Zig call so we needn't save it here.
+.balign 4
+.globl s_kernel_trap_entry
+s_kernel_trap_entry:
+    addi    sp, sp, -64
+    sw      ra,  0(sp)
+    sw      a0,  4(sp)
+    sw      a1,  8(sp)
+    sw      a2, 12(sp)
+    sw      a3, 16(sp)
+    sw      a4, 20(sp)
+    sw      a5, 24(sp)
+    sw      a6, 28(sp)
+    sw      a7, 32(sp)
+    sw      t0, 36(sp)
+    sw      t1, 40(sp)
+    sw      t2, 44(sp)
+    sw      t3, 48(sp)
+    sw      t4, 52(sp)
+    sw      t5, 56(sp)
+    sw      t6, 60(sp)
+
+    call    s_kernel_trap_dispatch
+
+    lw      ra,  0(sp)
+    lw      a0,  4(sp)
+    lw      a1,  8(sp)
+    lw      a2, 12(sp)
+    lw      a3, 16(sp)
+    lw      a4, 20(sp)
+    lw      a5, 24(sp)
+    lw      a6, 28(sp)
+    lw      a7, 32(sp)
+    lw      t0, 36(sp)
+    lw      t1, 40(sp)
+    lw      t2, 44(sp)
+    lw      t3, 48(sp)
+    lw      t4, 52(sp)
+    lw      t5, 56(sp)
+    lw      t6, 60(sp)
+    addi    sp, sp, 64
     sret

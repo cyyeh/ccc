@@ -14,6 +14,10 @@ const sched = @import("sched.zig");
 const elfload = @import("elfload.zig");
 const kprintf = @import("kprintf.zig");
 const boot_config = @import("boot_config");
+const plic = @import("plic.zig");
+const block = @import("block.zig");
+const bufcache = @import("fs/bufcache.zig");
+const inode = @import("fs/inode.zig");
 
 const SATP_MODE_SV32: u32 = 1 << 31;
 
@@ -27,6 +31,84 @@ comptime {
 export fn kmain() callconv(.c) noreturn {
     page_alloc.init();
     proc.cpuInit();
+
+    if (boot_config.FS_DEMO) {
+        // FS-mode boot: bufcache + inode cache up; PLIC ready for IRQ #1
+        // (block); exec /bin/init from disk into PID 1's AS.
+        bufcache.init();
+        inode.init();
+
+        plic.setPriority(plic.IRQ_BLOCK, 1);
+        plic.enable(plic.IRQ_BLOCK);
+        plic.setThreshold(0);
+
+        const init_p = proc.alloc() orelse kprintf.panic("kmain: alloc init", .{});
+        @memcpy(init_p.name[0..4], "init");
+        const init_root = vm.allocRoot() orelse kprintf.panic("kmain: allocRoot init", .{});
+        init_p.pgdir = init_root;
+        init_p.satp = SATP_MODE_SV32 | (init_root >> 12);
+        vm.mapKernelAndMmio(init_root);
+        init_p.sz = 0;
+        init_p.cwd = 0; // lazy-root
+
+        // Install S-mode trap setup BEFORE exec — exec calls block.read
+        // which sleeps, which transitively requires the IRQ + trap path
+        // to be ready.
+        const stvec_val_fs: u32 = @intCast(@intFromPtr(&s_trap_entry));
+        const sscratch_val_fs: u32 = @intCast(@intFromPtr(init_p));
+        asm volatile (
+            \\ csrw stvec, %[stv]
+            \\ csrw sscratch, %[ss]
+            :
+            : [stv] "r" (stvec_val_fs),
+              [ss] "r" (sscratch_val_fs),
+            : .{ .memory = true });
+        const SIE_BITS_FS: u32 = (1 << 1) | (1 << 9); // SSIE | SEIE
+        asm volatile ("csrs sie, %[b]"
+            :
+            : [b] "r" (SIE_BITS_FS),
+            : .{ .memory = true });
+        const SSTATUS_SPP_FS: u32 = 1 << 8;
+        const SSTATUS_SPIE_FS: u32 = 1 << 5;
+        asm volatile (
+            \\ csrc sstatus, %[spp]
+            \\ csrs sstatus, %[spie]
+            :
+            : [spp] "r" (SSTATUS_SPP_FS),
+              [spie] "r" (SSTATUS_SPIE_FS),
+            : .{ .memory = true });
+
+        // Set up sched_context BEFORE exec so that proc.sleep (called by
+        // bufcache.bread inside exec.readi) can actually yield to the
+        // scheduler instead of busy-spinning. Without this, the no-op
+        // sched() returns immediately and the SIE=0 spin never lets the
+        // block IRQ fire — deadlock.
+        proc.cpu.sched_context.ra = @intCast(@intFromPtr(&sched.scheduler));
+        proc.cpu.sched_context.sp = proc.cpu.sched_stack_top;
+
+        // Make cur() return PID 1 so exec writes into its trapframe.
+        proc.cpu.cur = init_p;
+
+        // exec("/bin/init", NULL).
+        const init_path = "/bin/init\x00";
+        const path_va = @as(u32, @intCast(@intFromPtr(&init_path[0])));
+        const rc = proc.exec(path_va, 0);
+        if (rc < 0) kprintf.panic("kmain: exec /bin/init failed", .{});
+
+        // exec ran on init_p's stack and called proc.sleep, leaving
+        // init_p.context pointing inside sleep(). Re-arm it to forkret
+        // so the next scheduler swtch enters via the trapframe + sret
+        // path, not by re-running sleep's epilogue on a stale stack.
+        init_p.context = std.mem.zeroes(proc.Context);
+        init_p.context.ra = @intCast(@intFromPtr(&proc.forkret));
+        init_p.context.sp = init_p.kstack_top - 16;
+        init_p.state = .Runnable;
+        proc.cpu.cur = null;
+
+        var bootstrap_fs: proc.Context = std.mem.zeroes(proc.Context);
+        proc.swtch(&bootstrap_fs, &proc.cpu.sched_context);
+        unreachable;
+    }
 
     if (boot_config.FORK_DEMO) {
         const init_p = proc.alloc() orelse kprintf.panic("kmain: alloc init", .{});
@@ -70,15 +152,13 @@ export fn kmain() callconv(.c) noreturn {
             :
             : [stv] "r" (stvec_val_fork),
               [ss] "r" (sscratch_val_fork),
-            : .{ .memory = true }
-        );
+            : .{ .memory = true });
 
-        const SIE_SSIE_F: u32 = 1 << 1;
+        const SIE_BITS_F: u32 = (1 << 1) | (1 << 9); // SSIE | SEIE
         asm volatile ("csrs sie, %[b]"
             :
-            : [b] "r" (SIE_SSIE_F),
-            : .{ .memory = true }
-        );
+            : [b] "r" (SIE_BITS_F),
+            : .{ .memory = true });
 
         const SSTATUS_SPP_F: u32 = 1 << 8;
         const SSTATUS_SPIE_F: u32 = 1 << 5;
@@ -88,8 +168,7 @@ export fn kmain() callconv(.c) noreturn {
             :
             : [spp] "r" (SSTATUS_SPP_F),
               [spie] "r" (SSTATUS_SPIE_F),
-            : .{ .memory = true }
-        );
+            : .{ .memory = true });
 
         var bootstrap_fork: proc.Context = std.mem.zeroes(proc.Context);
         proc.cpu.sched_context.ra = @intCast(@intFromPtr(&sched.scheduler));
@@ -163,16 +242,14 @@ export fn kmain() callconv(.c) noreturn {
         :
         : [stv] "r" (stvec_val),
           [ss] "r" (sscratch_val),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 
-    // sie.SSIE for forwarded timer ticks.
-    const SIE_SSIE: u32 = 1 << 1;
+    // sie.SSIE for forwarded timer ticks; sie.SEIE for PLIC externals (3.D).
+    const SIE_BITS: u32 = (1 << 1) | (1 << 9); // SSIE | SEIE
     asm volatile ("csrs sie, %[b]"
         :
-        : [b] "r" (SIE_SSIE),
-        : .{ .memory = true }
-    );
+        : [b] "r" (SIE_BITS),
+        : .{ .memory = true });
 
     // sstatus: SPP=0, SPIE=1 — for whoever sret's first.
     const SSTATUS_SPP: u32 = 1 << 8;
@@ -183,8 +260,7 @@ export fn kmain() callconv(.c) noreturn {
         :
         : [spp] "r" (SSTATUS_SPP),
           [spie] "r" (SSTATUS_SPIE),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 
     // Switch onto the scheduler stack and jump into scheduler(). swtch
     // saves the (irrelevant) caller context to a throwaway and jumps

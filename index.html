@@ -345,8 +345,8 @@
       <div class="toc-row">
         <div class="toc-num">3</div>
         <div class="toc-body">
-          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a + 3.b + 3.c done</span></div>
-          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plans 3.A + 3.B + 3.C landed:</strong> emulator PLIC + block + UART RX, the kernel-side <code class="inline">ptable</code> / scheduler / <code class="inline">swtch</code> / ELF loader, and the full Unix-shaped <code class="inline">fork</code> / <code class="inline">exec</code> / <code class="inline">wait</code> / <code class="inline">exit</code> / kill-flag lifecycle — <code class="inline">init</code> forks <code class="inline">/bin/hello</code> end-to-end.</div>
+          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a + 3.b + 3.c + 3.d done</span></div>
+          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plans 3.A + 3.B + 3.C + 3.D landed:</strong> emulator PLIC + block + UART RX, the kernel-side <code class="inline">ptable</code> / scheduler / <code class="inline">swtch</code> / ELF loader, the full Unix-shaped <code class="inline">fork</code> / <code class="inline">exec</code> / <code class="inline">wait</code> / <code class="inline">exit</code> / kill-flag lifecycle, and a real read-side filesystem — bufcache + inode cache + <code class="inline">namei</code>, with <code class="inline">/bin/init</code> loaded from disk via <code class="inline">openat</code>/<code class="inline">read</code>.</div>
         </div>
       </div>
       <div class="toc-row">
@@ -371,7 +371,7 @@
         </div>
       </div>
     </div>
-    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A, 3.B, and 3.C</strong> — the emulator-side substrate, the kernel-side multi-process foundation, and the Unix-shaped process lifecycle that runs <code class="inline">fork</code> / <code class="inline">exec</code> / <code class="inline">wait</code> end-to-end.</div>
+    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A, 3.B, 3.C, and 3.D</strong> — the emulator-side substrate, the kernel-side multi-process foundation, the Unix-shaped process lifecycle, and the read-side filesystem that finally loads <code class="inline">/bin/init</code> from disk.</div>
   </section>
 
   <!-- 3: Chapter 1.A · the hart -->
@@ -1301,11 +1301,151 @@ sysExit pid == 1?
     <div class="caption"><strong>e2e-fork:</strong> spawns <code class="inline">ccc kernel-fork.elf</code>, asserts stdout contains <code class="inline">hello from /bin/hello\n</code> + <code class="inline">init: reaped\n</code> + <code class="inline">ticks observed: N\n</code>, exit 0. Order is deterministic (init forks → wait sleeps → child runs → child exits → wakeup → init reaps → init exits) but the verifier checks substrings to stay robust against future scheduler tweaks. <strong>Both Plan 3.B regressions stay green</strong> — sysExit's PID-1 trailer + halt is preserved byte-for-byte.</div>
   </section>
 
-  <!-- 32: Epilogue · where we are -->
+  <!-- 32: Chapter 3.D · disk path -->
+  <section data-label="Ch 3.D · block + bufcache">
+    <div class="slide-label">chapter 3.d · the disk path</div>
+    <h2 class="slide-title">First real <span class="accent">device wakeup</span> — block IRQ → bufcache</h2>
+    <p class="plain">Plan 3.A taught the emulator to fire a PLIC IRQ when a block transfer finishes; Plan 3.D finally drives it from the kernel side. The S-mode trap dispatcher gains an external-interrupt branch (<code>cause == 9</code>) that runs the canonical <strong>claim → ISR → complete</strong> handshake. <code>block.zig</code> is the spec's <em>single-outstanding-request</em> model: the kernel writes the four MMIO registers, sets <code>req.state = .Pending</code>, and <code>proc.sleep(@intFromPtr(&amp;req))</code>. The ISR sets <code>.Done</code> and <code>proc.wakeup</code>s the waiter. <strong>The first time the kernel actually blocks on hardware</strong> — every prior sleep was process-local (fork/wait, child-of).</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="c">// kernel/block.zig — single outstanding</span>
+<span class="k">fn</span> submit(blk: u32, buf_pa: u32, cmd: u32) {
+    <span class="k">if</span> (req.state != .Idle) panic(...);
+    req.state = .Pending;
+    mmio(REG_SECTOR).* = blk;
+    mmio(REG_BUFFER).* = buf_pa;
+    mmio(REG_CMD).*    = cmd; <span class="c">// ← fires IRQ</span>
+
+    <span class="k">while</span> (req.state != .Done)
+        proc.sleep(@intFromPtr(&amp;req));
+
+    <span class="k">if</span> (req.err) panic(<span class="dim">"block I/O error"</span>);
+    req.state = .Idle;
+}
+
+<span class="k">pub fn</span> isr() {
+    req.err   = (mmio(REG_STATUS).* != 0);
+    req.state = .Done;
+    proc.wakeup(@intFromPtr(&amp;req));
+}</pre>
+      <div class="panel">
+        <h4>Bufcache · NBUF=16 · LRU + sleep-on-busy</h4>
+        <p style="font-size: 22px; line-height: 1.55;">
+          On top of the driver, <code class="inline">fs/bufcache.zig</code> caches 16 4-KB blocks in a doubly-linked LRU list. <code class="inline">bget(blk)</code> finds an existing buffer or evicts the LRU tail; if the buffer is busy, the caller <strong>sleeps on <code class="inline">@intFromPtr(&amp;buf)</code></strong> until the holder calls <code class="inline">brelse</code>. <code class="inline">bread = bget + (if !valid) block.read</code>; <code class="inline">brelse</code> bumps LRU position, decrements refs, wakes sleepers.<br><br>
+          <span style="color: var(--muted);">Two channels per buffer: one for the I/O wait (<code class="inline">&amp;req</code>), one for the bget contention wait (<code class="inline">&amp;buf</code>). Both ride the same <code class="inline">sleep</code>/<code class="inline">wakeup</code> primitive 3.C built.</span>
+        </p>
+      </div>
+    </div>
+    <div class="caption">The scheduler had to grow too: when nothing is Runnable but something is sleeping, it opens a tiny <code class="inline">csrs SIE; csrc SIE</code> window so the block IRQ can fire. A <strong>separate <code class="inline">s_kernel_trap_entry</code> vector</strong> handles S-from-S traps — the user vector's <code class="inline">sscratch</code>/<code class="inline">sp</code> dance would have clobbered the sleeping proc's tf.</div>
+  </section>
+
+  <!-- 33: Chapter 3.D · FS read path -->
+  <section data-label="Ch 3.D · FS read path">
+    <div class="slide-label">chapter 3.d · layout · inode · namei</div>
+    <h2 class="slide-title">A <span class="accent">read-side filesystem</span> — six files in <code>fs/</code></h2>
+    <p class="plain">The on-disk layout is xv6-shaped: 4 KB blocks, a superblock at block 1, a bitmap at block 2, four inode blocks (<code>NINODES=64</code> × 64 B = 4 KB each), then data blocks. Inodes have 12 direct + 1 indirect addresses (max ~4 MB per file — plenty for 3.D's <code>/etc/motd</code> and <code>/bin/init</code>). The kernel side stacks six modules in <code>fs/</code>: <strong>layout</strong> (constants + structs) → <strong>balloc</strong> (bitmap; write-side waits for 3.E) → <strong>inode</strong> (<code>NINODE=32</code> in-memory cache + <code>iget</code>/<code>ilock</code>/<code>iput</code> + <code>bmap</code> + <code>readi</code>) → <strong>dir</strong> (<code>dirlookup</code>) → <strong>path</strong> (<code>namei</code> walks left-to-right from root or cwd).</p>
+    <div class="two-col">
+      <pre class="flow" style="margin: 0; font-size: 20px; line-height: 1.5;">on-disk layout · 4 MB · 1024 blocks
+
+ block 0     boot sector <span class="dim">(zeros)</span>
+ block 1     SuperBlock <span class="dim">(magic + counts)</span>
+ block 2     bitmap <span class="dim">(1 bit / data block)</span>
+ blocks 3..6 inode table <span class="dim">(64 inodes × 64 B)</span>
+ blocks 7..  data blocks
+
+DiskInode  <span class="dim">(64 bytes)</span>
+   type · nlink · size · addrs[12+1]
+
+read stack
+   <span class="arrow">read(fd, buf, n)</span>
+     ─► file.read(idx)
+         ─► inode.readi(ip, dst, off, n)
+             ─► loop bmap → bread → memcpy → brelse
+                 bread = bget + block.read
+                 block.read = submit + sleep</pre>
+      <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="c">// fs/path.zig — iterative left-to-right</span>
+<span class="k">fn</span> nameix(path: []<span class="k">const</span> u8) ?*InMemInode {
+    <span class="k">var</span> cur = startInode(path); <span class="c">// "/"=root</span>
+    <span class="k">var</span> off: u32 = 0;
+    <span class="k">while</span> (<span class="k">true</span>) {
+        <span class="k">const</span> step = nextComponent(path, off)
+            <span class="k">orelse return</span> cur;
+        ilock(cur);
+        <span class="k">if</span> (cur.dinode.type != .Dir)
+            <span class="k">return</span> putAndFail(cur);
+        <span class="k">const</span> child = dirlookup(cur, step.comp)
+            <span class="k">orelse return</span> putAndFail(cur);
+        iunlock(cur);
+        <span class="k">const</span> next = iget(child);
+        iput(cur);
+        cur = next;
+        off = step.next;
+    }
+}</pre>
+    </div>
+    <div class="caption">Seven new syscalls land: <code class="inline">17</code> (<code>getcwd</code>) · <code class="inline">49</code> (<code>chdir</code>) · <code class="inline">56</code> (<code>openat</code>) · <code class="inline">57</code> (<code>close</code>) · <code class="inline">62</code> (<code>lseek</code>) · <code class="inline">63</code> (<code>read</code>) · <code class="inline">80</code> (<code>fstat</code>). Per-process <code class="inline">ofile[16]</code> + <code class="inline">cwd</code> on <code class="inline">Process</code>; <code class="inline">fork</code> <code class="inline">file.dup</code>'s every fd, <code class="inline">exit</code> <code class="inline">file.close</code>'s them. <strong>Write side, mkdir, unlink — all 3.E.</strong></div>
+  </section>
+
+  <!-- 34: Chapter 3.D · init from disk -->
+  <section data-label="Ch 3.D · init from disk">
+    <div class="slide-label">chapter 3.d · init no longer embedded</div>
+    <h2 class="slide-title"><code>/bin/init</code> opens <code>/etc/motd</code>, <span class="accent">writes it to fd 1</span>, exits 0</h2>
+    <p class="plain"><code>proc.exec</code> stops calling <code>boot_config.lookupBlob</code>. In the FS-mode kernel it now does <code>namei(path) → readi → elfload.load</code> against a 64 KB <code>.bss</code> scratch buffer. A new host tool, <strong><code>mkfs.zig</code></strong>, walks <code>--root</code> + <code>--bin</code> directory trees and lays out a 4 MB image with the canonical superblock + bitmap + inode table + data layout. The build runs it to produce <code>zig-out/fs.img</code>; <code>kernel-fs.elf</code> boots against that image and the on-disk <code>/bin/init</code> (a tiny naked-asm Zig program) is the first thing it execs.</p>
+    <div class="two-col">
+      <pre class="flow" style="margin: 0; font-size: 20px; line-height: 1.5;">build pipeline
+
+ fs_init.elf     kernel/user/fs_init.zig
+   ─► <span class="dim">stage as /bin/init</span>
+ motd            kernel/userland/fs/etc/motd
+   ─► <span class="dim">stage as /etc/motd</span>
+ mkfs --root --bin --out
+   ─► <span class="arrow">zig-out/fs.img</span>  <span class="dim">(4 MB)</span>
+
+ kernel-fs.elf   FS_DEMO=true
+   ─► boot ─► kmain.FS_DEMO arm
+       bufcache.init · inode.init
+       PLIC enable IRQ #1
+       proc.alloc PID 1
+       proc.exec(<span class="dim">"/bin/init"</span>, NULL)
+         <span class="arrow">namei</span> ─► <span class="arrow">readi</span> ─► elfload.load
+       schedule ─► sret to U
+ PID 1 · /bin/init runs:
+   openat(0, <span class="dim">"/etc/motd"</span>, 0)
+   read(fd, buf, 256)
+   write(1, buf, n)
+   close(fd) · exit(0)</pre>
+      <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="c">// kernel/user/fs_init.zig — naked _start</span>
+<span class="k">export fn</span> _start() <span class="k">callconv</span>(.naked) <span class="k">noreturn</span> {
+    <span class="k">asm volatile</span> (
+        \\ <span class="c">// openat(0, &amp;path, 0)</span>
+        \\ li   a7, 56
+        \\ li   a0, 0
+        \\ la   a1, path
+        \\ li   a2, 0
+        \\ ecall
+        \\ bltz a0, fail
+        \\ mv   s1, a0
+        \\ <span class="c">// read(fd, buf, 256)</span>
+        \\ li   a7, 63
+        \\ mv   a0, s1
+        \\ la   a1, buf
+        \\ li   a2, 256
+        \\ ecall
+        \\ <span class="c">// write(1, buf, n)</span>
+        \\ li   a7, 64
+        \\ li   a0, 1
+        \\ ...
+        \\ <span class="c">// close · exit(0)</span>
+    );
+}</pre>
+    </div>
+    <div class="caption"><strong>e2e-fs:</strong> <code class="inline">ccc --disk fs.img kernel-fs.elf</code> → stdout contains <code class="inline">hello from phase 3\n</code> (motd content) + the canonical PID-1 <code class="inline">ticks observed: N\n</code> trailer; exit 0. Getting here surfaced nine subtle bugs along the way — most memorably, <code class="inline">file.read</code>'s 4 KB stack-allocated <code class="inline">kbuf</code> overflowing the per-process kernel stack into the adjacent scheduler stack page (<code class="inline">var x = undefined</code>'s 0xaa fill made the corruption pattern unmissable). Hoisted to a <code class="inline">.bss</code> static; problem solved.</div>
+  </section>
+
+  <!-- 35: Epilogue · where we are -->
   <section data-label="Where we are">
     <div class="slide-label">epilogue · where we are</div>
     <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">complete</span>. Phase 3 · <span class="accent">underway</span>.</h2>
-    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> landed the emulator-side hardware (PLIC, block device, UART RX); <strong>Plan 3.B</strong> landed the kernel-side multi-process foundation (free-list <code>page_alloc</code>, <code>ptable[16]</code>, round-robin scheduler with <code>swtch</code>, kernel-side ELF loader); <strong>Plan 3.C</strong> just landed the full Unix-shaped process lifecycle — <code>fork</code>, <code>execve</code>, <code>wait4</code>, <code>exit</code>, and a kill-flag — with <code>init</code> forking <code>/bin/hello</code> end-to-end on real ELFs.</p>
+    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> landed the emulator-side hardware (PLIC, block device, UART RX); <strong>Plan 3.B</strong> landed the kernel-side multi-process foundation (free-list <code>page_alloc</code>, <code>ptable[16]</code>, round-robin scheduler with <code>swtch</code>, kernel-side ELF loader); <strong>Plan 3.C</strong> landed the full Unix-shaped process lifecycle — <code>fork</code>, <code>execve</code>, <code>wait4</code>, <code>exit</code>, and a kill-flag — with <code>init</code> forking <code>/bin/hello</code> end-to-end on real ELFs; <strong>Plan 3.D</strong> just landed the read-side filesystem — bufcache, block driver with sleep-on-IRQ, inode cache + <code>bmap</code> + <code>readi</code>, <code>namei</code>, file table, seven new syscalls, and a host-side <code>mkfs</code> that builds a 4 MB image. <code>/bin/init</code> is no longer embedded — it loads from disk.</p>
     <div class="two-col" style="grid-template-columns: 1.25fr 1fr; gap: 64px;">
       <div class="check-list">
         <div class="row">
@@ -1352,12 +1492,16 @@ sysExit pid == 1?
           <div class="head">✓ 3.C · fork + exec + wait + exit + kill</div>
           <div class="sub"><code class="inline">vm.copyUvm</code>/<code class="inline">unmapUser</code> · real <code class="inline">proc.free</code> · <code class="inline">sleep</code>/<code class="inline">wakeup</code> · <code class="inline">fork</code>/<code class="inline">execve</code>/<code class="inline">wait4</code>/<code class="inline">exit</code> · killed-check on syscall return · <code class="inline">init</code> forks <code class="inline">/bin/hello</code> · <code class="inline">e2e-fork</code></div>
         </div>
+        <div class="row">
+          <div class="head">✓ 3.D · bufcache + block + FS read</div>
+          <div class="sub">PLIC + block kernel drivers · NBUF=16 LRU bufcache (sleep-on-busy) · NINODE=32 inode cache + <code class="inline">bmap</code>/<code class="inline">readi</code> · <code class="inline">namei</code> · <code class="inline">NFILE=64</code> file table + per-proc <code class="inline">ofile[16]</code>/<code class="inline">cwd</code> · 7 new syscalls (<code class="inline">openat</code>/<code class="inline">close</code>/<code class="inline">read</code>/<code class="inline">lseek</code>/<code class="inline">fstat</code>/<code class="inline">chdir</code>/<code class="inline">getcwd</code>) · <code class="inline">mkfs</code> + 4 MB <code class="inline">fs.img</code> · separate kernel trap vector for the scheduler SIE window · <code class="inline">/bin/init</code> from disk · <code class="inline">e2e-fs</code></div>
+        </div>
       </div>
       <div class="panel" style="align-self: center;">
-        <h4>Next · plan 3.d</h4>
+        <h4>Next · plan 3.e</h4>
         <p style="font-size: 28px; line-height: 1.5;">
-          Filesystem + shell.<br><br>
-          Bufcache · block-device driver · inode FS (4 KB blocks · single-level indirect) · <code class="inline">openat</code>/<code class="inline">read</code>/<code class="inline">close</code>/<code class="inline">lseek</code>/<code class="inline">fstat</code>. <code class="inline">init</code> stops being embedded — it loads from <code class="inline">fs.img</code>. Milestone: <code class="inline">e2e-fs</code>.
+          Write side + console + shell.<br><br>
+          File <code class="inline">write</code>/<code class="inline">mkdirat</code>/<code class="inline">unlinkat</code> · console line discipline (<code class="inline">^C</code>, raw mode) · userland stdlib (<code class="inline">start.S</code>, <code class="inline">usys.S</code>, <code class="inline">ulib</code>, <code class="inline">uprintf</code>) · a tiny shell with <code class="inline">ls</code>/<code class="inline">cat</code>/<code class="inline">echo</code>. Milestone: a real interactive prompt.
         </p>
       </div>
     </div>

@@ -17,6 +17,10 @@ const uart = @import("uart.zig");
 const proc = @import("proc.zig");
 const page_alloc = @import("page_alloc.zig");
 const vm = @import("vm.zig");
+const file = @import("file.zig");
+const inode = @import("fs/inode.zig");
+const path_mod = @import("fs/path.zig");
+const layout = @import("fs/layout.zig");
 
 const SSTATUS_SUM: u32 = 1 << 18;
 
@@ -24,16 +28,30 @@ fn setSum() void {
     asm volatile ("csrs sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SUM),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 fn clearSum() void {
     asm volatile ("csrc sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SUM),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
+}
+
+/// Copy a NUL-terminated user string into `buf`. Returns the slice up
+/// to (but not including) the NUL, or null on overflow / no NUL within
+/// buf.len bytes.
+fn copyStrFromUser(user_va: u32, buf: []u8) ?[]u8 {
+    setSum();
+    defer clearSum();
+    var i: u32 = 0;
+    while (i < buf.len) : (i += 1) {
+        const p: *const volatile u8 = @ptrFromInt(user_va + i);
+        const c = p.*;
+        buf[i] = c;
+        if (c == 0) return buf[0..i];
+    }
+    return null;
 }
 
 fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
@@ -88,6 +106,181 @@ fn sysSbrk(incr_signed: u32) u32 {
     return old_sz;
 }
 
+/// 56 openat(dirfd, path, flags) — 3.D ignores dirfd and flags
+/// (read-only existing file). Returns fd ≥ 0 or -1.
+fn sysOpenat(dirfd: u32, path_user_va: u32, flags: u32) i32 {
+    _ = dirfd;
+    _ = flags;
+
+    var pbuf: [path_mod.MAX_PATH]u8 = undefined;
+    const p = copyStrFromUser(path_user_va, &pbuf) orelse return -1;
+
+    const ip = path_mod.namei(p) orelse return -1;
+
+    const fidx = file.alloc() orelse {
+        inode.iput(ip);
+        return -1;
+    };
+    file.ftable[fidx].type = .Inode;
+    file.ftable[fidx].ip = ip;
+    file.ftable[fidx].off = 0;
+
+    // Allocate the lowest free fd in cur.ofile.
+    const cur_p = proc.cur();
+    var fd: u32 = 0;
+    while (fd < proc.NOFILE) : (fd += 1) {
+        if (cur_p.ofile[fd] == 0) {
+            cur_p.ofile[fd] = fidx;
+            return @intCast(fd);
+        }
+    }
+
+    // No free fd — release the file table entry + inode.
+    file.close(fidx);
+    return -1;
+}
+
+/// 57 close(fd) — release the fd. Returns 0 / -1.
+fn sysClose(fd: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const cur_p = proc.cur();
+    if (cur_p.ofile[fd] == 0) return -1;
+    file.close(cur_p.ofile[fd]);
+    cur_p.ofile[fd] = 0;
+    return 0;
+}
+
+/// 63 read(fd, buf, n). Returns bytes / 0 (EOF) / -1.
+fn sysRead(fd: u32, buf_user_va: u32, n: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const idx = proc.cur().ofile[fd];
+    if (idx == 0) return -1;
+    return file.read(idx, buf_user_va, n);
+}
+
+/// 62 lseek(fd, off, whence). Returns new offset / -1.
+fn sysLseek(fd: u32, off_signed: u32, whence: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const idx = proc.cur().ofile[fd];
+    if (idx == 0) return -1;
+    const off: i32 = @bitCast(off_signed);
+    return file.lseek(idx, off, whence);
+}
+
+/// 80 fstat(fd, statbuf). Writes Stat { type, size } (8 bytes) via SUM=1.
+/// Returns 0 / -1.
+fn sysFstat(fd: u32, stat_user_va: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const idx = proc.cur().ofile[fd];
+    if (idx == 0) return -1;
+    return file.fstat(idx, stat_user_va);
+}
+
+/// Compose a new cwd_path given the current cwd_path and a relative or
+/// absolute target. Writes into `out` (NUL-terminated). Returns the
+/// length of the resulting path (excluding NUL) or null on overflow.
+///
+/// 3.D simplification: no cycle / `..` resolution beyond the spec
+/// (`..` past root resolves to root, handled by the FS layer; the
+/// path-string composition here just normalizes "/" boundaries).
+fn composeCwdPath(old: []const u8, target: []const u8, out: *[proc.CWD_PATH_MAX]u8) ?u32 {
+    var len: u32 = 0;
+    if (target.len > 0 and target[0] == '/') {
+        // Absolute: ignore old.
+        // Copy target verbatim (caller guarantees ≤ CWD_PATH_MAX-1 via path bounds).
+        if (target.len + 1 > proc.CWD_PATH_MAX) return null;
+        var i: u32 = 0;
+        while (i < target.len) : (i += 1) out[i] = target[i];
+        out[target.len] = 0;
+        return @intCast(target.len);
+    }
+
+    // Relative: append target to old, with a separator.
+    var i: u32 = 0;
+    while (i < old.len) : (i += 1) {
+        if (len >= proc.CWD_PATH_MAX) return null;
+        out[len] = old[i];
+        len += 1;
+    }
+    if (len > 0 and out[len - 1] != '/') {
+        if (len >= proc.CWD_PATH_MAX) return null;
+        out[len] = '/';
+        len += 1;
+    }
+    var j: u32 = 0;
+    while (j < target.len) : (j += 1) {
+        if (len >= proc.CWD_PATH_MAX) return null;
+        out[len] = target[j];
+        len += 1;
+    }
+    if (len >= proc.CWD_PATH_MAX) return null;
+    out[len] = 0;
+    return len;
+}
+
+/// 49 chdir(path). namei → verify Dir → swap cwd. Returns 0 / -1.
+fn sysChdir(path_user_va: u32) i32 {
+    var pbuf: [path_mod.MAX_PATH]u8 = undefined;
+    const p = copyStrFromUser(path_user_va, &pbuf) orelse return -1;
+
+    const ip = path_mod.namei(p) orelse return -1;
+    inode.ilock(ip);
+    if (ip.dinode.type != .Dir) {
+        inode.iunlock(ip);
+        inode.iput(ip);
+        return -1;
+    }
+    inode.iunlock(ip);
+
+    // Compose new cwd_path; on overflow, restore old cwd.
+    const cur_p = proc.cur();
+    var new_path: [proc.CWD_PATH_MAX]u8 = undefined;
+    const old_path_len: u32 = blk: {
+        var k: u32 = 0;
+        while (k < proc.CWD_PATH_MAX and cur_p.cwd_path[k] != 0) : (k += 1) {}
+        break :blk k;
+    };
+    _ = composeCwdPath(cur_p.cwd_path[0..old_path_len], p, &new_path) orelse {
+        inode.iput(ip);
+        return -1;
+    };
+
+    // Commit: iput old cwd, install new.
+    if (cur_p.cwd != 0) {
+        const old_ip: *inode.InMemInode = @ptrFromInt(cur_p.cwd);
+        inode.iput(old_ip);
+    }
+    cur_p.cwd = @intFromPtr(ip);
+    @memcpy(&cur_p.cwd_path, &new_path);
+    return 0;
+}
+
+/// 17 getcwd(buf, sz). Copies cwd_path into the user buffer (with NUL).
+/// Returns bytes copied (excluding NUL) or -1 on size-too-small.
+fn sysGetcwd(buf_user_va: u32, sz: u32) i32 {
+    const cur_p = proc.cur();
+
+    // Determine length of cwd_path (NUL-terminated).
+    var len: u32 = 0;
+    while (len < proc.CWD_PATH_MAX and cur_p.cwd_path[len] != 0) : (len += 1) {}
+
+    // Lazy-root: empty cwd_path means "/".
+    const src: []const u8 = if (len == 0) "/" else cur_p.cwd_path[0..len];
+
+    if (sz < src.len + 1) return -1; // need room for NUL
+
+    setSum();
+    var i: u32 = 0;
+    while (i < src.len) : (i += 1) {
+        const dst: *volatile u8 = @ptrFromInt(buf_user_va + i);
+        dst.* = src[i];
+    }
+    const dst_nul: *volatile u8 = @ptrFromInt(buf_user_va + src.len);
+    dst_nul.* = 0;
+    clearSum();
+    return @intCast(src.len);
+}
+
 /// 5000 set_fg_pid: shell-only API for telling the console what process
 /// `^C` should target. 3.C accepts and discards; 3.E (when the console
 /// line discipline lands) wires this to the actual fg_pid global.
@@ -106,7 +299,14 @@ fn sysConsoleSetMode(mode: u32) u32 {
 
 pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
+        17 => tf.a0 = @bitCast(sysGetcwd(tf.a0, tf.a1)),
+        49 => tf.a0 = @bitCast(sysChdir(tf.a0)),
+        56 => tf.a0 = @bitCast(sysOpenat(tf.a0, tf.a1, tf.a2)),
+        57 => tf.a0 = @bitCast(sysClose(tf.a0)),
+        62 => tf.a0 = @bitCast(sysLseek(tf.a0, tf.a1, tf.a2)),
+        63 => tf.a0 = @bitCast(sysRead(tf.a0, tf.a1, tf.a2)),
         64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
+        80 => tf.a0 = @bitCast(sysFstat(tf.a0, tf.a1)),
         93 => sysExit(tf.a0),
         124 => tf.a0 = sysYield(),
         172 => tf.a0 = sysGetpid(),

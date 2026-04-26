@@ -307,6 +307,7 @@ pub fn build(b: *std.Build) void {
         \\const std = @import("std");
         \\pub const MULTI_PROC: bool = false;
         \\pub const FORK_DEMO: bool = false;
+        \\pub const FS_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
         \\pub const USERPROG2_ELF: []const u8 = "";
         \\pub const INIT_ELF: []const u8 = "";
@@ -414,12 +415,73 @@ pub fn build(b: *std.Build) void {
     const kernel_hello_step = b.step("kernel-hello", "Build the Phase 3.C hello.elf");
     kernel_hello_step.dependOn(&install_kernel_hello_elf.step);
 
+    const kernel_fs_init_obj = b.addObject(.{
+        .name = "kernel-fs-init",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/kernel/user/fs_init.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const kernel_fs_init_elf = b.addExecutable(.{
+        .name = "fs_init.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_fs_init_elf.root_module.addObject(kernel_fs_init_obj);
+    kernel_fs_init_elf.setLinkerScript(b.path("src/kernel/user/user_linker.ld"));
+    kernel_fs_init_elf.entry = .{ .symbol_name = "_start" };
+
+    const kernel_fs_init_elf_bin = kernel_fs_init_elf.getEmittedBin();
+    const install_kernel_fs_init_elf = b.addInstallFile(kernel_fs_init_elf_bin, "fs_init.elf");
+    const kernel_fs_init_step = b.step("kernel-fs-init", "Build the Phase 3.D fs_init.elf");
+    kernel_fs_init_step.dependOn(&install_kernel_fs_init_elf.step);
+
+    // Phase 3.D: mkfs host tool.
+    const mkfs_exe = b.addExecutable(.{
+        .name = "mkfs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/kernel/mkfs.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const install_mkfs = b.addInstallArtifact(mkfs_exe, .{});
+    const mkfs_step = b.step("mkfs", "Build the host-side mkfs tool");
+    mkfs_step.dependOn(&install_mkfs.step);
+
+    // Stage --bin: copy fs_init.elf into a temp dir as `init`.
+    const fs_bin_stage = b.addWriteFiles();
+    _ = fs_bin_stage.addCopyFile(kernel_fs_init_elf_bin, "init");
+
+    // Run mkfs to produce fs.img.
+    const fs_img_run = b.addRunArtifact(mkfs_exe);
+    fs_img_run.addArg("--root");
+    fs_img_run.addDirectoryArg(b.path("src/kernel/userland/fs"));
+    fs_img_run.addArg("--bin");
+    fs_img_run.addDirectoryArg(fs_bin_stage.getDirectory());
+    fs_img_run.addArg("--out");
+    const fs_img = fs_img_run.addOutputFileArg("fs.img");
+
+    const install_fs_img = b.addInstallFile(fs_img, "fs.img");
+    const fs_img_step = b.step("fs-img", "Build fs.img from staged userland + mkfs");
+    fs_img_step.dependOn(&install_fs_img.step);
+
     const multi_boot_config_stub_dir = b.addWriteFiles();
     const multi_boot_config_zig = multi_boot_config_stub_dir.add(
         "boot_config.zig",
         \\const std = @import("std");
         \\pub const MULTI_PROC: bool = true;
         \\pub const FORK_DEMO: bool = false;
+        \\pub const FS_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
         \\pub const USERPROG2_ELF: []const u8 = @embedFile("userprog2.elf");
         \\pub const INIT_ELF: []const u8 = "";
@@ -439,6 +501,7 @@ pub fn build(b: *std.Build) void {
         \\const std = @import("std");
         \\pub const MULTI_PROC: bool = false;
         \\pub const FORK_DEMO: bool = true;
+        \\pub const FS_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = "";
         \\pub const USERPROG2_ELF: []const u8 = "";
         \\pub const INIT_ELF: []const u8 = @embedFile("init.elf");
@@ -451,6 +514,24 @@ pub fn build(b: *std.Build) void {
     );
     _ = fork_boot_config_stub_dir.addCopyFile(kernel_init_elf_bin, "init.elf");
     _ = fork_boot_config_stub_dir.addCopyFile(kernel_hello_elf_bin, "hello.elf");
+
+    const fs_boot_config_stub_dir = b.addWriteFiles();
+    const fs_boot_config_zig = fs_boot_config_stub_dir.add(
+        "boot_config.zig",
+        \\const std = @import("std");
+        \\pub const MULTI_PROC: bool = false;
+        \\pub const FORK_DEMO: bool = false;
+        \\pub const FS_DEMO: bool = true;
+        \\pub const USERPROG_ELF: []const u8 = "";
+        \\pub const USERPROG2_ELF: []const u8 = "";
+        \\pub const INIT_ELF: []const u8 = "";
+        \\pub const HELLO_ELF: []const u8 = "";
+        \\pub fn lookupBlob(path: []const u8) ?[]const u8 {
+        \\    _ = path;
+        \\    return null;
+        \\}
+        ,
+    );
 
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
@@ -492,6 +573,20 @@ pub fn build(b: *std.Build) void {
     });
     kernel_kmain_fork_obj.root_module.addAnonymousImport("boot_config", .{
         .root_source_file = fork_boot_config_zig,
+    });
+
+    const kernel_kmain_fs_obj = b.addObject(.{
+        .name = "kernel-kmain-fs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/kernel/kmain.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_kmain_fs_obj.root_module.addAnonymousImport("boot_config", .{
+        .root_source_file = fs_boot_config_zig,
     });
 
     const kernel_elf = b.addExecutable(.{
@@ -563,6 +658,28 @@ pub fn build(b: *std.Build) void {
     const kernel_fork_step = b.step("kernel-fork", "Build the Phase 3.C fork-demo kernel.elf");
     kernel_fork_step.dependOn(&install_kernel_fork_elf.step);
 
+    const kernel_fs_elf = b.addExecutable(.{
+        .name = "kernel-fs.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_fs_elf.root_module.addObject(kernel_boot_obj);
+    kernel_fs_elf.root_module.addObject(kernel_trampoline_obj);
+    kernel_fs_elf.root_module.addObject(kernel_mtimer_obj);
+    kernel_fs_elf.root_module.addObject(kernel_swtch_obj);
+    kernel_fs_elf.root_module.addObject(kernel_kmain_fs_obj);
+    kernel_fs_elf.setLinkerScript(b.path("src/kernel/linker.ld"));
+    kernel_fs_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_kernel_fs_elf = b.addInstallArtifact(kernel_fs_elf, .{});
+    const kernel_fs_step = b.step("kernel-fs", "Build the Phase 3.D fs-mode kernel.elf");
+    kernel_fs_step.dependOn(&install_kernel_fs_elf.step);
+
     // End-to-end: Plan 2.D uses a host-compiled verifier that spawns ccc
     // on kernel.elf, captures stdout, and asserts the Phase 2 §Definition
     // of done shape ("hello from u-mode\nticks observed: N\n" with N > 0
@@ -618,6 +735,24 @@ pub fn build(b: *std.Build) void {
 
     const e2e_fork_step = b.step("e2e-fork", "Run the Phase 3.C fork+exec+wait+exit e2e test");
     e2e_fork_step.dependOn(&e2e_fork_run.step);
+
+    const fs_verify = b.addExecutable(.{
+        .name = "fs_verify_e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/fs.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const e2e_fs_run = b.addRunArtifact(fs_verify);
+    e2e_fs_run.addFileArg(exe.getEmittedBin());
+    e2e_fs_run.addFileArg(fs_img);
+    e2e_fs_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    e2e_fs_run.expectExitCode(0);
+
+    const e2e_fs_step = b.step("e2e-fs", "Run the Phase 3.D fs-read e2e test (init opens /etc/motd)");
+    e2e_fs_step.dependOn(&e2e_fs_run.step);
 
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.

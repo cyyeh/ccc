@@ -16,6 +16,7 @@
 .equ MEDELEG_STORE_PF,       (1 << 15)
 
 .equ MIDELEG_SSIP, (1 << 1)
+.equ MIDELEG_SEIP, (1 << 9)
 
 .equ MIE_MTIE, (1 << 7)
 .equ MSTATUS_MIE, (1 << 3)
@@ -58,8 +59,10 @@ _M_start:
                  MEDELEG_INST_PF        | MEDELEG_LOAD_PF        | MEDELEG_STORE_PF)
     csrw    medeleg, t0
 
-    # mideleg: SSIP.
-    li      t0, MIDELEG_SSIP
+    # mideleg: SSIP (timer-forwarded) + SEIP (PLIC external). Phase 3.D
+    # delegates external interrupts to S so trap.zig's s_trap_dispatch
+    # handles PLIC claim/dispatch/complete without an M-mode round-trip.
+    li      t0, (MIDELEG_SSIP | MIDELEG_SEIP)
     csrw    mideleg, t0
 
     # mie.MTIE = 1.
