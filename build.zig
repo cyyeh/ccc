@@ -929,7 +929,7 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
     });
 
-    // Single emulator module exposed via src/lib.zig so demo/web_main.zig
+    // Single emulator module exposed via src/emulator/lib.zig so demo/web_main.zig
     // can import the emulator without escaping its own package root.
     // One module (not six) avoids "file exists in modules X and Y": the
     // emulator files cross-import each other via relative paths, so
