@@ -222,7 +222,7 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         // to its ISR, then complete so the device can re-assert when the
         // next edge fires.
         //
-        // 3.D wires only IRQ #1 (block); 3.E will add IRQ #10 (UART RX).
+        // 3.D wires IRQ #1 (block); 3.E adds IRQ #10 (UART RX).
         // An unknown/0 source means a spurious interrupt — the spec
         // permits 0 here when claim races a clear; we panic to surface
         // any kernel bug that wires a source we can't service.
