@@ -1086,8 +1086,8 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    wasm_exe.entry = .disabled;        // we call our own export, not _start
-    wasm_exe.rdynamic = true;          // expose `export fn` symbols
+    wasm_exe.entry = .disabled; // we call our own export, not _start
+    wasm_exe.rdynamic = true; // expose `export fn` symbols
 
     const install_wasm = b.addInstallArtifact(wasm_exe, .{
         .dest_dir = .{ .override = .{ .custom = "web" } },
@@ -1102,4 +1102,45 @@ pub fn build(b: *std.Build) void {
     const install_web_snake = b.addInstallFile(snake_elf.getEmittedBin(), "web/snake.elf");
     wasm_step.dependOn(&install_web_hello.step);
     wasm_step.dependOn(&install_web_snake.step);
+}
+
+/// Build a user binary by linking start.S + usys.S + ulib.zig + uprintf.zig +
+/// the binary's main.zig against user_linker.ld. Returns the executable so
+/// callers can wire its install step into a build target.
+fn addUserBinary(
+    b: *std.Build,
+    name: []const u8,
+    main_src: []const u8,
+    rv_target: std.Build.ResolvedTarget,
+) *std.Build.Step.Compile {
+    // Compile the binary's main.zig as an object (its `@import("lib/ulib.zig")` etc.
+    // pulls ulib + uprintf in transitively).
+    const main_obj = b.addObject(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(main_src),
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const exe = b.addExecutable(.{
+        .name = b.fmt("{s}.elf", .{name}),
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .ReleaseSmall,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    exe.root_module.addObject(main_obj);
+    exe.root_module.addAssemblyFile(b.path("src/kernel/user/lib/start.S"));
+    exe.root_module.addAssemblyFile(b.path("src/kernel/user/lib/usys.S"));
+    exe.setLinkerScript(b.path("src/kernel/user/user_linker.ld"));
+    exe.entry = .{ .symbol_name = "_start" };
+
+    return exe;
 }
