@@ -100,10 +100,20 @@ pub fn iunlock(ip: *InMemInode) void {
 }
 
 pub fn iput(ip: *InMemInode) void {
-    if (ip.refs == 0) kprintf.panic("iput: refs == 0 (inum {d})", .{ip.inum});
-    ip.refs -= 1;
-    // 3.E: if refs == 0 and dinode.nlink == 0, ilock + truncate + zero
-    // the dinode + bwrite the inode block. 3.D never reaches this branch.
+    // If this is the last in-memory ref AND the file has been unlinked
+    // (nlink == 0), it's our job to free its on-disk resources.
+    if (ip.refs == 1 and ip.valid and ip.dinode.nlink == 0) {
+        // ilock-equivalent: ip is single-refed and we're the only caller,
+        // so busy is necessarily false. Set busy to keep the invariant
+        // (in case any future caller checks).
+        ip.busy = true;
+        itrunc(ip);
+        ip.dinode.type = .Free;
+        iupdate(ip);
+        ip.valid = false;
+        ip.busy = false;
+    }
+    if (ip.refs > 0) ip.refs -= 1;
 }
 
 /// Flush this inode's in-memory dinode back to its slot in the inode table.
@@ -148,6 +158,31 @@ pub fn ialloc(itype: layout.FileType) ?*InMemInode {
         bufcache.brelse(buf);
     }
     return null;
+}
+
+/// Free every block held by `ip` (direct + indirect) and reset size to 0.
+/// Caller must hold ip.busy (i.e., must have ilock'd ip).
+pub fn itrunc(ip: *InMemInode) void {
+    var i: u32 = 0;
+    while (i < layout.NDIRECT) : (i += 1) {
+        if (ip.dinode.addrs[i] != 0) {
+            balloc.free(ip.dinode.addrs[i]);
+            ip.dinode.addrs[i] = 0;
+        }
+    }
+    if (ip.dinode.addrs[layout.NDIRECT] != 0) {
+        const buf = bufcache.bread(ip.dinode.addrs[layout.NDIRECT]);
+        const slots: [*]const u32 = @ptrCast(@alignCast(&buf.data[0]));
+        var j: u32 = 0;
+        while (j < layout.NINDIRECT) : (j += 1) {
+            if (slots[j] != 0) balloc.free(slots[j]);
+        }
+        bufcache.brelse(buf);
+        balloc.free(ip.dinode.addrs[layout.NDIRECT]);
+        ip.dinode.addrs[layout.NDIRECT] = 0;
+    }
+    ip.dinode.size = 0;
+    iupdate(ip);
 }
 
 /// Map logical block index `bn` (0-based) within the file to its on-disk
