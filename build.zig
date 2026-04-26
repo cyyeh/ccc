@@ -445,6 +445,17 @@ pub fn build(b: *std.Build) void {
     const kernel_fs_init_step = b.step("kernel-fs-init", "Build the Phase 3.D fs_init.elf");
     kernel_fs_init_step.dependOn(&install_kernel_fs_init_elf.step);
 
+    const init_shell_exe = addUserBinary(
+        b,
+        "init_shell",
+        "src/kernel/user/init_shell.zig",
+        rv_target,
+        .ReleaseSmall,
+    );
+    const install_init_shell = b.addInstallFile(init_shell_exe.getEmittedBin(), "init_shell.elf");
+    const kernel_init_shell_step = b.step("kernel-init-shell", "Build init_shell.elf (Phase 3.E /bin/init)");
+    kernel_init_shell_step.dependOn(&install_init_shell.step);
+
     // Phase 3.D: mkfs host tool.
     const mkfs_exe = b.addExecutable(.{
         .name = "mkfs",
