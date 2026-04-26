@@ -79,6 +79,9 @@ pub fn bget(blk: u32) *Buf {
     var cur: ?*Buf = head;
     while (cur) |b| : (cur = b.next) {
         if (b.block == blk) {
+            // refs += 1 BEFORE the sleep so Pass 2 can't evict this buffer
+            // while we wait — guarantees b.block is still blk after wake,
+            // so no re-validation needed inside the loop.
             b.refs += 1;
             while (b.busy) proc.sleep(@intFromPtr(b));
             b.busy = true;
@@ -117,6 +120,10 @@ pub fn bwrite(b: *Buf) void {
 }
 
 pub fn brelse(b: *Buf) void {
+    std.debug.assert(b.refs > 0);
+    // wakeup-then-busy=false is safe because proc.wakeup only flips
+    // Sleeping → Runnable; the woken process doesn't run until the
+    // scheduler picks it, by which point b.busy = false is observed.
     proc.wakeup(@intFromPtr(b));
     b.busy = false;
     b.refs -= 1;
