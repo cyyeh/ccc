@@ -68,9 +68,14 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build kernel-elf` (or `kernel`) | Build the single-proc `kernel.elf` (M-mode boot shim + S-mode kernel + embedded `userprog.elf`) |
 | `zig build kernel-multi` | Build the multi-proc `kernel-multi.elf` (same kernel objects + both `userprog*.elf`) |
 | `zig build kernel-fork` | Build the Phase 3.C `kernel-fork.elf` (same kernel objects + embedded `init.elf` + `hello.elf`) |
+| `zig build kernel-fs` | Build the Phase 3.D `kernel-fs.elf` (FS-mode kernel; loads `/bin/init` from disk) |
+| `zig build kernel-fs-init` | Build `fs_init.elf` (the on-disk `/bin/init` payload baked into `fs.img`) |
+| `zig build mkfs` | Build the host-side `mkfs` tool (lays out a 4 MB image: superblock + bitmap + inode table + data blocks) |
+| `zig build fs-img` | Stage `userland/fs/` + `fs_init.elf` and run `mkfs` to produce `zig-out/fs.img` |
 | `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout matches `hello from u-mode\nticks observed: N\n` with N > 0 (Phase 2 §Definition of done) |
 | `zig build e2e-multiproc-stub` | Run `ccc kernel-multi.elf` and assert stdout contains both `hello from u-mode\n` and `[2] hello from u-mode\n`, plus a `ticks observed: N\n` trailer (Plan 3.B milestone) |
 | `zig build e2e-fork` | Boot `kernel-fork.elf`; `init` forks `/bin/hello`; parent reaps; emulator returns 0 (Plan 3.C milestone) |
+| `zig build e2e-fs` | Boot `kernel-fs.elf` against `fs.img`; on-disk `/bin/init` opens `/etc/motd`, reads it, writes to fd 1, exits 0 (Plan 3.D milestone) |
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
@@ -123,7 +128,7 @@ to "GitHub Actions" in repo settings (one-time manual step).
 
 ## Status
 
-**Phase 3 Plan C done — fork / exec / wait / exit / kill-flag.** Plan 3.A
+**Phase 3 Plan D done — bufcache + block driver + FS read path.** Plan 3.A
 merged: PLIC, simple block device, UART RX, `--disk` and `--input` flags,
 real `wfi` idle. Plan 3.B merged: free-list page allocator, `ptable[NPROC=16]`,
 round-robin scheduler with `swtch`, kernel-side ELF32 loader,
@@ -133,6 +138,17 @@ address-space copy), `execve` (in-place AS rebuild + System-V argv tail),
 `wait4` (sleep on self until zombie child), `exit` (reparent + zombie + wake
 parent), and `kill` flag (`^C`-style poison checked on syscall return);
 `e2e-fork` runs `init` → fork → exec `/bin/hello` → parent reaps to exit 0.
+Plan 3.D merged: kernel-side PLIC + block drivers, buffer cache (`NBUF=16`,
+sleep-on-busy LRU), full FS read layer (`fs/layout.zig`, `fs/balloc.zig`,
+`fs/inode.zig` with `bmap` + `readi`, `fs/dir.zig`, `fs/path.zig` with
+`namei`/`nameiparent`), file table (`NFILE=64`) with per-process `ofile[16]` +
+`cwd`, 7 new syscalls (`getcwd`, `chdir`, `openat`, `close`, `lseek`, `read`,
+`fstat`), and a `mkfs.zig` host tool that builds a 4 MB `fs.img` from a staged
+directory tree. `proc.exec` now resolves the path via `namei` + `readi` into
+a kernel scratch buffer (FS-mode), or via the embedded-blob lookup (single
+/ multi / fork modes) — selected at compile time per kernel variant.
+`e2e-fs` runs `kernel-fs.elf` against `fs.img`: the on-disk `/bin/init` opens
+`/etc/motd`, reads it, writes the contents to fd 1, exits 0.
 
 **Phase 1 — RISC-V CPU emulator — complete.**
 
@@ -218,7 +234,31 @@ the parent `wait`s and prints `init: reaped` before exiting 0:
     init: reaped
     ticks observed: 3
 
-Next: Plan 3.D — filesystem + shell.
+Plan 3.D (bufcache + block driver + FS read path) is merged. The kernel grew
+a real FS layer: `fs/bufcache.zig` (`NBUF=16` LRU buffers with sleep-on-busy),
+`fs/balloc.zig` (block bitmap), `fs/inode.zig` (`NINODE=32` in-memory inode
+cache + `bmap` + `readi`), `fs/dir.zig` (`dirlookup`), `fs/path.zig`
+(`namei`/`nameiparent`). A new `file.zig` holds an `NFILE=64` reference-counted
+file table; every `Process` got `ofile[16]` and `cwd`. Seven new syscalls
+land: `openat`, `close`, `read`, `lseek`, `fstat`, `chdir`, `getcwd`. The
+S-mode trap dispatcher gained an external-interrupt branch that drives
+`PLIC.claim → block.isr → PLIC.complete`; `block.zig` is the
+single-outstanding-request driver that sleeps the caller on `&req` until the
+ISR wakes them. `proc.exec` no longer hard-codes the embedded-blob lookup —
+the FS-mode kernel resolves the path via `namei + readi` into a 64 KB kernel
+scratch buffer, then calls `elfload.load` against that buffer. A new `mkfs`
+host tool walks `--root` and `--bin` directory trees and lays out the canonical
+4 MB image (boot sector + superblock + bitmap + inode table + data blocks),
+which the build runs to produce `zig-out/fs.img`. `kernel-fs.elf` boots from
+that image: `kmain`'s `FS_DEMO` arm calls `proc.exec("/bin/init", NULL)`,
+which `namei`'s the on-disk `fs_init.elf` and loads it into PID 1's address
+space. The on-disk `init` reads `/etc/motd` and writes it to UART:
+
+    $ zig build kernel-fs fs-img && zig build run -- --disk zig-out/fs.img zig-out/bin/kernel-fs.elf
+    hello from phase 3
+    ticks observed: 4
+
+Next: Plan 3.E — file write path + console line discipline + shell.
 
 ## Layout
 
@@ -244,25 +284,41 @@ src/
   kernel/             # Phase 2/3: M-mode boot + S-mode kernel + ptable scheduler + ELF-loaded userprogs
     kmain.zig         # S-mode entry; allocates PID 1, builds address space, switches to scheduler
     boot.S            # M-mode boot shim
-    trampoline.S      # user/kernel trampoline
+    trampoline.S      # user/kernel trampoline (s_trap_entry + s_kernel_trap_entry for the scheduler SIE window)
     mtimer.S          # mtimer ISR
     swtch.S           # context switch
     elfload.zig       # in-kernel ELF32 loader (PT_LOAD walker + page-table installer)
     vm.zig            # Sv32 page table + copyUvm/unmapUser/freeLeavesInL0
     proc.zig          # Process struct, fork/exec/wait/exit/kill, sleep/wakeup
-    sched.zig         # round-robin scheduler + swtch
-    syscall.zig       # syscall dispatch (write/exit/yield/getpid/sbrk/fork/execve/wait4/...)
-    trap.zig          # S-mode trap dispatcher; killed-flag check on syscall return
+    sched.zig         # round-robin scheduler + swtch + SIE window for device IRQ wait
+    syscall.zig       # syscall dispatch (write/exit/yield/getpid/sbrk/fork/execve/wait4/openat/close/read/lseek/fstat/chdir/getcwd/...)
+    trap.zig          # S-mode trap dispatcher (S-from-U + S-from-S kernel-vec); killed-flag check on syscall return
     page_alloc.zig    # free-list page allocator
     kprintf.zig       # kernel print helper
     uart.zig          # kernel-side UART driver
+    plic.zig          # kernel-side PLIC driver (setPriority/enable/setThreshold/claim/complete)
+    block.zig         # kernel-side block driver (single-outstanding submit + sleep on req; isr wakes)
+    file.zig          # NFILE=64 file table + read/lseek/fstat (single Inode type in 3.D; Console in 3.E)
+    fs/
+      layout.zig      # on-disk constants (BLOCK_SIZE, NBLOCKS, NINODES, SuperBlock, DiskInode, DirEntry)
+      bufcache.zig    # NBUF=16 LRU buffer cache with sleep-on-busy + bget/brelse/bread/bwrite
+      balloc.zig      # block bitmap (alloc/free; write-side reserved for 3.E)
+      inode.zig       # NINODE=32 in-memory inode cache + iget/iput/ilock/iunlock + bmap + readi
+      dir.zig         # DirEntry record + dirlookup + dirlink stub (3.E)
+      path.zig        # namei + nameiparent (root for absolute, cur.cwd for relative)
+    mkfs.zig          # host-side tool: walks --root + --bin into a 4 MB image (super + bitmap + inodes + data)
     linker.ld         # kernel.elf load layout
     user/
       userprog.zig    # PID 1 user payload (embedded into kernel.elf)
       userprog2.zig   # PID 2 user payload (embedded into kernel-multi.elf)
       init.zig        # init userland for kernel-fork.elf (fork+exec+wait)
       hello.zig       # hello userland for kernel-fork.elf (write+exit)
+      fs_init.zig     # on-disk /bin/init for kernel-fs.elf (open /etc/motd, read, write fd 1, exit)
       user_linker.ld  # user-side linker script
+    userland/
+      fs/
+        etc/
+          motd        # staged content for fs.img: "hello from phase 3\n"
 demo/
   web_main.zig        # freestanding wasm entry — runStart/runStep/setMtimeNs/pushInput/consumeOutput, fixed 2 MB ELF buffer (programs fetched at runtime, not embedded)
 programs/
@@ -276,6 +332,7 @@ tests/
     kernel.zig        # Plan 2.D verifier (Phase 2 §Definition of done)
     multiproc.zig     # Plan 3.B verifier (PID 1 + PID 2 interleaving)
     fork.zig          # Plan 3.C verifier (fork/exec/wait/exit)
+    fs.zig            # Plan 3.D verifier (init opens /etc/motd, writes contents to fd 1)
     snake.zig         # snake e2e verifier (deterministic input → GAME OVER)
   fixtures/           # tiny hand-crafted ELF used only by elf.zig tests
   riscv-tests/        # upstream submodule: riscv-software-src/riscv-tests
