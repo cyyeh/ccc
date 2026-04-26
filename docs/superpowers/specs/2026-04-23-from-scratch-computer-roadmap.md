@@ -8,7 +8,8 @@ our own programs (including a tiny HTTP/1.0 text browser).
 
 - **Goal shape:** RISC-V emulator + custom OS + custom networking + custom
   text-mode browser. Browse a small set of plain-HTTP pages on a server we
-  control. No Linux. No TLS. No graphics.
+  control. No Linux. No TLS. No graphics in the core path; Phase 6 adds an
+  optional graphical stack.
 - **Implementation language:** Zig (specific version pinned in Phase 1
   spec). The developer is new to Zig and will run `ziglings` exercises in
   parallel during Phase 1.
@@ -62,9 +63,24 @@ headings, links), terminal renderer, link navigation by typing numbers.
 **Demo:** `browse http://test-server/` shows a page; clicking links by
 typing numbers loads the next page.
 
+### Phase 6 — Framebuffer + compositor + windowed apps (~3-5 months, optional)
+
+A linear framebuffer device in the emulator, mouse + keyboard input,
+kernel-side `mmap` and pipes, a userland compositor (`wm`), and a small
+set of windowed demo apps (`hello-gui`, `clock`, `calc`, windowed
+`term`). Reverses the "no graphics" stance of the original goal sheet
+and is independent of Phase 4 / 5 — can land before, after, or in
+parallel. Full design in
+`2026-04-26-phase6-framebuffer-compositor-design.md`.
+
+**Demo:** boot to a windowed desktop with a live clock and a working
+calculator; the same desktop also renders in a browser `<canvas>`.
+
 ## Total scope
 
-~12-20 months of focused part-time work, plus the Zig learning curve.
+~12-20 months of focused part-time work for the Phase 1-5 core path,
+plus the Zig learning curve. Phase 6 (optional) adds another ~3-5
+months on top.
 
 ## Status
 

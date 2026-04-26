@@ -260,6 +260,11 @@
       background: transparent;
       border: 1px solid var(--panel-border);
     }
+    .toc-status.optional {
+      color: var(--dim);
+      background: transparent;
+      border: 1px dashed var(--panel-border);
+    }
 
     .site-footer {
       position: fixed;
@@ -321,7 +326,7 @@
   <section data-label="Contents · five phases">
     <div class="slide-label">contents · the project</div>
     <h2 class="slide-title">Five phases, <span class="accent">one browser</span></h2>
-    <p class="plain">The end goal: boot our own kernel, talk to a server we control, and render plain HTML in a terminal-mode browser — everything written from scratch. No Linux. No TLS. That arc splits into five phases, each with its own spec and plan.</p>
+    <p class="plain">The end goal: boot our own kernel, talk to a server we control, and render plain HTML in a terminal-mode browser — everything written from scratch. No Linux. No TLS. That arc splits into five phases, each with its own spec and plan. <strong>Phase 6</strong> is an optional graphical addendum — framebuffer, compositor, windowed apps — orthogonal to the browser goal.</p>
     <div class="toc">
       <div class="toc-row">
         <div class="toc-num">1</div>
@@ -356,6 +361,13 @@
         <div class="toc-body">
           <div class="toc-head">HTTP/1.0 + text browser <span class="toc-status upcoming">upcoming</span></div>
           <div class="toc-sub">HTTP client · URL parsing · tiny HTML parser · terminal renderer · link navigation by number.</div>
+        </div>
+      </div>
+      <div class="toc-row">
+        <div class="toc-num">6</div>
+        <div class="toc-body">
+          <div class="toc-head">Framebuffer + compositor + windowed apps <span class="toc-status optional">optional · addendum</span></div>
+          <div class="toc-sub">Linear framebuffer · mouse + keyboard input · kernel <code class="inline">mmap</code> + pipes · userland <code class="inline">wm</code> compositor · windowed <code class="inline">clock</code>, <code class="inline">calc</code>, and <code class="inline">term</code> demos. Reverses the original "no graphics" stance.</div>
         </div>
       </div>
     </div>
