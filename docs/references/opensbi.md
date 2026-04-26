@@ -33,12 +33,12 @@ The SBI ABI is versioned. Common extensions:
 
 Our kernel does **not** use OpenSBI. It rolls its own M-mode shim:
 
-- **M-mode boot shim** — `tests/programs/kernel/boot.S:1-97`
+- **M-mode boot shim** — `src/kernel/boot.S:1-97`
   - Zeroes BSS, programs `mtvec`
   - Sets `medeleg` / `mideleg` to forward U→S faults and SSIP into S-mode
   - Programs CLINT (`mtimecmp = mtime + TIMESLICE`), enables `mie.MTIE`
   - Sets `mstatus.MPP = S`, `mepc = kmain`, then `mret` into S-mode
-- **S-mode kernel** — `tests/programs/kernel/kmain.zig:27` onward
+- **S-mode kernel** — `src/kernel/kmain.zig:27` onward
   - Owns paging, scheduler, syscalls, ELF loading
   - Talks to devices directly:
     - UART MMIO at `0x10000000` (`uart.zig:7`)

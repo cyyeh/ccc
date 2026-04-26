@@ -1,4 +1,4 @@
-// tests/programs/kernel/vm.zig — kernel-side Sv32 page-table builder.
+// src/kernel/vm.zig — kernel-side Sv32 page-table builder.
 //
 // We never walk page tables from the kernel — the emulator does that on
 // every access. We only CONSTRUCT them here. Layout mirrors the emulator's

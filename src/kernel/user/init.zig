@@ -1,4 +1,4 @@
-// tests/programs/kernel/user/init.zig — Phase 3.C PID 1 payload.
+// src/kernel/user/init.zig — Phase 3.C PID 1 payload.
 //
 // Behavior:
 //   1. fork()

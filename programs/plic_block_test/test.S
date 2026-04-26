@@ -1,4 +1,4 @@
-# tests/programs/plic_block_test/test.S — Phase 3.A integration test S-mode body.
+# programs/plic_block_test/test.S — Phase 3.A integration test S-mode body.
 
 .equ BLK_BASE,      0x10001000
 .equ BLK_SECTOR,    0

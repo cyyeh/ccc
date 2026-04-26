@@ -1,4 +1,4 @@
-# tests/programs/kernel/swtch.S — Phase 3.B context-switch primitive.
+# src/kernel/swtch.S — Phase 3.B context-switch primitive.
 #
 # void swtch(Context *old, Context *new);
 #

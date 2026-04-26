@@ -1,4 +1,4 @@
-// tests/programs/snake/snake.zig
+// programs/snake/snake.zig
 //
 // Freestanding M-mode snake. Zig side of the program: trap dispatch,
 // I/O, and game state.

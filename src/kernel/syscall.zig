@@ -1,4 +1,4 @@
-// tests/programs/kernel/syscall.zig — Phase 3.B syscall table.
+// src/kernel/syscall.zig — Phase 3.B syscall table.
 //
 // Syscalls dispatched in Phase 3.B:
 //   - 64  (write): copies user bytes to UART via SSTATUS.SUM.

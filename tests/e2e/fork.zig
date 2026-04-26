@@ -1,4 +1,4 @@
-// tests/programs/kernel/fork_verify_e2e.zig — Phase 3.C verifier.
+// tests/e2e/fork.zig — Phase 3.C verifier.
 //
 // Spawns ccc on kernel-fork.elf, captures stdout, asserts:
 //   - exit code 0

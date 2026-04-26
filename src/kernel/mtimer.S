@@ -1,4 +1,4 @@
-# tests/programs/kernel/mtimer.S — Phase 2 Plan 2.C M-mode timer ISR.
+# src/kernel/mtimer.S — Phase 2 Plan 2.C M-mode timer ISR.
 #
 # Called from m_trap_vector (boot.S) when mcause = 0x80000007 (MTI).
 # On entry, all GPRs hold the caller's values; we must not perturb any

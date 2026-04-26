@@ -1,4 +1,4 @@
-// tests/programs/kernel/sched.zig — Phase 3.B round-robin scheduler.
+// src/kernel/sched.zig — Phase 3.B round-robin scheduler.
 //
 // Runs forever on cpu.sched_stack_top. Loop:
 //   1. Scan ptable for the first Runnable proc.

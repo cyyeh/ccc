@@ -1,4 +1,4 @@
-// tests/programs/kernel/user/userprog2.zig — Phase 3.B PID 2 payload.
+// src/kernel/user/userprog2.zig — Phase 3.B PID 2 payload.
 //
 // Same shape as userprog.zig: write a message, yield, busy-loop, exit.
 // Different message lets the multi-proc verifier distinguish PID 1 vs.

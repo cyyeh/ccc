@@ -1,4 +1,4 @@
-// tests/programs/kernel/kprintf.zig — minimal formatter + panic.
+// src/kernel/kprintf.zig — minimal formatter + panic.
 //
 // Supports the subset of std.fmt we need for Phase 2 panic messages:
 //   {s} — []const u8 slice

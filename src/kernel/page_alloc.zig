@@ -1,4 +1,4 @@
-// tests/programs/kernel/page_alloc.zig — physical-page free-list allocator.
+// src/kernel/page_alloc.zig — physical-page free-list allocator.
 //
 // Phase 3.B replaces Phase 2's bump allocator. The free-list links every
 // 4 KB page in [heap_start, RAM_END) by reusing the page itself as its

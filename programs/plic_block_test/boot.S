@@ -1,4 +1,4 @@
-# tests/programs/plic_block_test/boot.S — Phase 3.A integration test M-mode shim.
+# programs/plic_block_test/boot.S — Phase 3.A integration test M-mode shim.
 
 .equ MIDELEG_SEIP, (1 << 9)
 .equ MIE_NONE,      0

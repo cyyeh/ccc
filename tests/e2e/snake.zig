@@ -1,10 +1,10 @@
-// tests/programs/snake/verify_e2e.zig — snake e2e verifier.
+// tests/e2e/snake.zig — snake e2e verifier.
 //
 // Host-compiled helper for `zig build e2e-snake`. Spawns the emulator
 // with the snake ELF and a deterministic input file, captures stdout,
 // and asserts the final frame contains "GAME OVER" and "score: 0".
 //
-// Usage: verify_e2e <ccc-binary> <snake.elf> <test_input.txt>
+// Usage: verify_e2e <ccc-binary> <snake.elf> <snake_input.txt>
 
 const std = @import("std");
 const Io = std.Io;
@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !u8 {
     defer gpa.free(argv);
 
     if (argv.len != 4) {
-        stderr.print("usage: {s} <ccc-binary> <snake.elf> <test_input.txt>\n", .{argv[0]}) catch {};
+        stderr.print("usage: {s} <ccc-binary> <snake.elf> <snake_input.txt>\n", .{argv[0]}) catch {};
         stderr.flush() catch {};
         return USAGE_EXIT;
     }

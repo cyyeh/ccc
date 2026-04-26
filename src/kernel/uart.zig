@@ -1,4 +1,4 @@
-// tests/programs/kernel/uart.zig — kernel-side NS16550A UART helper.
+// src/kernel/uart.zig — kernel-side NS16550A UART helper.
 //
 // We only ever transmit; receive is not implemented in Phase 2. The
 // emulator's uart.zig forwards THR stores straight to stdout, so

@@ -1,4 +1,4 @@
-// tests/programs/kernel/multiproc_verify_e2e.zig — Phase 3.B verifier.
+// tests/e2e/multiproc.zig — Phase 3.B verifier.
 //
 // Spawns ccc on kernel-multi.elf, captures stdout, asserts:
 //   - exit code 0

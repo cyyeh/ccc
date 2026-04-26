@@ -1,4 +1,4 @@
-// tests/programs/kernel/proc.zig — Phase 3.B process table.
+// src/kernel/proc.zig — Phase 3.B process table.
 //
 // Phase 3.B replaces the Phase 2 singleton `the_process` with a static
 // process table `ptable[NPROC]`. Key design points:

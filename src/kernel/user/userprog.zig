@@ -1,4 +1,4 @@
-// tests/programs/kernel/user/userprog.zig — Plan 2.D U-mode payload.
+// src/kernel/user/userprog.zig — Plan 2.D U-mode payload.
 //
 // Naked `_start` does: write(1, msg, 18); yield(); busy-loop 100k; exit(0).
 // The busy-loop is there so wall-clock time advances enough that at least

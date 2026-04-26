@@ -1,4 +1,4 @@
-// tests/programs/kernel/trap.zig — S-mode trap dispatcher.
+// src/kernel/trap.zig — S-mode trap dispatcher.
 //
 // Phase 3.B changes: the SSI branch now increments proc.cur().ticks_observed
 // and calls proc.yield(). The ECALL branch is unchanged from 2.C; the

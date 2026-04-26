@@ -1,4 +1,4 @@
-// tests/programs/kernel/kmain.zig — Phase 3.B kernel S-mode entry.
+// src/kernel/kmain.zig — Phase 3.B kernel S-mode entry.
 //
 // Phase 3.B: kmain allocates PID 1 via proc.alloc(), builds its address
 // space with elfload.load(), marks it Runnable, then switches into

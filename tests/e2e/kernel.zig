@@ -1,4 +1,4 @@
-// tests/programs/kernel/verify_e2e.zig — Phase 2 Plan 2.D e2e verifier.
+// tests/e2e/kernel.zig — Phase 2 Plan 2.D e2e verifier.
 //
 // Host-compiled helper for `zig build e2e-kernel`. Spawns the emulator
 // with the kernel ELF and asserts the Phase 2 §Definition of done:

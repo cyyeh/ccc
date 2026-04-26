@@ -1,4 +1,4 @@
-// tests/programs/kernel/elfload.zig — kernel-side ELF32 loader.
+// src/kernel/elfload.zig — kernel-side ELF32 loader.
 //
 // Phase 3.B: parse an ELF32 RISC-V EXEC blob, walk PT_LOAD program
 // headers, and for each segment allocate physical frames and install

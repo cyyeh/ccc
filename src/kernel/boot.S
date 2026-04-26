@@ -1,4 +1,4 @@
-# tests/programs/kernel/boot.S — Phase 2 Plan 2.C kernel M-mode boot shim.
+# src/kernel/boot.S — Phase 2 Plan 2.C kernel M-mode boot shim.
 #
 # Task 18 state: full M-mode boot. Set mtvec to m_trap_vector (which
 # routes MTI to m_timer_isr in mtimer.S, panics on anything else),

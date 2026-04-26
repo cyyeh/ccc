@@ -77,7 +77,7 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build snake-elf` | Build the Phase 3 snake demo ELF (M-mode RV32, CLINT timer IRQ + UART poll, 32×16 ASCII game) |
 | `zig build snake-test` | Run `programs/snake/game.zig` unit tests on the native target (pure game logic, target-independent) |
 | `zig build run-snake` | Play `snake.elf` in the CLI under stty raw mode (single-keystroke WASD/q/SPACE input) |
-| `zig build e2e-snake` | Pipe `programs/snake/test_input.txt` through `--input`, assert stdout contains `GAME OVER` + `score: 0` (~4 s wall clock) |
+| `zig build e2e-snake` | Pipe `tests/e2e/snake_input.txt` through `--input`, assert stdout contains `GAME OVER` + `score: 0` (~4 s wall clock) |
 | `zig build fixtures` | Build `tests/fixtures/minimal.elf` (used only by `src/emulator/elf.zig` tests) |
 | `zig build riscv-tests` | Assemble + link + run the official `rv32ui/um/ua/mi/si-p-*` conformance suite (67 tests) |
 | `zig build wasm` | Cross-compile `demo/web_main.zig` to `wasm32-freestanding` (installed to `zig-out/web/ccc.wasm`); also installs `hello.elf` and `snake.elf` into `zig-out/web/` for the demo to fetch at runtime |

@@ -1,4 +1,4 @@
-# tests/programs/kernel/trampoline.S — S-mode trap entry/exit.
+# src/kernel/trampoline.S — S-mode trap entry/exit.
 #
 # On trap: stvec points here. sscratch holds &cur_proc (the currently-
 # scheduled process); sched.zig writes sscratch before each swtch into a

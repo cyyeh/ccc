@@ -1,4 +1,4 @@
-// tests/programs/kernel/user/hello.zig — Phase 3.C exec target.
+// src/kernel/user/hello.zig — Phase 3.C exec target.
 //
 // Naked _start: write(1, msg, 22); exit(0).
 // Same shape as Plan 3.B userprog.zig.

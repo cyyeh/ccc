@@ -766,7 +766,7 @@ pub fn build(b: *std.Build) void {
     const e2e_snake_run = b.addRunArtifact(snake_verify_e2e);
     e2e_snake_run.addFileArg(exe.getEmittedBin());
     e2e_snake_run.addFileArg(snake_elf.getEmittedBin());
-    e2e_snake_run.addFileArg(b.path("programs/snake/test_input.txt"));
+    e2e_snake_run.addFileArg(b.path("tests/e2e/snake_input.txt"));
     e2e_snake_run.expectExitCode(0);
 
     const e2e_snake_step = b.step("e2e-snake", "Run snake e2e (deterministic input → GAME OVER + score:0)");

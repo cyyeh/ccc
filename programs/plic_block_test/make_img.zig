@@ -1,4 +1,4 @@
-// tests/programs/plic_block_test/make_img.zig — host tool that emits the
+// programs/plic_block_test/make_img.zig — host tool that emits the
 // 4 MB Phase 3.A integration-test disk image. Sector 0, byte 0 = 0xCC
 // (the magic byte the test program looks for after the block read);
 // every other byte is left as zero by the underlying setLength sparse
@@ -6,7 +6,7 @@
 //
 // Zig 0.16 host-side I/O: createFile/setLength/writePositionalAll all
 // take an `Io` parameter, mirroring the project's existing host tool
-// pattern (see tests/programs/hello/encode_hello.zig).
+// pattern (see programs/hello/encode_hello.zig).
 
 const std = @import("std");
 const Io = std.Io;
