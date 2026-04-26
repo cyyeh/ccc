@@ -118,7 +118,7 @@ The browser demo cross-compiles the same emulator core
 (`cpu.zig` / `memory.zig` / `elf.zig` / `devices/*.zig`) to
 `wasm32-freestanding` via a thin entry point at `demo/web_main.zig`
 (plus a one-file `src/lib.zig` shim that exposes the emulator as a
-single named module). `ccc.wasm` is just the emulator (~30 KB);
+single named module). `ccc.wasm` is just the emulator (~50 KB);
 RV32 ELFs are served as separate static files (`web/hello.elf`,
 `web/snake.elf`) and **fetched at runtime** when the user picks one
 from the program selector. Zero JS dependencies, zero WASM imports.
