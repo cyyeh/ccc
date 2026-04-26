@@ -1112,6 +1112,7 @@ fn addUserBinary(
     name: []const u8,
     main_src: []const u8,
     rv_target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step.Compile {
     // Compile the binary's main.zig as an object (its `@import("lib/ulib.zig")` etc.
     // pulls ulib + uprintf in transitively).
@@ -1120,7 +1121,7 @@ fn addUserBinary(
         .root_module = b.createModule(.{
             .root_source_file = b.path(main_src),
             .target = rv_target,
-            .optimize = .ReleaseSmall,
+            .optimize = optimize,
             .strip = false,
             .single_threaded = true,
         }),
@@ -1131,7 +1132,7 @@ fn addUserBinary(
         .root_module = b.createModule(.{
             .root_source_file = null,
             .target = rv_target,
-            .optimize = .ReleaseSmall,
+            .optimize = optimize,
             .strip = false,
             .single_threaded = true,
         }),
