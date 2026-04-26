@@ -335,3 +335,45 @@ pub fn fork() i32 {
 
     return @as(i32, @intCast(child.pid));
 }
+
+/// Full process exit. Reparents children to PID 1 (init), marks self
+/// Zombie, wakes the parent (which may be sleeping in wait()). Never
+/// returns. PID 1's exit additionally prints the canonical
+/// "ticks observed: N\n" trailer and halts the emulator (preserves
+/// e2e-kernel and e2e-multiproc-stub regression behavior).
+pub fn exit(status: i32) noreturn {
+    const p = cur();
+
+    // Reparent every child of `p` to PID 1 (init). PID 1 is hard-wired
+    // to slot 0; if 3.D ever changes that, this lookup needs to scan
+    // ptable for pid==1.
+    const init_proc = &ptable[0];
+    var i: u32 = 0;
+    while (i < NPROC) : (i += 1) {
+        const c = &ptable[i];
+        if (c.parent == p) c.parent = init_proc;
+    }
+
+    p.xstate = status;
+    p.state = .Zombie;
+
+    // Wake the parent if it's sleeping in wait() (parent sleeps on its
+    // own pointer). Guard against PID 1's null parent.
+    if (p.parent) |par| {
+        wakeup(@as(u32, @intCast(@intFromPtr(par))));
+    }
+
+    // PID 1 special-case: same trailer + halt as Phase 2 / 3.B.
+    // Preserves e2e-kernel and e2e-multiproc-stub byte-for-byte.
+    if (p.pid == 1) {
+        kprintf.print("ticks observed: {d}\n", .{p.ticks_observed});
+        const halt: *volatile u8 = @ptrFromInt(0x00100000);
+        halt.* = @as(u8, @truncate(@as(u32, @bitCast(status)) & 0xFF));
+        while (true) asm volatile ("wfi");
+    }
+
+    // Non-PID-1 exit: yield forever; scheduler will skip Zombies; parent
+    // will reap us in wait(). The loop is defensive — if a future
+    // scheduler bug picks us anyway, we just yield again.
+    while (true) sched();
+}

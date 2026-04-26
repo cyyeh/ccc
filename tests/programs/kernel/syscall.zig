@@ -51,27 +51,7 @@ fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
 }
 
 pub fn sysExit(status: u32) noreturn {
-    const p = proc.cur();
-    p.xstate = @bitCast(status);
-    p.state = .Zombie;
-
-    if (p.pid == 1) {
-        // Phase 2 §Definition of done: print "ticks observed: N\n" before
-        // halting. We use this proc's own ticks_observed; the multi-proc
-        // test arranges for PID 1 to be the last to exit.
-        kprintf.print("ticks observed: {d}\n", .{p.ticks_observed});
-        const halt: *volatile u8 = @ptrFromInt(0x00100000);
-        halt.* = @intCast(status & 0xFF);
-        while (true) asm volatile ("wfi");
-    }
-
-    // Non-PID-1 proc: yield back to scheduler forever. 3.C will reap
-    // zombies via wait(); for 3.B's multi-proc demo, the scheduler keeps
-    // cycling between PID 1 and PID 2 (now Zombie, skipped) until PID 1
-    // exits and halts. Loop here defensively so a future 3.C scheduler
-    // tweak that allows Zombie wakeups can't accidentally execute past
-    // sysExit.
-    while (true) proc.sched();
+    proc.exit(@bitCast(status));
 }
 
 fn sysYield() u32 {
