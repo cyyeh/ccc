@@ -18,6 +18,10 @@ const trap = @import("trap.zig");
 const page_alloc = @import("page_alloc.zig");
 const kprintf = @import("kprintf.zig");
 const vm = @import("vm.zig");
+const file = @import("file.zig");
+const inode = @import("fs/inode.zig");
+const path = @import("fs/path.zig");
+const bufcache = @import("fs/bufcache.zig");
 
 pub extern fn swtch(old: *Context, new: *Context) void;
 
@@ -348,6 +352,25 @@ pub fn fork() i32 {
     child.tf.a0 = 0;
     child.parent = parent;
     @memcpy(&child.name, &parent.name);
+
+    // Inherit parent's open fds.
+    var fi: u32 = 0;
+    while (fi < NOFILE) : (fi += 1) {
+        if (parent.ofile[fi] != 0) {
+            child.ofile[fi] = file.dup(parent.ofile[fi]);
+        }
+    }
+
+    // Inherit parent's cwd. If parent never chdir'd (cwd == 0), child
+    // inherits the same lazy-root and copies the empty cwd_path.
+    if (parent.cwd != 0) {
+        const ip: *inode.InMemInode = @ptrFromInt(parent.cwd);
+        child.cwd = @intFromPtr(inode.idup(ip));
+    } else {
+        child.cwd = 0;
+    }
+    @memcpy(&child.cwd_path, &parent.cwd_path);
+
     child.state = .Runnable;
 
     return @as(i32, @intCast(child.pid));
@@ -499,7 +522,7 @@ pub fn exec(path_user_va: u32, argv_user_va: u32) i32 {
 
     // 1. Copy path string out of user space.
     var path_buf: [MAX_PATH]u8 = undefined;
-    const path = copyStrFromUser(path_user_va, &path_buf) orelse return -1;
+    const path_slice = copyStrFromUser(path_user_va, &path_buf) orelse return -1;
 
     // 2. Copy argv strings out of user space (before old AS is torn down).
     var arg_storage: [MAX_ARGS][MAX_ARG_LEN]u8 = undefined;
@@ -507,7 +530,7 @@ pub fn exec(path_user_va: u32, argv_user_va: u32) i32 {
     const argc = copyArgvFromUser(argv_user_va, &arg_storage, &arg_lens) orelse return -1;
 
     // 3. Look up the embedded blob.
-    const blob = boot_config.lookupBlob(path) orelse return -1;
+    const blob = boot_config.lookupBlob(path_slice) orelse return -1;
 
     // 4. Build new pgdir + map kernel/MMIO.
     const new_root = vm.allocRoot() orelse return -1;
