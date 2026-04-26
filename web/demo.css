@@ -230,6 +230,22 @@ pre.output .cmd    { color: var(--fg); }
   border-radius: 3px;
   font-size: 13px;
 }
+.program-instructions a {
+  color: var(--accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.program-instructions a:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.program-instructions .link-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
 .device-warning {
   margin-top: 8px;
   color: var(--accent);
