@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) void {
     const hello_encoder = b.addExecutable(.{
         .name = "encode_hello",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/hello/encode_hello.zig"),
+            .root_source_file = b.path("programs/hello/encode_hello.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -103,7 +103,7 @@ pub fn build(b: *std.Build) void {
     const mul_demo_encoder = b.addExecutable(.{
         .name = "encode_mul_demo",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/mul_demo/encode_mul_demo.zig"),
+            .root_source_file = b.path("programs/mul_demo/encode_mul_demo.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -129,7 +129,7 @@ pub fn build(b: *std.Build) void {
     const trap_demo_encoder = b.addExecutable(.{
         .name = "encode_trap_demo",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/trap_demo/encode_trap_demo.zig"),
+            .root_source_file = b.path("programs/trap_demo/encode_trap_demo.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -179,12 +179,12 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    hello_monitor_obj.root_module.addAssemblyFile(b.path("tests/programs/hello/monitor.S"));
+    hello_monitor_obj.root_module.addAssemblyFile(b.path("programs/hello/monitor.S"));
 
     const hello_umode_obj = b.addObject(.{
         .name = "hello-umode",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/hello/hello.zig"),
+            .root_source_file = b.path("programs/hello/hello.zig"),
             .target = rv_target,
             .optimize = .ReleaseSmall,
             // Keep the Zig compiler from stripping u_entry / msg as "unused".
@@ -205,7 +205,7 @@ pub fn build(b: *std.Build) void {
     });
     hello_elf.root_module.addObject(hello_monitor_obj);
     hello_elf.root_module.addObject(hello_umode_obj);
-    hello_elf.setLinkerScript(b.path("tests/programs/hello/linker.ld"));
+    hello_elf.setLinkerScript(b.path("programs/hello/linker.ld"));
     hello_elf.entry = .{ .symbol_name = "_start" };
 
     const install_hello_elf = b.addInstallArtifact(hello_elf, .{});
@@ -641,7 +641,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    plic_block_boot.root_module.addAssemblyFile(b.path("tests/programs/plic_block_test/boot.S"));
+    plic_block_boot.root_module.addAssemblyFile(b.path("programs/plic_block_test/boot.S"));
 
     const plic_block_test_obj = b.addObject(.{
         .name = "plic-block-test",
@@ -651,7 +651,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    plic_block_test_obj.root_module.addAssemblyFile(b.path("tests/programs/plic_block_test/test.S"));
+    plic_block_test_obj.root_module.addAssemblyFile(b.path("programs/plic_block_test/test.S"));
 
     const plic_block_elf = b.addExecutable(.{
         .name = "plic_block_test.elf",
@@ -665,7 +665,7 @@ pub fn build(b: *std.Build) void {
     });
     plic_block_elf.root_module.addObject(plic_block_boot);
     plic_block_elf.root_module.addObject(plic_block_test_obj);
-    plic_block_elf.setLinkerScript(b.path("tests/programs/plic_block_test/linker.ld"));
+    plic_block_elf.setLinkerScript(b.path("programs/plic_block_test/linker.ld"));
     plic_block_elf.entry = .{ .symbol_name = "_M_start" };
 
     const install_plic_block_elf = b.addInstallArtifact(plic_block_elf, .{});
@@ -676,7 +676,7 @@ pub fn build(b: *std.Build) void {
     const make_img = b.addExecutable(.{
         .name = "make_plic_block_img",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/plic_block_test/make_img.zig"),
+            .root_source_file = b.path("programs/plic_block_test/make_img.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -703,12 +703,12 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    snake_monitor_obj.root_module.addAssemblyFile(b.path("tests/programs/snake/monitor.S"));
+    snake_monitor_obj.root_module.addAssemblyFile(b.path("programs/snake/monitor.S"));
 
     const snake_zig_obj = b.addObject(.{
         .name = "snake-zig",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/snake/snake.zig"),
+            .root_source_file = b.path("programs/snake/snake.zig"),
             .target = rv_target,
             .optimize = .ReleaseSmall,
             .strip = false,
@@ -728,7 +728,7 @@ pub fn build(b: *std.Build) void {
     });
     snake_elf.root_module.addObject(snake_monitor_obj);
     snake_elf.root_module.addObject(snake_zig_obj);
-    snake_elf.setLinkerScript(b.path("tests/programs/snake/linker.ld"));
+    snake_elf.setLinkerScript(b.path("programs/snake/linker.ld"));
     snake_elf.entry = .{ .symbol_name = "_start" };
 
     const install_snake_elf = b.addInstallArtifact(snake_elf, .{});
@@ -736,7 +736,7 @@ pub fn build(b: *std.Build) void {
     snake_elf_step.dependOn(&install_snake_elf.step);
 
     const snake_test_mod = b.createModule(.{
-        .root_source_file = b.path("tests/programs/snake/game.zig"),
+        .root_source_file = b.path("programs/snake/game.zig"),
         .target = b.graph.host,
         .optimize = .Debug,
     });
@@ -757,7 +757,7 @@ pub fn build(b: *std.Build) void {
     const snake_verify_e2e = b.addExecutable(.{
         .name = "snake_verify_e2e",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/programs/snake/verify_e2e.zig"),
+            .root_source_file = b.path("tests/e2e/snake.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -766,7 +766,7 @@ pub fn build(b: *std.Build) void {
     const e2e_snake_run = b.addRunArtifact(snake_verify_e2e);
     e2e_snake_run.addFileArg(exe.getEmittedBin());
     e2e_snake_run.addFileArg(snake_elf.getEmittedBin());
-    e2e_snake_run.addFileArg(b.path("tests/programs/snake/test_input.txt"));
+    e2e_snake_run.addFileArg(b.path("programs/snake/test_input.txt"));
     e2e_snake_run.expectExitCode(0);
 
     const e2e_snake_step = b.step("e2e-snake", "Run snake e2e (deterministic input → GAME OVER + score:0)");
