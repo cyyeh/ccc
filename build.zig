@@ -415,6 +415,36 @@ pub fn build(b: *std.Build) void {
     const kernel_hello_step = b.step("kernel-hello", "Build the Phase 3.C hello.elf");
     kernel_hello_step.dependOn(&install_kernel_hello_elf.step);
 
+    const kernel_fs_init_obj = b.addObject(.{
+        .name = "kernel-fs-init",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/kernel/user/fs_init.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const kernel_fs_init_elf = b.addExecutable(.{
+        .name = "fs_init.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_fs_init_elf.root_module.addObject(kernel_fs_init_obj);
+    kernel_fs_init_elf.setLinkerScript(b.path("src/kernel/user/user_linker.ld"));
+    kernel_fs_init_elf.entry = .{ .symbol_name = "_start" };
+
+    const kernel_fs_init_elf_bin = kernel_fs_init_elf.getEmittedBin();
+    const install_kernel_fs_init_elf = b.addInstallFile(kernel_fs_init_elf_bin, "fs_init.elf");
+    const kernel_fs_init_step = b.step("kernel-fs-init", "Build the Phase 3.D fs_init.elf");
+    kernel_fs_init_step.dependOn(&install_kernel_fs_init_elf.step);
+
     const multi_boot_config_stub_dir = b.addWriteFiles();
     const multi_boot_config_zig = multi_boot_config_stub_dir.add(
         "boot_config.zig",
