@@ -112,47 +112,7 @@ synthetic markers on async events:
 
 ## Web demo
 
-Live: [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
-
-The browser demo cross-compiles the same emulator core
-(`cpu.zig` / `memory.zig` / `elf.zig` / `devices/*.zig`) to
-`wasm32-freestanding` via a thin entry point at `demo/web_main.zig`
-(plus a one-file `src/lib.zig` shim that exposes the emulator as a
-single named module). `ccc.wasm` is just the emulator (~50 KB);
-RV32 ELFs are served as separate static files (`web/hello.elf`,
-`web/snake.elf`) and **fetched at runtime** when the user picks one
-from the program selector. Zero JS dependencies, zero WASM imports.
-
-**Architecture.** A Web Worker hosts the wasm and turns the
-chunked-step crank itself: each turn it pushes the current real-time
-clock via `setMtimeNs(BigInt)`, runs ~50K instructions via
-`runStep(N)`, drains UART output via `consumeOutput()`, forwards any
-queued keystrokes via `pushInput(byte)`, then yields to the JS event
-loop with `setTimeout(0)`. This is what lets the snake game (which
-never halts on its own) coexist with responsive output rendering and
-keyboard input — the worker is never blocked inside a long-running
-`run()` call.
-
-**Programs.**
-- `snake.elf` — 32×16 ASCII snake, WASD to play, SPACE to restart on
-  game over, `q` to quit. Runs as a bare M-mode RV32 program with a
-  CLINT-driven 8 Hz tick. Click the terminal area to focus before
-  pressing keys.
-- `hello.elf` — auto-runs and prints `hello world`, then expands the
-  per-instruction trace panel (cpu.trace_writer captured into wasm
-  linear memory and copied out on halt). Snake doesn't get a trace
-  because a continuous trace at 8 Hz × full-redraw would be MBs/sec.
-
-**Adding a new program.** Build it as an RV32 ELF with a `tohost`
-symbol for halt (same convention as `hello.elf`/riscv-tests), drop
-it next to `web/ccc.wasm`, and add an `<option>` + entry to
-`ELF_URLS` in `web/demo.js`. No Zig recompile.
-
-Local dev:
-
-    ./scripts/stage-web.sh              # zig build wasm + copy ccc.wasm + ELFs into web/
-    python3 -m http.server -d . 8000
-    open http://localhost:8000/web/
+Live: [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/) — see [`web/README.md`](web/README.md) for architecture, controls, programs, local dev, and how to add another ELF.
 
 CI: `.github/workflows/pages.yml` runs the existing `zig build test`
 + every `e2e-*` step on every PR; on push to `main` it builds the

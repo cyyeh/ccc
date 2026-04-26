@@ -202,3 +202,35 @@ pre.output .cmd    { color: var(--fg); }
 .program-hint.hidden {
   display: none;
 }
+
+.program-instructions {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.program-instructions.hidden {
+  display: none;
+}
+.program-instructions strong {
+  color: var(--accent);
+  font-weight: 600;
+  margin-right: 6px;
+}
+.program-instructions code {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--panel-border);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+.device-warning {
+  margin-top: 8px;
+  color: var(--accent);
+}

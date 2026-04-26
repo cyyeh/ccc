@@ -7,6 +7,15 @@ const ansi = new Ansi(W, H);
 const out = document.getElementById("output");
 const sel = document.getElementById("program-select");
 const hint = document.querySelector(".program-hint");
+const snakeInstructions = document.getElementById("snake-instructions");
+
+// Snake is the only interactive program; only show its instructions when selected.
+const SNAKE_IDX = "1";
+
+function updateProgramInstructions() {
+  if (!snakeInstructions) return;
+  snakeInstructions.classList.toggle("hidden", sel.value !== SNAKE_IDX);
+}
 
 // Trace panel — auto-shown for non-interactive programs (e.g. hello.elf)
 // after the program halts. Snake never halts (until the player presses q),
@@ -90,7 +99,10 @@ worker.onmessage = (e) => {
 
 worker.postMessage({ type: "init", wasmUrl: "./ccc.wasm" });
 
+updateProgramInstructions();
+
 sel.addEventListener("change", () => {
+  updateProgramInstructions();
   startCurrent();
 });
 
