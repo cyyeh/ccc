@@ -18,18 +18,28 @@ self.onmessage = async (e) => {
   }
   if (!exports) return;
 
-  if (msg.type === "select") {
-    exports.selectProgram(msg.idx);
-    return;
-  }
   if (msg.type === "start") {
     const trace = msg.trace ? 1 : 0;
-    const rc = exports.runStart(msg.idx, trace);
-    if (rc !== 0) {
-      self.postMessage({ type: "halt", code: rc });
-      return;
+    try {
+      const resp = await fetch(msg.elfUrl);
+      if (!resp.ok) throw new Error(`fetch ${msg.elfUrl} → ${resp.status}`);
+      const elfBytes = new Uint8Array(await resp.arrayBuffer());
+      const cap = exports.elfBufferCap();
+      if (elfBytes.length > cap) {
+        throw new Error(`ELF too large: ${elfBytes.length} > ${cap}`);
+      }
+      const ptr = exports.elfBufferPtr();
+      const dest = new Uint8Array(memory.buffer, ptr, elfBytes.length);
+      dest.set(elfBytes);
+      const rc = exports.runStart(elfBytes.length, trace);
+      if (rc !== 0) {
+        self.postMessage({ type: "halt", code: rc });
+        return;
+      }
+      runLoop();
+    } catch (err) {
+      self.postMessage({ type: "halt", code: -99, error: String(err) });
     }
-    runLoop();
     return;
   }
   if (msg.type === "input") {

@@ -13,6 +13,11 @@ const traceCb    = document.getElementById("trace-toggle");
 const traceBox   = document.getElementById("trace-details");
 const traceHint  = document.getElementById("trace-hint");
 
+const ELF_URLS = {
+  "0": "./hello.elf",
+  "1": "./snake.elf",
+};
+
 const worker = new Worker("./runner.js", { type: "module" });
 
 const ALLOWED_KEYS = {
@@ -29,17 +34,20 @@ function render() {
 }
 
 function startCurrent() {
-  // Reset display + ANSI state.
   ansi._reset();
   ansi.row = 0; ansi.col = 0;
   render();
 
   const idx = parseInt(sel.value, 10);
+  const elfUrl = ELF_URLS[String(idx)];
+  if (!elfUrl) {
+    out.textContent = `[unknown program idx ${idx}]`;
+    return;
+  }
 
-  // Snake (idx === 1) runs continuously — disable trace toggle to avoid
-  // flooding MBs/sec of trace data. For hello.elf (idx === 0) keep it.
+  // Trace toggle handling — disable for snake (runs continuously).
   if (traceCb) {
-    const isInteractive = idx === 1; // snake
+    const isInteractive = idx === 1;
     if (isInteractive) {
       traceCb.checked = false;
       traceCb.disabled = true;
@@ -52,13 +60,12 @@ function startCurrent() {
   }
 
   const trace = traceCb && traceCb.checked ? 1 : 0;
-  worker.postMessage({ type: "start", idx, trace });
+  worker.postMessage({ type: "start", elfUrl, trace });
 }
 
 worker.onmessage = (e) => {
   const msg = e.data;
   if (msg.type === "ready") {
-    worker.postMessage({ type: "select", idx: parseInt(sel.value, 10) });
     startCurrent();
     return;
   }
@@ -68,7 +75,8 @@ worker.onmessage = (e) => {
     return;
   }
   if (msg.type === "halt") {
-    out.textContent = ansi.text() + "\n[program halted — change selection or refresh to replay]";
+    const errSuffix = msg.error ? ` (${msg.error})` : "";
+    out.textContent = ansi.text() + `\n[program halted${errSuffix} — change selection or refresh to replay]`;
     return;
   }
 };
@@ -76,7 +84,6 @@ worker.onmessage = (e) => {
 worker.postMessage({ type: "init", wasmUrl: "./ccc.wasm" });
 
 sel.addEventListener("change", () => {
-  worker.postMessage({ type: "select", idx: parseInt(sel.value, 10) });
   startCurrent();
 });
 

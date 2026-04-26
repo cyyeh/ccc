@@ -36,15 +36,16 @@
     </details>
 
     <p class="explain">
-      This page fetched <code>ccc.wasm</code> (~1.5 MB of WebAssembly with
-      <code>hello.elf</code> and <code>snake.elf</code> embedded at compile
-      time), instantiated it with no imports, and runs it inside a Web Worker
-      that drives the emulator in chunks via <code>runStart()</code> /
-      <code>runStep()</code>. UART output is captured into a buffer inside wasm
-      linear memory; the worker copies it out via <code>outputPtr()</code> and
-      <code>consumeOutput()</code> and posts it to this page for ANSI rendering.
-      No server, no remote execution, no JavaScript dependencies — your browser
-      is the RISC-V machine.
+      This page fetched <code>ccc.wasm</code> (~50 KB of WebAssembly — just
+      the emulator core), then fetches the selected RISC-V program
+      (<code>hello.elf</code>, <code>snake.elf</code>, ...) on demand. The
+      worker copies the ELF bytes into wasm linear memory and runs the
+      emulator in chunks via <code>runStart()</code> / <code>runStep()</code>.
+      UART output is captured into a buffer inside wasm linear memory; the
+      worker copies it out via <code>outputPtr()</code> and
+      <code>consumeOutput()</code> and posts it to this page for ANSI
+      rendering. Drop a new <code>.elf</code> next to this page to add a
+      program — no recompile.
     </p>
 
     <div class="footer-links">

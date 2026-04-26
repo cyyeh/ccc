@@ -5,8 +5,15 @@
 //! docs/superpowers/specs/2026-04-25-snake-demo-design.md
 //! "Wasm loop architecture (chunked execution)" for rationale.
 //!
+//! ELFs are loaded at runtime via fetch() — JS copies the bytes into
+//! the 2 MB elf_buffer (via elfBufferPtr/elfBufferCap) then calls
+//! runStart(elf_len, trace). No ELFs are embedded at compile time,
+//! keeping ccc.wasm at ~50 KB (just the emulator core).
+//!
 //! Exports:
-//!   runStart(programIdx, trace) i32   — initialise state, 0 on success
+//!   elfBufferPtr()              [*]u8 — base of the 2 MB ELF receive buffer
+//!   elfBufferCap()              u32   — capacity of the ELF buffer (2 MB)
+//!   runStart(elf_len, trace)    i32   — initialise state, 0 on success
 //!   runStep(maxInstructions)    i32   — -1 still running, ≥0 exit code
 //!   consumeOutput()             u32   — bytes available since last drain
 //!   outputPtr()                 [*]u8 — base of output buffer (drain offset)
@@ -25,13 +32,19 @@ const plic_dev = ccc.plic;
 const block_dev = ccc.block;
 const elf_mod = ccc.elf;
 
-// hello.elf is embedded at compile time via an anonymous module that
-// build.zig wires up: a co-located stub does the @embedFile so the
-// path doesn't escape demo/'s package root. The build graph guarantees
-// hello.elf is fresh before the wasm build runs (install_wasm depends
-// on install_hello_elf).
-const hello_elf = @import("hello_elf").BLOB;
-const snake_elf = @import("snake_elf").BLOB;
+// 2 MB ELF receive buffer. JS fetches the selected program, copies
+// its bytes here via elfBufferPtr/elfBufferCap, then calls
+// runStart(elf_len, trace). snake.elf in Debug is ~1.4 MB.
+const ELF_BUFFER_CAP: u32 = 2 * 1024 * 1024;
+var elf_buffer: [ELF_BUFFER_CAP]u8 = undefined;
+
+export fn elfBufferPtr() [*]u8 {
+    return &elf_buffer;
+}
+
+export fn elfBufferCap() u32 {
+    return ELF_BUFFER_CAP;
+}
 
 // 16 KB is comfortable headroom for a "hello world" run.
 const OUTPUT_BUF_SIZE: usize = 16 * 1024;
@@ -111,26 +124,19 @@ export fn setMtimeNs(ns: i64) void {
     mtime_ns = @intCast(ns);
 }
 
-// Program selection — must be called before runStart, since runStart
-// loads whichever ELF this last set.
-var selected_idx: u32 = 0;
-export fn selectProgram(idx: u32) void {
-    selected_idx = idx;
-}
-
 export fn pushInput(byte: u32) void {
     if (state) |s| {
         _ = s.uart.pushRx(@intCast(byte));
     }
 }
 
-/// Initialise emulator state for the chosen program and start a new run.
-/// programIdx: 0 = hello.elf, 1 = snake.elf.
+/// Initialise emulator state from the ELF bytes already written into
+/// elf_buffer[0..elf_len] by JS (via elfBufferPtr/elfBufferCap + fetch).
 /// trace: non-zero enables per-instruction trace output.
-/// Returns 0 on success, negative on error (−1 mem init failed, −2 ELF failed,
-/// −4 unknown program index).
-export fn runStart(program_idx: u32, trace: i32) i32 {
-    selected_idx = program_idx; // also accept it via runStart's first arg
+/// Returns 0 on success, negative on error:
+///   -1 mem init failed, -2 ELF parse/load failed, -5 bad elf_len.
+export fn runStart(elf_len: u32, trace: i32) i32 {
+    if (elf_len == 0 or elf_len > ELF_BUFFER_CAP) return -5;
 
     // Tear down any in-progress run before reinitialising.
     if (state != null) {
@@ -138,8 +144,6 @@ export fn runStart(program_idx: u32, trace: i32) i32 {
         state_storage.arena.deinit();
         state = null;
     }
-
-    // Reset output/trace buffers and clock.
     output_writer.end = 0;
     output_consumed = 0;
     trace_writer.end = 0;
@@ -154,8 +158,6 @@ export fn runStart(program_idx: u32, trace: i32) i32 {
     state_storage.plic = plic_dev.Plic.init();
     state_storage.block = block_dev.Block.init();
 
-    // hello.elf never touches the block device, so std.Io.failing — which
-    // errors on every operation — is safe: nothing ever invokes it.
     const io: std.Io = std.Io.failing;
 
     state_storage.mem = mem_mod.Memory.init(
@@ -170,12 +172,8 @@ export fn runStart(program_idx: u32, trace: i32) i32 {
         RAM_SIZE,
     ) catch return -1;
 
-    const elf_blob: []const u8 = switch (selected_idx) {
-        0 => hello_elf,
-        1 => snake_elf,
-        else => return -4,
-    };
-    const result = elf_mod.parseAndLoad(elf_blob, &state_storage.mem) catch return -2;
+    const elf_bytes = elf_buffer[0..elf_len];
+    const result = elf_mod.parseAndLoad(elf_bytes, &state_storage.mem) catch return -2;
     state_storage.mem.tohost_addr = result.tohost_addr;
 
     state_storage.cpu = cpu_mod.Cpu.init(&state_storage.mem, result.entry);

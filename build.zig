@@ -678,38 +678,17 @@ pub fn build(b: *std.Build) void {
     wasm_exe.entry = .disabled;        // we call our own export, not _start
     wasm_exe.rdynamic = true;          // expose `export fn` symbols
 
-    // Expose hello.elf as an importable module so web_main.zig can
-    // @embedFile it without escaping demo/'s package root. WriteFile
-    // step that co-locates a tiny Zig stub with hello.elf in a single
-    // output dir; the stub `pub const BLOB = @embedFile(...)` resolves
-    // relative to itself, so the .elf must be its sibling. Mirrors
-    // the user_blob pattern used by kernel.elf (see above).
-    const hello_blob_dir = b.addWriteFiles();
-    const hello_blob_zig = hello_blob_dir.add(
-        "hello_elf.zig",
-        "pub const BLOB = @embedFile(\"hello.elf\");\n",
-    );
-    _ = hello_blob_dir.addCopyFile(hello_elf.getEmittedBin(), "hello.elf");
-    wasm_exe.root_module.addAnonymousImport("hello_elf", .{
-        .root_source_file = hello_blob_zig,
-    });
-
-    const snake_blob_dir = b.addWriteFiles();
-    const snake_blob_zig = snake_blob_dir.add(
-        "snake_elf.zig",
-        "pub const BLOB = @embedFile(\"snake.elf\");\n",
-    );
-    _ = snake_blob_dir.addCopyFile(snake_elf.getEmittedBin(), "snake.elf");
-    wasm_exe.root_module.addAnonymousImport("snake_elf", .{
-        .root_source_file = snake_blob_zig,
-    });
-
     const install_wasm = b.addInstallArtifact(wasm_exe, .{
         .dest_dir = .{ .override = .{ .custom = "web" } },
     });
-    // Make sure hello.elf and snake.elf are built before we try to @embedFile them.
-    install_wasm.step.dependOn(&install_hello_elf.step);
-    install_wasm.step.dependOn(&install_snake_elf.step);
     const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-freestanding");
     wasm_step.dependOn(&install_wasm.step);
+
+    // Install hello.elf and snake.elf alongside the wasm so the demo
+    // can fetch them at runtime. Keeps the wasm tiny (~50 KB instead of
+    // ~1.5 MB) and lets new programs be dropped in without recompiling.
+    const install_web_hello = b.addInstallFile(hello_elf.getEmittedBin(), "web/hello.elf");
+    const install_web_snake = b.addInstallFile(snake_elf.getEmittedBin(), "web/snake.elf");
+    wasm_step.dependOn(&install_web_hello.step);
+    wasm_step.dependOn(&install_web_snake.step);
 }

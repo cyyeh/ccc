@@ -9,6 +9,10 @@ cd "$(dirname "$0")/.."
 
 zig build wasm
 
-cp zig-out/web/ccc.wasm web/ccc.wasm
+cp zig-out/web/ccc.wasm  web/ccc.wasm
+cp zig-out/web/hello.elf web/hello.elf
+cp zig-out/web/snake.elf web/snake.elf
 
-echo "staged: web/ccc.wasm ($(wc -c <web/ccc.wasm) bytes)"
+echo "staged: web/ccc.wasm  ($(wc -c <web/ccc.wasm) bytes)"
+echo "staged: web/hello.elf ($(wc -c <web/hello.elf) bytes)"
+echo "staged: web/snake.elf ($(wc -c <web/snake.elf) bytes)"
