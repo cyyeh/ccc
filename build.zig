@@ -56,6 +56,21 @@ pub fn build(b: *std.Build) void {
     const kernel_host_tests_run = b.addRunArtifact(kernel_host_tests);
     test_step.dependOn(&kernel_host_tests_run.step);
 
+    // Host-runnable tests for vm.zig's pure-arithmetic helpers
+    // (Plan 3.C Task 1: freeLeavesInL0 walk over a synthetic L0 table).
+    // vm.zig's page_alloc + kprintf imports are lazily evaluated; tests
+    // exercise only the pure helpers and never reach the freestanding-only
+    // code paths, so a host-targeted compile succeeds without stubs.
+    const vm_host_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/vm.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const vm_host_tests_run = b.addRunArtifact(vm_host_tests);
+    test_step.dependOn(&vm_host_tests_run.step);
+
     // === Hand-crafted hello world demo (Task 17) ===
     // The encoder is a host tool that emits a raw RV32I binary.
     const hello_encoder = b.addExecutable(.{
