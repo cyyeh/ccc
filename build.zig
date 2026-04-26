@@ -461,6 +461,11 @@ pub fn build(b: *std.Build) void {
     const kernel_echo_step = b.step("kernel-echo", "Build echo.elf (Phase 3.E)");
     kernel_echo_step.dependOn(&install_echo.step);
 
+    const cat_exe = addUserBinary(b, "cat", "src/kernel/user/cat.zig", rv_target, .ReleaseSmall);
+    const install_cat = b.addInstallFile(cat_exe.getEmittedBin(), "cat.elf");
+    const kernel_cat_step = b.step("kernel-cat", "Build cat.elf (Phase 3.E)");
+    kernel_cat_step.dependOn(&install_cat.step);
+
     // Phase 3.D: mkfs host tool.
     const mkfs_exe = b.addExecutable(.{
         .name = "mkfs",
