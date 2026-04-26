@@ -107,6 +107,7 @@ const syscall = @import("syscall.zig");
 const proc = @import("proc.zig");
 const plic = @import("plic.zig");
 const block = @import("block.zig");
+const uart = @import("uart.zig");
 
 fn readScause() u32 {
     return asm volatile ("csrr %[out], scause"
@@ -122,11 +123,7 @@ fn readStval() u32 {
 
 fn clearSipSsip() void {
     // sip.SSIP is bit 1. `csrci sip, 2` clears it.
-    asm volatile ("csrci sip, 2"
-        :
-        :
-        : .{ .memory = true }
-    );
+    asm volatile ("csrci sip, 2" ::: .{ .memory = true });
 }
 
 /// S-from-S trap dispatcher. Installed via stvec only while sched.scheduler
@@ -154,6 +151,7 @@ export fn s_kernel_trap_dispatch() callconv(.c) void {
         const irq = plic.claim();
         switch (irq) {
             plic.IRQ_BLOCK => block.isr(),
+            plic.IRQ_UART_RX => uart.isr(),
             else => kprintf.panic("unhandled PLIC src in kernel trap: {d}", .{irq}),
         }
         plic.complete(irq);
@@ -231,6 +229,7 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         const irq = plic.claim();
         switch (irq) {
             plic.IRQ_BLOCK => block.isr(),
+            plic.IRQ_UART_RX => uart.isr(),
             else => kprintf.panic("unhandled PLIC src: {d}", .{irq}),
         }
         plic.complete(irq);
