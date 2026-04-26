@@ -13,7 +13,6 @@
 // ABI unchanged: a7 = syscall number, a0..a5 = args, a0 = return.
 
 const trap = @import("trap.zig");
-const uart = @import("uart.zig");
 const proc = @import("proc.zig");
 const page_alloc = @import("page_alloc.zig");
 const vm = @import("vm.zig");
@@ -55,18 +54,11 @@ fn copyStrFromUser(user_va: u32, buf: []u8) ?[]u8 {
     return null;
 }
 
-fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
-    if (fd != 1 and fd != 2) {
-        return @bitCast(@as(i32, -9)); // -EBADF
-    }
-    setSum();
-    var i: u32 = 0;
-    while (i < len) : (i += 1) {
-        const p: *const volatile u8 = @ptrFromInt(buf_va + i);
-        uart.writeByte(p.*);
-    }
-    clearSum();
-    return len;
+fn sysWrite(fd: u32, buf_va: u32, len: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const idx = proc.cur().ofile[fd];
+    if (idx == 0) return -1;
+    return file.write(idx, buf_va, len);
 }
 
 pub fn sysExit(status: u32) noreturn {
@@ -306,7 +298,7 @@ pub fn dispatch(tf: *trap.TrapFrame) void {
         57 => tf.a0 = @bitCast(sysClose(tf.a0)),
         62 => tf.a0 = @bitCast(sysLseek(tf.a0, tf.a1, tf.a2)),
         63 => tf.a0 = @bitCast(sysRead(tf.a0, tf.a1, tf.a2)),
-        64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
+        64 => tf.a0 = @bitCast(sysWrite(tf.a0, tf.a1, tf.a2)),
         80 => tf.a0 = @bitCast(sysFstat(tf.a0, tf.a1)),
         93 => sysExit(tf.a0),
         124 => tf.a0 = sysYield(),

@@ -163,6 +163,21 @@ export fn kmain() callconv(.c) noreturn {
         init_p.sz = vm.USER_TEXT_VA + 0x10000;
         init_p.state = .Runnable;
 
+        // Phase 3.E: initialize file table + install console fds 0/1/2 onto
+        // init so /bin/init inherits stdin/stdout/stderr.
+        file.init();
+
+        const console_fidx = file.alloc() orelse kprintf.panic("kmain: file.alloc console", .{});
+        file.ftable[console_fidx].type = .Console;
+        file.ftable[console_fidx].ip = null;
+        file.ftable[console_fidx].off = 0;
+        // alloc gave us ref_count=1; bring to 3 (one per fd 0/1/2).
+        _ = file.dup(console_fidx);
+        _ = file.dup(console_fidx);
+        init_p.ofile[0] = console_fidx;
+        init_p.ofile[1] = console_fidx;
+        init_p.ofile[2] = console_fidx;
+
         // Skip the single + multi setup blocks below — install stvec + sscratch
         // + sstatus and jump into scheduler() the same way they do.
         const stvec_val_fork: u32 = @intCast(@intFromPtr(&s_trap_entry));
