@@ -17,6 +17,10 @@ const uart = @import("uart.zig");
 const proc = @import("proc.zig");
 const page_alloc = @import("page_alloc.zig");
 const vm = @import("vm.zig");
+const file = @import("file.zig");
+const inode = @import("fs/inode.zig");
+const path_mod = @import("fs/path.zig");
+const layout = @import("fs/layout.zig");
 
 const SSTATUS_SUM: u32 = 1 << 18;
 
@@ -24,16 +28,30 @@ fn setSum() void {
     asm volatile ("csrs sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SUM),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 fn clearSum() void {
     asm volatile ("csrc sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SUM),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
+}
+
+/// Copy a NUL-terminated user string into `buf`. Returns the slice up
+/// to (but not including) the NUL, or null on overflow / no NUL within
+/// buf.len bytes.
+fn copyStrFromUser(user_va: u32, buf: []u8) ?[]u8 {
+    setSum();
+    defer clearSum();
+    var i: u32 = 0;
+    while (i < buf.len) : (i += 1) {
+        const p: *const volatile u8 = @ptrFromInt(user_va + i);
+        const c = p.*;
+        buf[i] = c;
+        if (c == 0) return buf[0..i];
+    }
+    return null;
 }
 
 fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
@@ -88,6 +106,50 @@ fn sysSbrk(incr_signed: u32) u32 {
     return old_sz;
 }
 
+/// 56 openat(dirfd, path, flags) — 3.D ignores dirfd and flags
+/// (read-only existing file). Returns fd ≥ 0 or -1.
+fn sysOpenat(dirfd: u32, path_user_va: u32, flags: u32) i32 {
+    _ = dirfd;
+    _ = flags;
+
+    var pbuf: [path_mod.MAX_PATH]u8 = undefined;
+    const p = copyStrFromUser(path_user_va, &pbuf) orelse return -1;
+
+    const ip = path_mod.namei(p) orelse return -1;
+
+    const fidx = file.alloc() orelse {
+        inode.iput(ip);
+        return -1;
+    };
+    file.ftable[fidx].type = .Inode;
+    file.ftable[fidx].ip = ip;
+    file.ftable[fidx].off = 0;
+
+    // Allocate the lowest free fd in cur.ofile.
+    const cur_p = proc.cur();
+    var fd: u32 = 0;
+    while (fd < proc.NOFILE) : (fd += 1) {
+        if (cur_p.ofile[fd] == 0) {
+            cur_p.ofile[fd] = fidx;
+            return @intCast(fd);
+        }
+    }
+
+    // No free fd — release the file table entry + inode.
+    file.close(fidx);
+    return -1;
+}
+
+/// 57 close(fd) — release the fd. Returns 0 / -1.
+fn sysClose(fd: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const cur_p = proc.cur();
+    if (cur_p.ofile[fd] == 0) return -1;
+    file.close(cur_p.ofile[fd]);
+    cur_p.ofile[fd] = 0;
+    return 0;
+}
+
 /// 5000 set_fg_pid: shell-only API for telling the console what process
 /// `^C` should target. 3.C accepts and discards; 3.E (when the console
 /// line discipline lands) wires this to the actual fg_pid global.
@@ -106,6 +168,8 @@ fn sysConsoleSetMode(mode: u32) u32 {
 
 pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
+        56 => tf.a0 = @bitCast(sysOpenat(tf.a0, tf.a1, tf.a2)),
+        57 => tf.a0 = @bitCast(sysClose(tf.a0)),
         64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
         93 => sysExit(tf.a0),
         124 => tf.a0 = sysYield(),
