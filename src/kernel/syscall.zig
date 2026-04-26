@@ -202,6 +202,16 @@ fn sysMkdirat(dirfd: u32, path_va: u32) i32 {
     return 0;
 }
 
+/// 35 unlinkat(dirfd, path, flags) — 3.E ignores dirfd and flags.
+/// Returns 0 / -1.
+fn sysUnlinkat(dirfd: u32, path_va: u32, flags: u32) i32 {
+    _ = dirfd;
+    _ = flags;
+    var pbuf: [path_mod.MAX_PATH]u8 = undefined;
+    const p = copyStrFromUser(path_va, &pbuf) orelse return -1;
+    return fsops.unlink(p);
+}
+
 /// Compose a new cwd_path given the current cwd_path and a relative or
 /// absolute target. Writes into `out` (NUL-terminated). Returns the
 /// length of the resulting path (excluding NUL) or null on overflow.
@@ -327,6 +337,7 @@ pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
         17 => tf.a0 = @bitCast(sysGetcwd(tf.a0, tf.a1)),
         34 => tf.a0 = @bitCast(sysMkdirat(tf.a0, tf.a1)),
+        35 => tf.a0 = @bitCast(sysUnlinkat(tf.a0, tf.a1, tf.a2)),
         49 => tf.a0 = @bitCast(sysChdir(tf.a0)),
         56 => tf.a0 = @bitCast(sysOpenat(tf.a0, tf.a1, tf.a2)),
         57 => tf.a0 = @bitCast(sysClose(tf.a0)),
