@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "ccc",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/emulator/main.zig"),
             .target = target,
             .optimize = optimize,
             // Link libc on the native build so devices/clint.zig's
@@ -937,7 +937,7 @@ pub fn build(b: *std.Build) void {
     // file into multiple module trees. The shim re-exports the six
     // pieces web_main.zig needs (cpu / memory / elf / halt / uart / clint).
     const ccc_module = b.createModule(.{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path("src/emulator/lib.zig"),
     });
 
     const wasm_exe = b.addExecutable(.{
