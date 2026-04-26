@@ -148,9 +148,23 @@ pub fn write(idx: u32, src_user_va: u32, n: u32) i32 {
 
     if (f.type != .Inode or f.ip == null) return -1;
 
-    // STUB until Task 12 lands inode.writei. Discards bytes silently.
-    _ = &write_kbuf;
-    return -1;
+    const want = if (n > write_kbuf.len) write_kbuf.len else n;
+
+    // SUM-1 copy from user into kernel staging buffer.
+    setSum();
+    var i: u32 = 0;
+    while (i < want) : (i += 1) {
+        const src_p: *const volatile u8 = @ptrFromInt(src_user_va + i);
+        write_kbuf[i] = src_p.*;
+    }
+    clearSum();
+
+    inode.ilock(f.ip.?);
+    const wrote = inode.writei(f.ip.?, &write_kbuf, f.off, @intCast(want));
+    inode.iunlock(f.ip.?);
+
+    if (wrote > 0) f.off += @intCast(wrote);
+    return wrote;
 }
 
 pub fn lseek(idx: u32, off: i32, whence: u32) i32 {
