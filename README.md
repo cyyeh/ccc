@@ -136,8 +136,7 @@ parent), and `kill` flag (`^C`-style poison checked on syscall return);
 
 **Phase 1 — RISC-V CPU emulator — complete.**
 
-Plans 1.A (RV32I), 1.B (M + A + Zifencei), 1.C (Zicsr + privilege + traps
-+ CLINT + ELF + `--trace` + riscv-tests), and 1.D (monitor + Zig
+Plans 1.A (RV32I), 1.B (M + A + Zifencei), 1.C (Zicsr + privilege + traps + CLINT + ELF + `--trace` + riscv-tests), and 1.D (monitor + Zig
 `hello.elf` + QEMU-diff + rv32mi conformance) are merged.
 
 The Phase 1 §Definition of done demo:
