@@ -152,13 +152,25 @@ pub fn alloc() ?*Process {
 }
 
 pub fn free(p: *Process) void {
-    _ = p;
-    // 3.B has no caller for proc.free; full teardown (kstack + pgdir +
-    // user pages) is a 3.C deliverable alongside wait()/exit() reaping.
-    // We panic loudly here so a future 3.C accident that calls free
-    // before its body lands surfaces immediately rather than silently
-    // leaking pages.
-    kprintf.panic("proc.free: unimplemented in 3.B (lands in 3.C)", .{});
+    // Tear down user-space mappings + free leaf frames + free L0 tables
+    // + free the L1 root. Kernel + MMIO leaves are preserved (G=1,
+    // !PTE_U). vm.unmapUser walks the full pgdir; sz is a 3.E hint, not
+    // used in 3.C.
+    @import("vm.zig").unmapUser(p.pgdir, p.sz, .free_root);
+
+    // Free the kernel stack page.
+    page_alloc.free(p.kstack);
+
+    // Zero the slot. State.Unused == 0 so the slot is immediately reusable.
+    p.* = std.mem.zeroes(Process);
+}
+
+/// Used by fork's error-rollback path AFTER `alloc()` succeeded but
+/// BEFORE `pgdir` was populated. Frees only the kstack and zeroes the
+/// slot — does NOT call vm.unmapUser (which would walk an invalid pgdir).
+pub fn freeKstackOnly(p: *Process) void {
+    page_alloc.free(p.kstack);
+    p.* = std.mem.zeroes(Process);
 }
 
 var next_pid: u32 = 1;
