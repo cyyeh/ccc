@@ -476,6 +476,11 @@ pub fn build(b: *std.Build) void {
     const kernel_mkdir_step = b.step("kernel-mkdir", "Build mkdir.elf (Phase 3.E)");
     kernel_mkdir_step.dependOn(&install_mkdir.step);
 
+    const rm_exe = addUserBinary(b, "rm", "src/kernel/user/rm.zig", rv_target, .ReleaseSmall);
+    const install_rm = b.addInstallFile(rm_exe.getEmittedBin(), "rm.elf");
+    const kernel_rm_step = b.step("kernel-rm", "Build rm.elf (Phase 3.E)");
+    kernel_rm_step.dependOn(&install_rm.step);
+
     // Phase 3.D: mkfs host tool.
     const mkfs_exe = b.addExecutable(.{
         .name = "mkfs",
