@@ -309,6 +309,66 @@ test "freeLeavesInL0 frees user leaves and skips kernel/MMIO leaves" {
     }
 }
 
+pub const CopyError = error{OutOfMemory};
+
+/// Walk every user PTE in `src` from VA 0 up to `sz` (page-rounded up),
+/// allocate a fresh frame in `dst`, copy 4 KB from src PA to dst PA, and
+/// install at the same VA in `dst` with USER_RWX flags.
+///
+/// On any allocation failure: free every dst leaf already installed
+/// (via unmapUser with .leave_root), and return error.OutOfMemory.
+/// `dst`'s root is NOT freed by this function — caller owns root teardown.
+pub fn copyUvm(src: u32, dst: u32, sz: u32) CopyError!void {
+    const end_va = (sz + (PAGE_SIZE - 1)) & ~@as(u32, PAGE_SIZE - 1);
+    var va: u32 = 0;
+    while (va < end_va) : (va += PAGE_SIZE) {
+        const src_pa = lookupPA(src, va) orelse continue;
+
+        const dst_pa = page_alloc.alloc() orelse {
+            // Rollback: free every leaf already installed in dst.
+            unmapUser(dst, end_va, .leave_root);
+            return CopyError.OutOfMemory;
+        };
+
+        // Direct copy via kernel-direct-mapped PA pointers.
+        const src_ptr: [*]const volatile u8 = @ptrFromInt(src_pa);
+        const dst_ptr: [*]volatile u8 = @ptrFromInt(dst_pa);
+        var i: u32 = 0;
+        while (i < PAGE_SIZE) : (i += 1) dst_ptr[i] = src_ptr[i];
+
+        mapPage(dst, va, dst_pa, USER_RWX);
+    }
+}
+
+/// Copy the 2-page user stack region from `src` to `dst`. Allocates two
+/// fresh frames in `dst`, memcpys 4 KB each, installs as USER_RW at
+/// USER_STACK_BOTTOM .. USER_STACK_BOTTOM + 8 KB.
+///
+/// On allocation failure, frees the (possibly partial) stack pages
+/// already installed in `dst`. `dst`'s root is NOT freed.
+pub fn copyUserStack(src: u32, dst: u32) CopyError!void {
+    var i: u32 = 0;
+    while (i < USER_STACK_PAGES) : (i += 1) {
+        const va = USER_STACK_BOTTOM + i * PAGE_SIZE;
+        const src_pa = lookupPA(src, va) orelse continue;
+
+        const dst_pa = page_alloc.alloc() orelse {
+            // Rollback only the user-stack range (leave the rest of dst
+            // intact; copyUvm's caller may still want to use other pages).
+            // We use unmapUser which is idempotent and only touches U leaves.
+            unmapUser(dst, USER_STACK_TOP, .leave_root);
+            return CopyError.OutOfMemory;
+        };
+
+        const src_ptr: [*]const volatile u8 = @ptrFromInt(src_pa);
+        const dst_ptr: [*]volatile u8 = @ptrFromInt(dst_pa);
+        var k: u32 = 0;
+        while (k < PAGE_SIZE) : (k += 1) dst_ptr[k] = src_ptr[k];
+
+        mapPage(dst, va, dst_pa, USER_RW);
+    }
+}
+
 /// Allocate USER_STACK_PAGES (2) zeroed frames, map them at
 /// USER_STACK_BOTTOM..USER_STACK_TOP with U+R+W. Returns false on OOM,
 /// in which case partial mappings remain in pgdir (caller frees).
