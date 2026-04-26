@@ -1138,7 +1138,10 @@ fn addUserBinary(
             .root_source_file = b.path(main_src),
             .target = rv_target,
             .optimize = optimize,
-            .strip = false,
+            // Strip debug sections — fs.img has 4 MB of data blocks total;
+            // 7 binaries × ~150 KB debug each won't fit. The kernel ELF
+            // loader only loads PT_LOAD segments anyway.
+            .strip = true,
             .single_threaded = true,
         }),
     });
@@ -1149,7 +1152,7 @@ fn addUserBinary(
             .root_source_file = null,
             .target = rv_target,
             .optimize = optimize,
-            .strip = false,
+            .strip = true,
             .single_threaded = true,
         }),
     });
