@@ -117,6 +117,39 @@ pub fn iupdate(ip: *InMemInode) void {
     bufcache.brelse(buf);
 }
 
+/// Find the first free disk inode (type == .Free), claim it with the
+/// given type (writes back via bwrite), and return the in-memory cache
+/// entry holding it. Returns null on full inode table.
+pub fn ialloc(itype: layout.FileType) ?*InMemInode {
+    var inum: u32 = 1; // inum 0 is the "no inode" sentinel; root is inum 1
+    while (inum < layout.NINODES) : (inum += 1) {
+        const blk = layout.INODE_START_BLK + inum / layout.INODES_PER_BLOCK;
+        const slot = inum % layout.INODES_PER_BLOCK;
+        const buf = bufcache.bread(blk);
+        const inodes: [*]layout.DiskInode = @ptrCast(@alignCast(&buf.data[0]));
+        if (inodes[slot].type == .Free) {
+            inodes[slot] = .{
+                .type = itype,
+                .nlink = 1,
+                .size = 0,
+                .addrs = std.mem.zeroes([layout.NDIRECT + 1]u32),
+                ._reserved = std.mem.zeroes([4]u8),
+            };
+            bufcache.bwrite(buf);
+            bufcache.brelse(buf);
+
+            // Bring it into the in-memory cache.
+            const ip = iget(inum);
+            ilock(ip);
+            // ip.dinode now reflects what we just wrote.
+            iunlock(ip);
+            return ip;
+        }
+        bufcache.brelse(buf);
+    }
+    return null;
+}
+
 /// Map logical block index `bn` (0-based) within the file to its on-disk
 /// block number. When `for_write` is true and the entry is unallocated (== 0),
 /// allocates a fresh block via balloc.alloc (zero-filling the indirect block
