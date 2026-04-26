@@ -304,10 +304,18 @@ pub fn build(b: *std.Build) void {
     const boot_config_stub_dir = b.addWriteFiles();
     const boot_config_zig = boot_config_stub_dir.add(
         "boot_config.zig",
+        \\const std = @import("std");
         \\pub const MULTI_PROC: bool = false;
+        \\pub const FORK_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
-        \\pub const USERPROG2_ELF: []const u8 = &.{};
-        \\
+        \\pub const USERPROG2_ELF: []const u8 = "";
+        \\pub const INIT_ELF: []const u8 = "";
+        \\pub const HELLO_ELF: []const u8 = "";
+        \\pub fn lookupBlob(path: []const u8) ?[]const u8 {
+        \\    _ = path;
+        \\    return null;
+        \\}
+        ,
     );
     _ = boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
 
@@ -349,10 +357,18 @@ pub fn build(b: *std.Build) void {
     const multi_boot_config_stub_dir = b.addWriteFiles();
     const multi_boot_config_zig = multi_boot_config_stub_dir.add(
         "boot_config.zig",
+        \\const std = @import("std");
         \\pub const MULTI_PROC: bool = true;
+        \\pub const FORK_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
         \\pub const USERPROG2_ELF: []const u8 = @embedFile("userprog2.elf");
-        \\
+        \\pub const INIT_ELF: []const u8 = "";
+        \\pub const HELLO_ELF: []const u8 = "";
+        \\pub fn lookupBlob(path: []const u8) ?[]const u8 {
+        \\    _ = path;
+        \\    return null;
+        \\}
+        ,
     );
     _ = multi_boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
     _ = multi_boot_config_stub_dir.addCopyFile(userprog2_elf_bin, "userprog2.elf");
