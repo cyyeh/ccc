@@ -354,6 +354,66 @@ pub fn build(b: *std.Build) void {
     const userprog2_step = b.step("kernel-user2", "Build the Phase 3.B userprog2.elf");
     userprog2_step.dependOn(&install_userprog2_elf.step);
 
+    const kernel_init_obj = b.addObject(.{
+        .name = "init",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/user/init.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const kernel_init_elf = b.addExecutable(.{
+        .name = "init.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_init_elf.root_module.addObject(kernel_init_obj);
+    kernel_init_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    kernel_init_elf.entry = .{ .symbol_name = "_start" };
+
+    const kernel_init_elf_bin = kernel_init_elf.getEmittedBin();
+    const install_kernel_init_elf = b.addInstallFile(kernel_init_elf_bin, "init.elf");
+    const kernel_init_step = b.step("kernel-init", "Build the Phase 3.C init.elf");
+    kernel_init_step.dependOn(&install_kernel_init_elf.step);
+
+    const kernel_hello_obj = b.addObject(.{
+        .name = "hello",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/user/hello.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+
+    const kernel_hello_elf = b.addExecutable(.{
+        .name = "hello.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_hello_elf.root_module.addObject(kernel_hello_obj);
+    kernel_hello_elf.setLinkerScript(b.path("tests/programs/kernel/user/user_linker.ld"));
+    kernel_hello_elf.entry = .{ .symbol_name = "_start" };
+
+    const kernel_hello_elf_bin = kernel_hello_elf.getEmittedBin();
+    const install_kernel_hello_elf = b.addInstallFile(kernel_hello_elf_bin, "hello.elf");
+    const kernel_hello_step = b.step("kernel-hello", "Build the Phase 3.C hello.elf");
+    kernel_hello_step.dependOn(&install_kernel_hello_elf.step);
+
     const multi_boot_config_stub_dir = b.addWriteFiles();
     const multi_boot_config_zig = multi_boot_config_stub_dir.add(
         "boot_config.zig",
@@ -372,6 +432,25 @@ pub fn build(b: *std.Build) void {
     );
     _ = multi_boot_config_stub_dir.addCopyFile(userprog_elf_bin, "userprog.elf");
     _ = multi_boot_config_stub_dir.addCopyFile(userprog2_elf_bin, "userprog2.elf");
+
+    const fork_boot_config_stub_dir = b.addWriteFiles();
+    const fork_boot_config_zig = fork_boot_config_stub_dir.add(
+        "boot_config.zig",
+        \\const std = @import("std");
+        \\pub const MULTI_PROC: bool = false;
+        \\pub const FORK_DEMO: bool = true;
+        \\pub const USERPROG_ELF: []const u8 = "";
+        \\pub const USERPROG2_ELF: []const u8 = "";
+        \\pub const INIT_ELF: []const u8 = @embedFile("init.elf");
+        \\pub const HELLO_ELF: []const u8 = @embedFile("hello.elf");
+        \\pub fn lookupBlob(path: []const u8) ?[]const u8 {
+        \\    if (std.mem.eql(u8, path, "/bin/hello")) return HELLO_ELF;
+        \\    return null;
+        \\}
+        ,
+    );
+    _ = fork_boot_config_stub_dir.addCopyFile(kernel_init_elf_bin, "init.elf");
+    _ = fork_boot_config_stub_dir.addCopyFile(kernel_hello_elf_bin, "hello.elf");
 
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
@@ -399,6 +478,20 @@ pub fn build(b: *std.Build) void {
     });
     kernel_kmain_multi_obj.root_module.addAnonymousImport("boot_config", .{
         .root_source_file = multi_boot_config_zig,
+    });
+
+    const kernel_kmain_fork_obj = b.addObject(.{
+        .name = "kernel-kmain-fork",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/programs/kernel/kmain.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_kmain_fork_obj.root_module.addAnonymousImport("boot_config", .{
+        .root_source_file = fork_boot_config_zig,
     });
 
     const kernel_elf = b.addExecutable(.{
@@ -447,6 +540,28 @@ pub fn build(b: *std.Build) void {
     const install_kernel_multi_elf = b.addInstallArtifact(kernel_multi_elf, .{});
     const kernel_multi_step = b.step("kernel-multi", "Build the Phase 3.B multi-proc kernel.elf");
     kernel_multi_step.dependOn(&install_kernel_multi_elf.step);
+
+    const kernel_fork_elf = b.addExecutable(.{
+        .name = "kernel-fork.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_fork_elf.root_module.addObject(kernel_boot_obj);
+    kernel_fork_elf.root_module.addObject(kernel_trampoline_obj);
+    kernel_fork_elf.root_module.addObject(kernel_mtimer_obj);
+    kernel_fork_elf.root_module.addObject(kernel_swtch_obj);
+    kernel_fork_elf.root_module.addObject(kernel_kmain_fork_obj);
+    kernel_fork_elf.setLinkerScript(b.path("tests/programs/kernel/linker.ld"));
+    kernel_fork_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_kernel_fork_elf = b.addInstallArtifact(kernel_fork_elf, .{});
+    const kernel_fork_step = b.step("kernel-fork", "Build the Phase 3.C fork-demo kernel.elf");
+    kernel_fork_step.dependOn(&install_kernel_fork_elf.step);
 
     // End-to-end: Plan 2.D uses a host-compiled verifier that spawns ccc
     // on kernel.elf, captures stdout, and asserts the Phase 2 §Definition

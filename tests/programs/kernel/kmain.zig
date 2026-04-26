@@ -28,6 +28,76 @@ export fn kmain() callconv(.c) noreturn {
     page_alloc.init();
     proc.cpuInit();
 
+    if (boot_config.FORK_DEMO) {
+        const init_p = proc.alloc() orelse kprintf.panic("kmain: alloc init", .{});
+        @memcpy(init_p.name[0..4], "init");
+        const init_root = vm.allocRoot() orelse kprintf.panic("kmain: allocRoot init", .{});
+        init_p.pgdir = init_root;
+        init_p.satp = SATP_MODE_SV32 | (init_root >> 12);
+        vm.mapKernelAndMmio(init_root);
+
+        const allocFn_fork = struct {
+            fn f() ?u32 {
+                return page_alloc.alloc();
+            }
+        }.f;
+        const mapFn_fork = struct {
+            fn f(pgdir: u32, va: u32, pa: u32, flags: u32) void {
+                vm.mapPage(pgdir, va, pa, flags);
+            }
+        }.f;
+        const lookupFn_fork = struct {
+            fn f(pgdir: u32, va: u32) ?u32 {
+                return vm.lookupPA(pgdir, va);
+            }
+        }.f;
+
+        const entry_init = elfload.load(boot_config.INIT_ELF, init_root, allocFn_fork, mapFn_fork, lookupFn_fork, vm.USER_RWX) catch |err|
+            kprintf.panic("elfload init: {s}", .{@errorName(err)});
+        if (!vm.mapUserStack(init_root)) kprintf.panic("mapUserStack init", .{});
+        init_p.tf.sepc = entry_init;
+        init_p.tf.sp = vm.USER_STACK_TOP;
+        init_p.sz = vm.USER_TEXT_VA + 0x10000;
+        init_p.state = .Runnable;
+
+        // Skip the single + multi setup blocks below — install stvec + sscratch
+        // + sstatus and jump into scheduler() the same way they do.
+        const stvec_val_fork: u32 = @intCast(@intFromPtr(&s_trap_entry));
+        const sscratch_val_fork: u32 = @intCast(@intFromPtr(init_p));
+        asm volatile (
+            \\ csrw stvec, %[stv]
+            \\ csrw sscratch, %[ss]
+            :
+            : [stv] "r" (stvec_val_fork),
+              [ss] "r" (sscratch_val_fork),
+            : .{ .memory = true }
+        );
+
+        const SIE_SSIE_F: u32 = 1 << 1;
+        asm volatile ("csrs sie, %[b]"
+            :
+            : [b] "r" (SIE_SSIE_F),
+            : .{ .memory = true }
+        );
+
+        const SSTATUS_SPP_F: u32 = 1 << 8;
+        const SSTATUS_SPIE_F: u32 = 1 << 5;
+        asm volatile (
+            \\ csrc sstatus, %[spp]
+            \\ csrs sstatus, %[spie]
+            :
+            : [spp] "r" (SSTATUS_SPP_F),
+              [spie] "r" (SSTATUS_SPIE_F),
+            : .{ .memory = true }
+        );
+
+        var bootstrap_fork: proc.Context = std.mem.zeroes(proc.Context);
+        proc.cpu.sched_context.ra = @intCast(@intFromPtr(&sched.scheduler));
+        proc.cpu.sched_context.sp = proc.cpu.sched_stack_top;
+        proc.swtch(&bootstrap_fork, &proc.cpu.sched_context);
+        unreachable;
+    }
+
     // Allocate PID 1.
     const pid1 = proc.alloc() orelse kprintf.panic("kmain: proc.alloc PID 1", .{});
     @memcpy(pid1.name[0..4], "init");
