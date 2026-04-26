@@ -515,6 +515,24 @@ pub fn build(b: *std.Build) void {
     _ = fork_boot_config_stub_dir.addCopyFile(kernel_init_elf_bin, "init.elf");
     _ = fork_boot_config_stub_dir.addCopyFile(kernel_hello_elf_bin, "hello.elf");
 
+    const fs_boot_config_stub_dir = b.addWriteFiles();
+    const fs_boot_config_zig = fs_boot_config_stub_dir.add(
+        "boot_config.zig",
+        \\const std = @import("std");
+        \\pub const MULTI_PROC: bool = false;
+        \\pub const FORK_DEMO: bool = false;
+        \\pub const FS_DEMO: bool = true;
+        \\pub const USERPROG_ELF: []const u8 = "";
+        \\pub const USERPROG2_ELF: []const u8 = "";
+        \\pub const INIT_ELF: []const u8 = "";
+        \\pub const HELLO_ELF: []const u8 = "";
+        \\pub fn lookupBlob(path: []const u8) ?[]const u8 {
+        \\    _ = path;
+        \\    return null;
+        \\}
+        ,
+    );
+
     const kernel_kmain_obj = b.addObject(.{
         .name = "kernel-kmain",
         .root_module = b.createModule(.{
@@ -555,6 +573,20 @@ pub fn build(b: *std.Build) void {
     });
     kernel_kmain_fork_obj.root_module.addAnonymousImport("boot_config", .{
         .root_source_file = fork_boot_config_zig,
+    });
+
+    const kernel_kmain_fs_obj = b.addObject(.{
+        .name = "kernel-kmain-fs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/kernel/kmain.zig"),
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_kmain_fs_obj.root_module.addAnonymousImport("boot_config", .{
+        .root_source_file = fs_boot_config_zig,
     });
 
     const kernel_elf = b.addExecutable(.{
@@ -625,6 +657,28 @@ pub fn build(b: *std.Build) void {
     const install_kernel_fork_elf = b.addInstallArtifact(kernel_fork_elf, .{});
     const kernel_fork_step = b.step("kernel-fork", "Build the Phase 3.C fork-demo kernel.elf");
     kernel_fork_step.dependOn(&install_kernel_fork_elf.step);
+
+    const kernel_fs_elf = b.addExecutable(.{
+        .name = "kernel-fs.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = .Debug,
+            .strip = false,
+            .single_threaded = true,
+        }),
+    });
+    kernel_fs_elf.root_module.addObject(kernel_boot_obj);
+    kernel_fs_elf.root_module.addObject(kernel_trampoline_obj);
+    kernel_fs_elf.root_module.addObject(kernel_mtimer_obj);
+    kernel_fs_elf.root_module.addObject(kernel_swtch_obj);
+    kernel_fs_elf.root_module.addObject(kernel_kmain_fs_obj);
+    kernel_fs_elf.setLinkerScript(b.path("src/kernel/linker.ld"));
+    kernel_fs_elf.entry = .{ .symbol_name = "_M_start" };
+
+    const install_kernel_fs_elf = b.addInstallArtifact(kernel_fs_elf, .{});
+    const kernel_fs_step = b.step("kernel-fs", "Build the Phase 3.D fs-mode kernel.elf");
+    kernel_fs_step.dependOn(&install_kernel_fs_elf.step);
 
     // End-to-end: Plan 2.D uses a host-compiled verifier that spawns ccc
     // on kernel.elf, captures stdout, and asserts the Phase 2 §Definition
