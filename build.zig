@@ -736,6 +736,24 @@ pub fn build(b: *std.Build) void {
     const e2e_fork_step = b.step("e2e-fork", "Run the Phase 3.C fork+exec+wait+exit e2e test");
     e2e_fork_step.dependOn(&e2e_fork_run.step);
 
+    const fs_verify = b.addExecutable(.{
+        .name = "fs_verify_e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/fs.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+
+    const e2e_fs_run = b.addRunArtifact(fs_verify);
+    e2e_fs_run.addFileArg(exe.getEmittedBin());
+    e2e_fs_run.addFileArg(fs_img);
+    e2e_fs_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    e2e_fs_run.expectExitCode(0);
+
+    const e2e_fs_step = b.step("e2e-fs", "Run the Phase 3.D fs-read e2e test (init opens /etc/motd)");
+    e2e_fs_step.dependOn(&e2e_fs_run.step);
+
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
     const qemu_diff_kernel_cmd = b.addSystemCommand(&.{
