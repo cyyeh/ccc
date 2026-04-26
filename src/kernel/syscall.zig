@@ -192,6 +192,16 @@ fn sysFstat(fd: u32, stat_user_va: u32) i32 {
     return file.fstat(idx, stat_user_va);
 }
 
+/// 34 mkdirat(dirfd, path) — 3.E ignores dirfd. Returns 0 / -1.
+fn sysMkdirat(dirfd: u32, path_va: u32) i32 {
+    _ = dirfd;
+    var pbuf: [path_mod.MAX_PATH]u8 = undefined;
+    const p = copyStrFromUser(path_va, &pbuf) orelse return -1;
+    const ip = fsops.create(p, .Dir) orelse return -1;
+    inode.iput(ip);
+    return 0;
+}
+
 /// Compose a new cwd_path given the current cwd_path and a relative or
 /// absolute target. Writes into `out` (NUL-terminated). Returns the
 /// length of the resulting path (excluding NUL) or null on overflow.
@@ -316,6 +326,7 @@ fn sysConsoleSetMode(mode: u32) u32 {
 pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
         17 => tf.a0 = @bitCast(sysGetcwd(tf.a0, tf.a1)),
+        34 => tf.a0 = @bitCast(sysMkdirat(tf.a0, tf.a1)),
         49 => tf.a0 = @bitCast(sysChdir(tf.a0)),
         56 => tf.a0 = @bitCast(sysOpenat(tf.a0, tf.a1, tf.a2)),
         57 => tf.a0 = @bitCast(sysClose(tf.a0)),
