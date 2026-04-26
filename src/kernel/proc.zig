@@ -24,8 +24,18 @@ pub extern fn swtch(old: *Context, new: *Context) void;
 pub const Context = extern struct {
     ra: u32,
     sp: u32,
-    s0: u32, s1: u32, s2: u32, s3: u32, s4: u32, s5: u32,
-    s6: u32, s7: u32, s8: u32, s9: u32, s10: u32, s11: u32,
+    s0: u32,
+    s1: u32,
+    s2: u32,
+    s3: u32,
+    s4: u32,
+    s5: u32,
+    s6: u32,
+    s7: u32,
+    s8: u32,
+    s9: u32,
+    s10: u32,
+    s11: u32,
 };
 
 pub const CTX_RA: u32 = 0;
@@ -86,13 +96,16 @@ pub const State = enum(u32) {
     Zombie = 5,
 };
 
+pub const NOFILE: u32 = 16;
+pub const CWD_PATH_MAX: u32 = 64;
+
 pub const Process = extern struct {
-    tf: trap.TrapFrame,    // offset 0 — trampoline.S depends on this
-    satp: u32,             // offset 128
-    pgdir: u32,            // offset 132
-    sz: u32,               // offset 136
-    kstack: u32,           // offset 140
-    kstack_top: u32,       // offset 144 — referenced by trampoline.S
+    tf: trap.TrapFrame, // offset 0 — trampoline.S depends on this
+    satp: u32, // offset 128
+    pgdir: u32, // offset 132
+    sz: u32, // offset 136
+    kstack: u32, // offset 140
+    kstack_top: u32, // offset 144 — referenced by trampoline.S
     state: State,
     pid: u32,
     chan: u32,
@@ -102,6 +115,11 @@ pub const Process = extern struct {
     context: Context,
     name: [16]u8,
     parent: ?*Process,
+    // Phase 3.D additions — placed after `parent` so existing offsets
+    // pinned by trampoline.S / swtch.S / comptime asserts stay intact.
+    cwd: u32, // *fs.inode.InMemInode cast to u32; 0 = lazy-root
+    cwd_path: [CWD_PATH_MAX]u8, // NUL-terminated; "" = "/"
+    ofile: [NOFILE]u32, // file table indices; 0 = empty
 };
 
 pub const KSTACK_TOP_OFFSET: u32 = 144;
@@ -225,8 +243,7 @@ inline fn disableSie() void {
     asm volatile ("csrc sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SIE),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// xv6-style sleep on `chan` (a u32 used purely as identity).
@@ -384,16 +401,14 @@ inline fn setSum() void {
     asm volatile ("csrs sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SUM),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 inline fn clearSum() void {
     asm volatile ("csrc sstatus, %[b]"
         :
         : [b] "r" (SSTATUS_SUM),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// xv6-style wait. Returns the harvested child pid, or -1 if `cur` has
@@ -630,8 +645,7 @@ pub fn exec(path_user_va: u32, argv_user_va: u32) i32 {
         \\ sfence.vma zero, zero
         :
         : [s] "r" (me.satp),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 
     // Tear down the old AS now that we're committed.
     vm.unmapUser(old_pgdir, old_sz, .free_root);

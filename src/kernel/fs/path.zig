@@ -16,6 +16,7 @@ const std = @import("std");
 const layout = @import("layout.zig");
 const inode = @import("inode.zig");
 const dir = @import("dir.zig");
+const proc = @import("../proc.zig");
 
 pub const MAX_PATH: u32 = 256;
 
@@ -49,7 +50,11 @@ fn startInode(path: []const u8) *inode.InMemInode {
     if (path.len > 0 and path[0] == '/') {
         return inode.iget(layout.ROOT_INUM);
     }
-    // TODO(Task 12): use proc.cur().cwd once the field exists.
+    const me = proc.cur();
+    if (me.cwd != 0) {
+        const ip: *inode.InMemInode = @ptrFromInt(me.cwd);
+        return inode.idup(ip);
+    }
     return inode.iget(layout.ROOT_INUM);
 }
 
