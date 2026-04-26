@@ -88,6 +88,22 @@ fn sysSbrk(incr_signed: u32) u32 {
     return old_sz;
 }
 
+/// 5000 set_fg_pid: shell-only API for telling the console what process
+/// `^C` should target. 3.C accepts and discards; 3.E (when the console
+/// line discipline lands) wires this to the actual fg_pid global.
+fn sysSetFgPid(pid: u32) u32 {
+    _ = pid;
+    return 0;
+}
+
+/// 5001 console_set_mode: editor-only API for switching cooked vs raw
+/// line discipline. 3.C accepts and discards; 3.E wires this to the
+/// console state machine.
+fn sysConsoleSetMode(mode: u32) u32 {
+    _ = mode;
+    return 0;
+}
+
 pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
         64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
@@ -95,6 +111,11 @@ pub fn dispatch(tf: *trap.TrapFrame) void {
         124 => tf.a0 = sysYield(),
         172 => tf.a0 = sysGetpid(),
         214 => tf.a0 = sysSbrk(tf.a0),
+        220 => tf.a0 = @bitCast(proc.fork()),
+        221 => tf.a0 = @bitCast(proc.exec(tf.a0, tf.a1)),
+        260 => tf.a0 = @bitCast(proc.wait(tf.a1)),
+        5000 => tf.a0 = sysSetFgPid(tf.a0),
+        5001 => tf.a0 = sysConsoleSetMode(tf.a0),
         else => tf.a0 = @bitCast(@as(i32, -38)), // -ENOSYS
     }
 }
