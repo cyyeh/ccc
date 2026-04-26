@@ -25,9 +25,9 @@ const layout = @import("fs/layout.zig");
 
 pub const O_RDONLY: u32 = 0x000;
 pub const O_WRONLY: u32 = 0x001;
-pub const O_RDWR:   u32 = 0x002;
-pub const O_CREAT:  u32 = 0x040;
-pub const O_TRUNC:  u32 = 0x200;
+pub const O_RDWR: u32 = 0x002;
+pub const O_CREAT: u32 = 0x040;
+pub const O_TRUNC: u32 = 0x200;
 pub const O_APPEND: u32 = 0x400;
 
 const SSTATUS_SUM: u32 = 1 << 18;
