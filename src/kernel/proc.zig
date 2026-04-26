@@ -212,7 +212,7 @@ fn nextPid() u32 {
 // locks arrive.
 extern fn s_return_to_user(tf: *trap.TrapFrame) noreturn;
 
-export fn forkret() callconv(.c) noreturn {
+pub export fn forkret() callconv(.c) noreturn {
     // The scheduler set cpu.cur before swtch'ing into us; this assertion
     // catches any future bug that swtch's into a fresh proc with cpu.cur
     // still null.

@@ -78,6 +78,14 @@ export fn kmain() callconv(.c) noreturn {
               [spie] "r" (SSTATUS_SPIE_FS),
             : .{ .memory = true });
 
+        // Set up sched_context BEFORE exec so that proc.sleep (called by
+        // bufcache.bread inside exec.readi) can actually yield to the
+        // scheduler instead of busy-spinning. Without this, the no-op
+        // sched() returns immediately and the SIE=0 spin never lets the
+        // block IRQ fire — deadlock.
+        proc.cpu.sched_context.ra = @intCast(@intFromPtr(&sched.scheduler));
+        proc.cpu.sched_context.sp = proc.cpu.sched_stack_top;
+
         // Make cur() return PID 1 so exec writes into its trapframe.
         proc.cpu.cur = init_p;
 
@@ -87,12 +95,17 @@ export fn kmain() callconv(.c) noreturn {
         const rc = proc.exec(path_va, 0);
         if (rc < 0) kprintf.panic("kmain: exec /bin/init failed", .{});
 
+        // exec ran on init_p's stack and called proc.sleep, leaving
+        // init_p.context pointing inside sleep(). Re-arm it to forkret
+        // so the next scheduler swtch enters via the trapframe + sret
+        // path, not by re-running sleep's epilogue on a stale stack.
+        init_p.context = std.mem.zeroes(proc.Context);
+        init_p.context.ra = @intCast(@intFromPtr(&proc.forkret));
+        init_p.context.sp = init_p.kstack_top - 16;
         init_p.state = .Runnable;
         proc.cpu.cur = null;
 
         var bootstrap_fs: proc.Context = std.mem.zeroes(proc.Context);
-        proc.cpu.sched_context.ra = @intCast(@intFromPtr(&sched.scheduler));
-        proc.cpu.sched_context.sp = proc.cpu.sched_stack_top;
         proc.swtch(&bootstrap_fs, &proc.cpu.sched_context);
         unreachable;
     }

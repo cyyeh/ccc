@@ -134,6 +134,20 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
     const is_interrupt = (scause >> 31) & 1 == 1;
     const cause = scause & 0x7fff_ffff;
 
+    // If the trap originated from S-mode (SPP=S), it interrupted a
+    // scheduler SIE window. Clear SPIE so sret restores SIE=0 and the
+    // window's csrc can execute without immediately re-trapping on
+    // another pending interrupt (e.g. perpetual timer SSI).
+    const sstatus_val = asm volatile ("csrr %[v], sstatus"
+        : [v] "=r" (-> u32),
+    );
+    if ((sstatus_val & (1 << 8)) != 0) {
+        asm volatile ("csrc sstatus, %[m]"
+            :
+            : [m] "r" (@as(u32, 1 << 5)),
+            : .{ .memory = true });
+    }
+
     if (!is_interrupt and cause == 8) {
         // ECALL from U — advance sepc past the ecall instruction (4 bytes)
         // so sret returns to the next instruction.
@@ -158,9 +172,18 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         // 3. Pick next process. In Phase 2 this is always the same one,
         //    but we exercise the code path so Plan 3's picker drops in
         //    without a signature change.
+        //
+        // 3.D: when cpu.cur is null, this trap fired inside the scheduler
+        // (SIE window opened to wait for a device IRQ — the timer SSI is
+        // collateral). Yielding would re-enter the scheduler from its top
+        // via swtch(&p.context, &sched_context), wiping its loop state.
+        // Just clear SSIP and return; the scheduler will close its SIE
+        // window and re-scan ptable on its own.
         clearSipSsip();
-        proc.cur().ticks_observed +%= 1;
-        proc.yield();
+        if (proc.cpu.cur != null) {
+            proc.cur().ticks_observed +%= 1;
+            proc.yield();
+        }
         return;
     }
 

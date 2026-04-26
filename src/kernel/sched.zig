@@ -57,8 +57,7 @@ pub fn scheduler() noreturn {
                 :
                 : [pa] "r" (p_addr),
                   [s] "r" (p.satp),
-                : .{ .memory = true }
-            );
+                : .{ .memory = true });
             proc.swtch(&proc.cpu.sched_context, &p.context);
             // p has yielded back; swtch left us here.
             proc.cpu.cur = null;
@@ -72,8 +71,22 @@ pub fn scheduler() noreturn {
             halt.* = @truncate(@as(u32, @bitCast(last_xstatus)));
             while (true) asm volatile ("wfi");
         }
-        // Else: spin (timer tick will fire and re-enter sched's caller —
-        // but we're not anyone's callee. We just busy-loop until something
-        // becomes Runnable. 3.D adds proper WFI here.)
+        // Nothing runnable but something is alive (embryo / sleeping /
+        // zombie). Open a one-instruction SIE window so a pending PLIC
+        // block IRQ (or timer SSI) can be delivered. The xv6 invariant
+        // is that S-mode runs with interrupts disabled; we restore that
+        // immediately after the window. The interrupt fires at the start
+        // of the `csrc` step (check_interrupt runs before each fetch),
+        // trap.enter_interrupt saves sepc = &csrc, the ISR runs (wakeup),
+        // and sret returns to the `csrc` instruction — which then
+        // re-disables SIE. On the next loop iteration the newly-Runnable
+        // proc is picked and swtch'd into.
+        const SSTATUS_SIE: u32 = 1 << 1;
+        asm volatile (
+            \\ csrs sstatus, %[b]
+            \\ csrc sstatus, %[b]
+            :
+            : [b] "r" (SSTATUS_SIE),
+            : .{ .memory = true });
     }
 }

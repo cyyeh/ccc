@@ -63,7 +63,7 @@ const ImageBuilder = struct {
     /// block + per-leaf data blocks for any blocks past NDIRECT. Updates
     /// inode size + addrs.
     fn writeFile(self: *ImageBuilder, inum: u32, data: []const u8) !void {
-        const ip = &self.inodes[inum - 1]; // 1-based
+        const ip = &self.inodes[inum]; // index == inum (slot 0 reserved as Free)
         ip.size = @intCast(data.len);
 
         var off: u32 = 0;
@@ -98,7 +98,7 @@ const ImageBuilder = struct {
     /// Append a DirEntry to dir's data blocks (creating blocks as needed).
     fn appendDirEntry(self: *ImageBuilder, dir_inum: u32, name: []const u8, entry_inum: u32) !void {
         if (name.len > layout.DIR_NAME_LEN - 1) return error.NameTooLong;
-        const dir = &self.inodes[dir_inum - 1];
+        const dir = &self.inodes[dir_inum];
         const off = dir.size;
         const bn = off / layout.BLOCK_SIZE;
         const blk_off = off % layout.BLOCK_SIZE;
@@ -124,7 +124,7 @@ const ImageBuilder = struct {
 
     fn createDir(self: *ImageBuilder, parent_inum: u32) !u32 {
         const inum = self.allocInum() orelse return error.OutOfInodes;
-        const ip = &self.inodes[inum - 1];
+        const ip = &self.inodes[inum];
         ip.type = .Dir;
         ip.nlink = 1;
         ip.size = 0;
@@ -135,8 +135,8 @@ const ImageBuilder = struct {
 
     fn createFile(self: *ImageBuilder, dir_inum: u32, name: []const u8, data: []const u8) !void {
         const inum = self.allocInum() orelse return error.OutOfInodes;
-        self.inodes[inum - 1].type = .File;
-        self.inodes[inum - 1].nlink = 1;
+        self.inodes[inum].type = .File;
+        self.inodes[inum].nlink = 1;
         try self.writeFile(inum, data);
         try self.appendDirEntry(dir_inum, name, inum);
     }
@@ -231,11 +231,16 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.destroy(builder);
     builder.init();
 
-    // Create root inode (inum 1) with `.` and `..` (both → root).
-    const root_inum = try builder.createDir(0); // parent_inum 0 placeholder
+    // Create root inode (inum 1) with `.` and `..` (both → root). We
+    // pre-fill the inode here rather than calling createDir(0) because
+    // createDir would seed `..` with the bogus parent_inum=0 first; the
+    // entries below are the canonical root listing.
+    const root_inum = builder.allocInum() orelse return error.OutOfInodes;
     if (root_inum != layout.ROOT_INUM) return error.RootInumMismatch;
-    // Patch `..` to point at root itself.
-    builder.inodes[root_inum - 1].size = 0;
+    const root_ip = &builder.inodes[root_inum];
+    root_ip.type = .Dir;
+    root_ip.nlink = 1;
+    root_ip.size = 0;
     try builder.appendDirEntry(root_inum, ".", root_inum);
     try builder.appendDirEntry(root_inum, "..", root_inum);
 
