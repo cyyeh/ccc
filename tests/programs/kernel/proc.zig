@@ -377,3 +377,53 @@ pub fn exit(status: i32) noreturn {
     // scheduler bug picks us anyway, we just yield again.
     while (true) sched();
 }
+
+const SSTATUS_SUM: u32 = 1 << 18;
+
+inline fn setSum() void {
+    asm volatile ("csrs sstatus, %[b]"
+        :
+        : [b] "r" (SSTATUS_SUM),
+        : .{ .memory = true }
+    );
+}
+
+inline fn clearSum() void {
+    asm volatile ("csrc sstatus, %[b]"
+        :
+        : [b] "r" (SSTATUS_SUM),
+        : .{ .memory = true }
+    );
+}
+
+/// xv6-style wait. Returns the harvested child pid, or -1 if `cur` has
+/// no children. Sleeps if children exist but none are Zombie.
+///
+/// `status_user_va`: if non-zero, the harvested xstate is written there
+/// (via SUM=1) before we return.
+pub fn wait(status_user_va: u32) i32 {
+    const me = cur();
+    while (true) {
+        var has_children = false;
+        var i: u32 = 0;
+        while (i < NPROC) : (i += 1) {
+            const c = &ptable[i];
+            if (c.parent != me) continue;
+            if (c.state == .Unused) continue;
+            has_children = true;
+            if (c.state == .Zombie) {
+                if (status_user_va != 0) {
+                    setSum();
+                    const sp: *volatile i32 = @ptrFromInt(status_user_va);
+                    sp.* = c.xstate;
+                    clearSum();
+                }
+                const pid = c.pid;
+                free(c);
+                return @as(i32, @intCast(pid));
+            }
+        }
+        if (!has_children) return -1;
+        sleep(@as(u32, @intCast(@intFromPtr(me))));
+    }
+}
