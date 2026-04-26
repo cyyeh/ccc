@@ -66,8 +66,10 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build kernel-user2` | Build the Phase 3.B PID 2 user payload (`zig-out/userprog2.elf`, embedded by `kernel-multi.elf`) |
 | `zig build kernel-elf` (or `kernel`) | Build the single-proc `kernel.elf` (M-mode boot shim + S-mode kernel + embedded `userprog.elf`) |
 | `zig build kernel-multi` | Build the multi-proc `kernel-multi.elf` (same kernel objects + both `userprog*.elf`) |
+| `zig build kernel-fork` | Build the Phase 3.C `kernel-fork.elf` (same kernel objects + embedded `init.elf` + `hello.elf`) |
 | `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout matches `hello from u-mode\nticks observed: N\n` with N > 0 (Phase 2 §Definition of done) |
 | `zig build e2e-multiproc-stub` | Run `ccc kernel-multi.elf` and assert stdout contains both `hello from u-mode\n` and `[2] hello from u-mode\n`, plus a `ticks observed: N\n` trailer (Plan 3.B milestone) |
+| `zig build e2e-fork` | Boot `kernel-fork.elf`; `init` forks `/bin/hello`; parent reaps; emulator returns 0 (Plan 3.C milestone) |
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
@@ -138,11 +140,16 @@ to "GitHub Actions" in repo settings (one-time manual step).
 
 ## Status
 
-**Phase 3 in progress.** Plan 3.A merged: PLIC, simple block device, UART RX,
-`--disk` and `--input` flags, real `wfi` idle. Plan 3.B merged: free-list
-page allocator, `ptable[NPROC=16]`, round-robin scheduler with `swtch`,
-kernel-side ELF32 loader, `getpid`/`sbrk`/`yield` syscalls, second
-embedded user ELF, `e2e-multiproc-stub` running PID 1 + PID 2.
+**Phase 3 Plan C done — fork / exec / wait / exit / kill-flag.** Plan 3.A
+merged: PLIC, simple block device, UART RX, `--disk` and `--input` flags,
+real `wfi` idle. Plan 3.B merged: free-list page allocator, `ptable[NPROC=16]`,
+round-robin scheduler with `swtch`, kernel-side ELF32 loader,
+`getpid`/`sbrk`/`yield` syscalls, second embedded user ELF,
+`e2e-multiproc-stub` running PID 1 + PID 2. Plan 3.C merged: `fork` (full
+address-space copy), `execve` (in-place AS rebuild + System-V argv tail),
+`wait4` (sleep on self until zombie child), `exit` (reparent + zombie + wake
+parent), and `kill` flag (`^C`-style poison checked on syscall return);
+`e2e-fork` runs `init` → fork → exec `/bin/hello` → parent reaps to exit 0.
 
 **Phase 1 — RISC-V CPU emulator — complete.**
 
@@ -212,7 +219,23 @@ scheduler interleaving:
 
 Single-proc `e2e-kernel` regression continues to pass byte-for-byte.
 
-Next: Plan 3.C — `fork` / `exec` / `wait` / `exit` / kill-flag (`^C`).
+Plan 3.C (fork / exec / wait / exit / kill-flag) is merged. New VM helpers
+(`unmapUser`, `copyUvm`, `copyUserStack` with rollback on OOM) and a real
+`proc.free` reaper enable a full address-space copy in `fork`; `execve`
+rebuilds the address space in place and lays out the System-V argv tail;
+`wait4` sleeps on self until a zombie child appears; `exit` reparents
+children, marks the proc zombie, and wakes the parent; a `killed` flag
+(set by `proc.kill`, checked on every syscall return) is the `^C`-style
+poison primitive. A new `kernel-fork.elf` embeds two ELFs (`init.elf` +
+`hello.elf`); `init` forks `/bin/hello`, the child execs and prints, and
+the parent `wait`s and prints `init: reaped` before exiting 0:
+
+    $ zig build kernel-fork && zig build run -- zig-out/bin/kernel-fork.elf
+    hello from /bin/hello
+    init: reaped
+    ticks observed: 3
+
+Next: Plan 3.D — filesystem + shell.
 
 ## Layout
 
