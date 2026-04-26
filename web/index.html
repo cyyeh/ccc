@@ -21,7 +21,15 @@
       </label>
     </div>
     <div class="status" id="status">fetching ccc.wasm…</div>
-    <pre class="output" id="output"></pre>
+    <div class="program-selector">
+      <label for="program-select">program:</label>
+      <select id="program-select">
+        <option value="1" selected>snake.elf</option>
+        <option value="0">hello.elf</option>
+      </select>
+      <span class="program-hint">(click the terminal to play)</span>
+    </div>
+    <pre class="output" id="output" tabindex="0"></pre>
 
     <details class="trace-details" id="trace-details" hidden>
       <summary>instruction trace <span class="trace-meta" id="trace-meta"></span></summary>
