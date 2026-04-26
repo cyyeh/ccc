@@ -225,9 +225,9 @@ web/                # GitHub Pages root (https://cyyeh.github.io/ccc/web/)
   demo.js           # main thread: Worker host, ANSI renderer, program-select handler, keystroke filter
   runner.js         # Web Worker: chunked runStep loop, ELF fetch, output/trace drain
   ansi.js           # ~120-line ANSI subset interpreter (CSI 2J/H/?25, UTF-8 reassembly)
-  ccc.wasm          # built artifact (~30 KB; emulator core only)
-  hello.elf         # built artifact (10 KB; fetched at runtime)
-  snake.elf         # built artifact (~1.4 MB Debug; fetched at runtime)
+  ccc.wasm          # built artifact (~38 KB; emulator core only) — gitignored
+  hello.elf         # built artifact (~10 KB; fetched at runtime) — gitignored
+  snake.elf         # built artifact (~1.4 MB Debug; fetched at runtime) — gitignored
   README.md         # how the demo works + how to add another ELF
 tests/
   programs/

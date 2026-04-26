@@ -6,3 +6,5 @@ zig-out/
 .worktrees/
 .gstack/
 web/ccc.wasm
+web/hello.elf
+web/snake.elf

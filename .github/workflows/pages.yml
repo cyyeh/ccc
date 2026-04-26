@@ -82,7 +82,9 @@ jobs:
           mkdir -p _site/web
           cp index.html deck-stage.js .nojekyll _site/
           cp -r web/. _site/web/
-          cp zig-out/web/ccc.wasm _site/web/ccc.wasm
+          cp zig-out/web/ccc.wasm  _site/web/ccc.wasm
+          cp zig-out/web/hello.elf _site/web/hello.elf
+          cp zig-out/web/snake.elf _site/web/snake.elf
           ls -lh _site _site/web
 
       - name: Configure Pages

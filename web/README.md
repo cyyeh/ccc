@@ -45,13 +45,15 @@ takes an empty import object. The browser is the RISC-V machine.
 ## Local development
 
 ```sh
-./scripts/stage-web.sh                    # build + copy ccc.wasm into web/
+./scripts/stage-web.sh                    # build + copy ccc.wasm + hello.elf + snake.elf into web/
 python3 -m http.server -d . 8000          # any static server works
 open http://localhost:8000/web/
 ```
 
-`web/ccc.wasm` is gitignored — it is produced by `zig build wasm` and
-overlaid into the Pages artifact in CI.
+`web/ccc.wasm`, `web/hello.elf`, and `web/snake.elf` are gitignored —
+all three are produced by `zig build wasm` and overlaid into the Pages
+artifact in CI. Run `stage-web.sh` (or `zig build wasm` + the three
+`cp` commands it wraps) before serving locally.
 
 ## Adding another demo
 
