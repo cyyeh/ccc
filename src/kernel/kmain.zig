@@ -73,10 +73,10 @@ export fn kmain() callconv(.c) noreturn {
             : .{ .memory = true }
         );
 
-        const SIE_SSIE_F: u32 = 1 << 1;
+        const SIE_BITS_F: u32 = (1 << 1) | (1 << 9); // SSIE | SEIE
         asm volatile ("csrs sie, %[b]"
             :
-            : [b] "r" (SIE_SSIE_F),
+            : [b] "r" (SIE_BITS_F),
             : .{ .memory = true }
         );
 
@@ -166,11 +166,11 @@ export fn kmain() callconv(.c) noreturn {
         : .{ .memory = true }
     );
 
-    // sie.SSIE for forwarded timer ticks.
-    const SIE_SSIE: u32 = 1 << 1;
+    // sie.SSIE for forwarded timer ticks; sie.SEIE for PLIC externals (3.D).
+    const SIE_BITS: u32 = (1 << 1) | (1 << 9); // SSIE | SEIE
     asm volatile ("csrs sie, %[b]"
         :
-        : [b] "r" (SIE_SSIE),
+        : [b] "r" (SIE_BITS),
         : .{ .memory = true }
     );
 
