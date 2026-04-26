@@ -127,29 +127,7 @@ pre.output .meta   { color: var(--dim); }
 }
 .footer-links a:hover { color: var(--fg); }
 
-/* ----- trace toggle + trace block ----- */
-
-.trace-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 14px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  cursor: pointer;
-  user-select: none;
-}
-.trace-toggle input { cursor: pointer; }
-.trace-toggle:hover { color: var(--fg); }
-.trace-toggle:has(input:disabled) { color: var(--muted); opacity: 0.5; cursor: not-allowed; }
-.trace-toggle:has(input:disabled) input { cursor: not-allowed; }
-.trace-hint {
-  margin-left: 8px;
-  color: var(--muted);
-  font-size: 13px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  opacity: 0.7;
-}
+/* ----- trace block (auto-shown after halt for trace-enabled programs) ----- */
 
 .trace-details {
   margin: 0 0 32px;

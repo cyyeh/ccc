@@ -58,12 +58,22 @@ function runLoop() {
     const exit = exports.runStep(CHUNK);
     drain();
     if (exit !== -1) {
+      drainTrace();
       self.postMessage({ type: "halt", code: exit });
       return;
     }
     setTimeout(tick, 0);
   }
   tick();
+}
+
+function drainTrace() {
+  const len = exports.traceLen();
+  if (len === 0) return;
+  const ptr = exports.tracePtr();
+  const slice = new Uint8Array(memory.buffer, ptr, len);
+  const copy = new Uint8Array(slice);
+  self.postMessage({ type: "trace", bytes: copy }, [copy.buffer]);
 }
 
 function drain() {

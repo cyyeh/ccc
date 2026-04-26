@@ -8,10 +8,17 @@ const out = document.getElementById("output");
 const sel = document.getElementById("program-select");
 const hint = document.querySelector(".program-hint");
 
-// Trace controls — element IDs as defined in index.html.
-const traceCb    = document.getElementById("trace-toggle");
-const traceBox   = document.getElementById("trace-details");
-const traceHint  = document.getElementById("trace-hint");
+// Trace panel — auto-shown for non-interactive programs (e.g. hello.elf)
+// after the program halts. Snake never halts (until the player presses q),
+// and a continuous trace at 8 Hz × full-redraw would be MBs/sec, so we
+// don't capture trace for it.
+const traceBox  = document.getElementById("trace-details");
+const tracePre  = document.getElementById("trace");
+const traceMeta = document.getElementById("trace-meta");
+
+// Programs that want an instruction trace captured + auto-displayed
+// after halt. snake.elf intentionally absent.
+const TRACE_PROGRAMS = new Set(["0"]); // hello.elf
 
 const ELF_URLS = {
   "0": "./hello.elf",
@@ -45,21 +52,12 @@ function startCurrent() {
     return;
   }
 
-  // Trace toggle handling — disable for snake (runs continuously).
-  if (traceCb) {
-    const isInteractive = idx === 1;
-    if (isInteractive) {
-      traceCb.checked = false;
-      traceCb.disabled = true;
-      if (traceBox) traceBox.hidden = true;
-      if (traceHint) traceHint.hidden = false;
-    } else {
-      traceCb.disabled = false;
-      if (traceHint) traceHint.hidden = true;
-    }
-  }
+  // Reset trace panel (re-shown on halt for trace-enabled programs).
+  if (traceBox) traceBox.hidden = true;
+  if (tracePre) tracePre.textContent = "";
+  if (traceMeta) traceMeta.textContent = "";
 
-  const trace = traceCb && traceCb.checked ? 1 : 0;
+  const trace = TRACE_PROGRAMS.has(String(idx)) ? 1 : 0;
   worker.postMessage({ type: "start", elfUrl, trace });
 }
 
@@ -72,6 +70,15 @@ worker.onmessage = (e) => {
   if (msg.type === "output") {
     ansi.feed(msg.bytes);
     render();
+    return;
+  }
+  if (msg.type === "trace") {
+    if (tracePre) tracePre.textContent = new TextDecoder().decode(msg.bytes);
+    if (traceMeta) traceMeta.textContent = `(${msg.bytes.length.toLocaleString()} bytes)`;
+    if (traceBox) {
+      traceBox.hidden = false;
+      traceBox.open = true;
+    }
     return;
   }
   if (msg.type === "halt") {
