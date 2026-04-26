@@ -307,6 +307,7 @@ pub fn build(b: *std.Build) void {
         \\const std = @import("std");
         \\pub const MULTI_PROC: bool = false;
         \\pub const FORK_DEMO: bool = false;
+        \\pub const FS_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
         \\pub const USERPROG2_ELF: []const u8 = "";
         \\pub const INIT_ELF: []const u8 = "";
@@ -420,6 +421,7 @@ pub fn build(b: *std.Build) void {
         \\const std = @import("std");
         \\pub const MULTI_PROC: bool = true;
         \\pub const FORK_DEMO: bool = false;
+        \\pub const FS_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = @embedFile("userprog.elf");
         \\pub const USERPROG2_ELF: []const u8 = @embedFile("userprog2.elf");
         \\pub const INIT_ELF: []const u8 = "";
@@ -439,6 +441,7 @@ pub fn build(b: *std.Build) void {
         \\const std = @import("std");
         \\pub const MULTI_PROC: bool = false;
         \\pub const FORK_DEMO: bool = true;
+        \\pub const FS_DEMO: bool = false;
         \\pub const USERPROG_ELF: []const u8 = "";
         \\pub const USERPROG2_ELF: []const u8 = "";
         \\pub const INIT_ELF: []const u8 = @embedFile("init.elf");

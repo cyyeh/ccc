@@ -483,6 +483,14 @@ pub fn wait(status_user_va: u32) i32 {
 const elfload = @import("elfload.zig");
 const boot_config = @import("boot_config");
 
+const MAX_EXEC_BYTES: u32 = 64 * 1024;
+const EXEC_SCRATCH_PAGES: u32 = MAX_EXEC_BYTES / vm.PAGE_SIZE;
+
+// Static scratch buffer for FS-mode exec — readi reads the on-disk ELF
+// into here before elfload.load consumes it. Single-threaded kernel so
+// no contention; sized at the spec's 64 KB user-text budget.
+var exec_scratch: [EXEC_SCRATCH_PAGES][vm.PAGE_SIZE]u8 align(4) = undefined;
+
 const MAX_PATH: u32 = 256;
 const MAX_ARGS: u32 = 8;
 const MAX_ARG_LEN: u32 = 64;
@@ -543,8 +551,29 @@ pub fn exec(path_user_va: u32, argv_user_va: u32) i32 {
     var arg_lens: [MAX_ARGS]u32 = undefined;
     const argc = copyArgvFromUser(argv_user_va, &arg_storage, &arg_lens) orelse return -1;
 
-    // 3. Look up the embedded blob.
-    const blob = boot_config.lookupBlob(path_slice) orelse return -1;
+    // 3. Resolve the blob — embedded (single/multi/fork) or on-disk (fs).
+    const blob = if (boot_config.FS_DEMO) blk: {
+        const ip = path.namei(path_slice) orelse return -1;
+
+        inode.ilock(ip);
+        if (ip.dinode.type != .File) {
+            inode.iunlock(ip);
+            inode.iput(ip);
+            return -1;
+        }
+        const sz = ip.dinode.size;
+        if (sz > MAX_EXEC_BYTES) {
+            inode.iunlock(ip);
+            inode.iput(ip);
+            return -1;
+        }
+        const dst: [*]u8 = @ptrCast(&exec_scratch[0][0]);
+        const got = inode.readi(ip, dst, 0, sz);
+        inode.iunlock(ip);
+        inode.iput(ip);
+        if (got != sz) return -1;
+        break :blk dst[0..sz];
+    } else (boot_config.lookupBlob(path_slice) orelse return -1);
 
     // 4. Build new pgdir + map kernel/MMIO.
     const new_root = vm.allocRoot() orelse return -1;
