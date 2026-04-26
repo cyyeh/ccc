@@ -121,6 +121,9 @@ fn resolveBin(name: [*:0]const u8) [*:0]const u8 {
 }
 
 fn doRedirect(kind: RedirectKind, target: [*:0]const u8) bool {
+    // dirfd=0 in the openat calls below is a sentinel: sysOpenat ignores
+    // dirfd entirely in Phase 3.E (paths resolve from cwd unconditionally).
+    // If dirfd ever becomes meaningful, pass an explicit AT_FDCWD instead.
     switch (kind) {
         .None => return true,
         .In => {
