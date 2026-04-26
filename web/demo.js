@@ -11,6 +11,7 @@ const hint = document.querySelector(".program-hint");
 // Trace controls — element IDs as defined in index.html.
 const traceCb    = document.getElementById("trace-toggle");
 const traceBox   = document.getElementById("trace-details");
+const traceHint  = document.getElementById("trace-hint");
 
 const worker = new Worker("./runner.js", { type: "module" });
 
@@ -35,7 +36,7 @@ function startCurrent() {
 
   const idx = parseInt(sel.value, 10);
 
-  // Snake (idx === 1) runs continuously — hide trace toggle to avoid
+  // Snake (idx === 1) runs continuously — disable trace toggle to avoid
   // flooding MBs/sec of trace data. For hello.elf (idx === 0) keep it.
   if (traceCb) {
     const isInteractive = idx === 1; // snake
@@ -43,8 +44,10 @@ function startCurrent() {
       traceCb.checked = false;
       traceCb.disabled = true;
       if (traceBox) traceBox.hidden = true;
+      if (traceHint) traceHint.hidden = false;
     } else {
       traceCb.disabled = false;
+      if (traceHint) traceHint.hidden = true;
     }
   }
 
