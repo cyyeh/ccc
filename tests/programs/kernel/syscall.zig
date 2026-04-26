@@ -2,7 +2,8 @@
 //
 // Syscalls dispatched in Phase 3.B:
 //   - 64  (write): copies user bytes to UART via SSTATUS.SUM.
-//   - 93  (exit):  prints "ticks observed: N\n" then halts via MMIO.
+//   - 93  (exit):  delegates to proc.exit (reparent + zombie + wake parent;
+//                  PID 1 also prints "ticks observed: N\n" and halts).
 //   - 124 (yield): calls proc.yield() to voluntarily relinquish the CPU.
 //
 // proc.cur() is used for any per-process state reads (currently always
@@ -13,7 +14,6 @@
 
 const trap = @import("trap.zig");
 const uart = @import("uart.zig");
-const kprintf = @import("kprintf.zig");
 const proc = @import("proc.zig");
 const page_alloc = @import("page_alloc.zig");
 const vm = @import("vm.zig");
