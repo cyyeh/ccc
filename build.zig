@@ -445,6 +445,36 @@ pub fn build(b: *std.Build) void {
     const kernel_fs_init_step = b.step("kernel-fs-init", "Build the Phase 3.D fs_init.elf");
     kernel_fs_init_step.dependOn(&install_kernel_fs_init_elf.step);
 
+    // Phase 3.D: mkfs host tool.
+    const mkfs_exe = b.addExecutable(.{
+        .name = "mkfs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/kernel/mkfs.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const install_mkfs = b.addInstallArtifact(mkfs_exe, .{});
+    const mkfs_step = b.step("mkfs", "Build the host-side mkfs tool");
+    mkfs_step.dependOn(&install_mkfs.step);
+
+    // Stage --bin: copy fs_init.elf into a temp dir as `init`.
+    const fs_bin_stage = b.addWriteFiles();
+    _ = fs_bin_stage.addCopyFile(kernel_fs_init_elf_bin, "init");
+
+    // Run mkfs to produce fs.img.
+    const fs_img_run = b.addRunArtifact(mkfs_exe);
+    fs_img_run.addArg("--root");
+    fs_img_run.addDirectoryArg(b.path("src/kernel/userland/fs"));
+    fs_img_run.addArg("--bin");
+    fs_img_run.addDirectoryArg(fs_bin_stage.getDirectory());
+    fs_img_run.addArg("--out");
+    const fs_img = fs_img_run.addOutputFileArg("fs.img");
+
+    const install_fs_img = b.addInstallFile(fs_img, "fs.img");
+    const fs_img_step = b.step("fs-img", "Build fs.img from staged userland + mkfs");
+    fs_img_step.dependOn(&install_fs_img.step);
+
     const multi_boot_config_stub_dir = b.addWriteFiles();
     const multi_boot_config_zig = multi_boot_config_stub_dir.add(
         "boot_config.zig",
