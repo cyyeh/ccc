@@ -18,6 +18,7 @@ const proc = @import("proc.zig");
 const page_alloc = @import("page_alloc.zig");
 const vm = @import("vm.zig");
 const file = @import("file.zig");
+const console = @import("console.zig");
 const inode = @import("fs/inode.zig");
 const path_mod = @import("fs/path.zig");
 const layout = @import("fs/layout.zig");
@@ -285,7 +286,7 @@ fn sysGetcwd(buf_user_va: u32, sz: u32) i32 {
 /// `^C` should target. 3.C accepts and discards; 3.E (when the console
 /// line discipline lands) wires this to the actual fg_pid global.
 fn sysSetFgPid(pid: u32) u32 {
-    _ = pid;
+    console.setFgPid(pid);
     return 0;
 }
 
@@ -293,7 +294,7 @@ fn sysSetFgPid(pid: u32) u32 {
 /// line discipline. 3.C accepts and discards; 3.E wires this to the
 /// console state machine.
 fn sysConsoleSetMode(mode: u32) u32 {
-    _ = mode;
+    console.setMode(mode);
     return 0;
 }
 
@@ -317,5 +318,11 @@ pub fn dispatch(tf: *trap.TrapFrame) void {
         5000 => tf.a0 = sysSetFgPid(tf.a0),
         5001 => tf.a0 = sysConsoleSetMode(tf.a0),
         else => tf.a0 = @bitCast(@as(i32, -38)), // -ENOSYS
+    }
+
+    // Phase 3.E: if the process was killed (e.g. by ^C while sleeping
+    // in this syscall), exit on the way back to user instead of returning.
+    if (proc.cur().killed != 0) {
+        proc.exit(-1);
     }
 }
