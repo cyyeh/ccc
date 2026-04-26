@@ -36,6 +36,10 @@ const ELF_URLS = {
 
 const worker = new Worker("./runner.js", { type: "module" });
 
+// Generation counter shared with the worker so stale messages from a
+// superseded run are dropped instead of repainting the cleared screen.
+let currentRunId = 0;
+
 const ALLOWED_KEYS = {
   "w": 0x77, "W": 0x77,
   "a": 0x61, "A": 0x61,
@@ -50,12 +54,17 @@ function render() {
 }
 
 function startCurrent() {
+  const idx = parseInt(sel.value, 10);
+  const elfUrl = ELF_URLS[String(idx)];
+
+  // Bump the run id BEFORE clearing — any in-flight worker messages
+  // from the previous run will be tagged with the old id and dropped.
+  currentRunId += 1;
+
   ansi._reset();
   ansi.row = 0; ansi.col = 0;
   render();
 
-  const idx = parseInt(sel.value, 10);
-  const elfUrl = ELF_URLS[String(idx)];
   if (!elfUrl) {
     out.textContent = `[unknown program idx ${idx}]`;
     return;
@@ -67,7 +76,7 @@ function startCurrent() {
   if (traceMeta) traceMeta.textContent = "";
 
   const trace = TRACE_PROGRAMS.has(String(idx)) ? 1 : 0;
-  worker.postMessage({ type: "start", elfUrl, trace });
+  worker.postMessage({ type: "start", runId: currentRunId, elfUrl, trace });
 }
 
 worker.onmessage = (e) => {
@@ -76,6 +85,9 @@ worker.onmessage = (e) => {
     startCurrent();
     return;
   }
+  // Drop replies from a superseded run so stale output can't repaint
+  // the freshly cleared screen.
+  if (msg.runId !== undefined && msg.runId !== currentRunId) return;
   if (msg.type === "output") {
     ansi.feed(msg.bytes);
     render();
