@@ -140,11 +140,33 @@ pub fn feedByte(b: u8) void {
     }
 }
 
-// Stub for Task 4. Return safe defaults so the module compiles
-// with no callers exercising them.
-
+/// SUM-1 copy `n` bytes from input buffer to user VA `dst_va`.
+/// Sleep on input.r until a byte is available. Handle ^D EOF marker.
+/// Return bytes delivered (0 if immediate EOF).
 pub fn read(dst_va: u32, n: u32) i32 {
-    _ = dst_va;
-    _ = n;
-    return 0;
+    var got: u32 = 0;
+    while (got < n) {
+        // Wait for at least one byte to be deliverable.
+        while (input.r == input.w) {
+            if (proc.cur().killed != 0) return -1;
+            proc.sleep(@intFromPtr(&input.r));
+        }
+        const c = input.buf[input.r % INPUT_BUF_SIZE];
+        input.r += 1;
+
+        // ^D in the buffer: an EOF marker. Consume but don't deliver.
+        if (c == 0x04) {
+            // If we already delivered something, return it; else 0 = EOF.
+            break;
+        }
+
+        setSum();
+        const dst: *volatile u8 = @ptrFromInt(dst_va + got);
+        dst.* = c;
+        clearSum();
+        got += 1;
+
+        if (c == '\n') break;
+    }
+    return @intCast(got);
 }
