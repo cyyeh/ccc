@@ -233,9 +233,6 @@ pre.output .cmd    { color: var(--fg); }
 .program-instructions a {
   color: var(--accent);
   text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
 }
 .program-instructions a:hover {
   color: var(--fg);
@@ -244,7 +241,8 @@ pre.output .cmd    { color: var(--fg); }
 .program-instructions .link-icon {
   width: 13px;
   height: 13px;
-  flex-shrink: 0;
+  vertical-align: -2px;
+  margin-right: 2px;
 }
 .device-warning {
   margin-top: 8px;
