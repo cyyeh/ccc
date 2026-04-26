@@ -95,6 +95,12 @@ pub fn close(idx: u32) void {
     }
 }
 
+// Static staging buffer for file.read. Stack-allocating a 4 KB array would
+// blow the per-process kernel stack (one 4 KB page) plus the trap-handler
+// + syscall-dispatch + readi + bread frames. Single-threaded kernel ⇒ safe
+// to share globally.
+var read_kbuf: [READ_CHUNK]u8 align(4) = undefined;
+
 /// Read up to n bytes from f into the user buffer at dst_user_va.
 /// Returns bytes copied (0 on EOF, -1 on error).
 pub fn read(idx: u32, dst_user_va: u32, n: u32) i32 {
@@ -102,11 +108,10 @@ pub fn read(idx: u32, dst_user_va: u32, n: u32) i32 {
     const f = &ftable[idx];
     if (f.type != .Inode or f.ip == null) return -1;
 
-    var kbuf: [READ_CHUNK]u8 = undefined;
     const want = if (n > READ_CHUNK) READ_CHUNK else n;
 
     inode.ilock(f.ip.?);
-    const got = inode.readi(f.ip.?, &kbuf, f.off, want);
+    const got = inode.readi(f.ip.?, &read_kbuf, f.off, want);
     inode.iunlock(f.ip.?);
 
     if (got > 0) {
@@ -114,7 +119,7 @@ pub fn read(idx: u32, dst_user_va: u32, n: u32) i32 {
         var i: u32 = 0;
         while (i < got) : (i += 1) {
             const dst: *volatile u8 = @ptrFromInt(dst_user_va + i);
-            dst.* = kbuf[i];
+            dst.* = read_kbuf[i];
         }
         clearSum();
         f.off += got;
