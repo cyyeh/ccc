@@ -141,42 +141,6 @@ to "GitHub Actions" in repo settings (one-time manual step).
 
 ## Status
 
-**Phase 3 complete — multi-process OS + filesystem + shell.**
-Plan 3.A merged: PLIC, simple block device, UART RX, `--disk` and `--input`
-flags, real `wfi` idle. Plan 3.B merged: free-list page allocator,
-`ptable[NPROC=16]`, round-robin scheduler with `swtch`, kernel-side ELF32
-loader, `getpid`/`sbrk`/`yield` syscalls, second embedded user ELF,
-`e2e-multiproc-stub` running PID 1 + PID 2. Plan 3.C merged: `fork` (full
-address-space copy), `execve` (in-place AS rebuild + System-V argv tail),
-`wait4` (sleep on self until zombie child), `exit` (reparent + zombie + wake
-parent), and `kill` flag (`^C`-style poison checked on syscall return);
-`e2e-fork` runs `init` → fork → exec `/bin/hello` → parent reaps to exit 0.
-Plan 3.D merged: kernel-side PLIC + block drivers, buffer cache (`NBUF=16`,
-sleep-on-busy LRU), full FS read layer (`fs/layout.zig`, `fs/balloc.zig`,
-`fs/inode.zig` with `bmap` + `readi`, `fs/dir.zig`, `fs/path.zig` with
-`namei`/`nameiparent`), file table (`NFILE=64`) with per-process `ofile[16]` +
-`cwd`, 7 new syscalls (`getcwd`, `chdir`, `openat`, `close`, `lseek`, `read`,
-`fstat`), and a `mkfs.zig` host tool that builds a 4 MB `fs.img` from a staged
-directory tree. `proc.exec` now resolves the path via `namei` + `readi` into
-a kernel scratch buffer (FS-mode), or via the embedded-blob lookup (single
-/ multi / fork modes) — selected at compile time per kernel variant.
-`e2e-fs` runs `kernel-fs.elf` against `fs.img`: the on-disk `/bin/init` opens
-`/etc/motd`, reads it, writes the contents to fd 1, exits 0. Plan 3.E
-merged: FS write path (`writei` with `bmap` lazy alloc, `iupdate`, `ialloc`,
-`itrunc`, `iput`-on-zero truncate, real `dirlink` + `dirunlink`,
-`fs/fsops.zig` glue), console as fd 0/1/2 with cooked-mode line discipline
-(echo, backspace, `^U`, `^C`, `^D`, line completion), UART RX delivered
-through PLIC IRQ #10 → `uart.isr` → `console.feedByte`, scheduler now
-`wfi`s in its idle window so `cpu.idleSpin` paces `--input` byte delivery
-to match interactive cadence. New syscalls: `mkdirat` (#34), `unlinkat`
-(#35); `openat` extended with `O_CREAT`/`O_TRUNC`/`O_APPEND`; `write` now
-routes any fd through `file.write`. User stdlib lands at
-`src/kernel/user/lib/` (`start.S`, `usys.S`, `ulib.zig`, `uprintf.zig`),
-fed by an `addUserBinary` build helper. Userland: `init` (init_shell:
-fork-exec-sh-wait), `sh` (line/token/redirect/builtins/fork+exec), `ls`,
-`cat`, `echo`, `mkdir`, `rm`. `e2e-shell` runs the canonical scripted
-session against `kernel-fs.elf` + `shell-fs.img`.
-
 **Phase 1 — RISC-V CPU emulator — complete.**
 
 Plans 1.A (RV32I), 1.B (M + A + Zifencei), 1.C (Zicsr + privilege + traps + CLINT + ELF + `--trace` + riscv-tests), and 1.D (monitor + Zig
