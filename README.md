@@ -70,12 +70,21 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build kernel-fork` | Build the Phase 3.C `kernel-fork.elf` (same kernel objects + embedded `init.elf` + `hello.elf`) |
 | `zig build kernel-fs` | Build the Phase 3.D `kernel-fs.elf` (FS-mode kernel; loads `/bin/init` from disk) |
 | `zig build kernel-fs-init` | Build `fs_init.elf` (the on-disk `/bin/init` payload baked into `fs.img`) |
+| `zig build kernel-init-shell` | Build the Phase 3.E `init_shell.elf` (on-disk `/bin/init` for `shell-fs.img`; loops fork-exec-sh-wait) |
+| `zig build kernel-sh` | Build the Phase 3.E `sh.elf` (line/token/redirect/builtins/fork+exec) |
+| `zig build kernel-ls` | Build the Phase 3.E `ls.elf` |
+| `zig build kernel-cat` | Build the Phase 3.E `cat.elf` |
+| `zig build kernel-echo` | Build the Phase 3.E `echo.elf` |
+| `zig build kernel-mkdir` | Build the Phase 3.E `mkdir.elf` |
+| `zig build kernel-rm` | Build the Phase 3.E `rm.elf` |
 | `zig build mkfs` | Build the host-side `mkfs` tool (lays out a 4 MB image: superblock + bitmap + inode table + data blocks) |
 | `zig build fs-img` | Stage `userland/fs/` + `fs_init.elf` and run `mkfs` to produce `zig-out/fs.img` |
+| `zig build shell-fs-img` | Stage `userland/shell-fs/` + every Phase 3.E userland binary and run `mkfs` to produce `zig-out/shell-fs.img` (init_shell at `/bin/init`) |
 | `zig build e2e-kernel` | Run `ccc kernel.elf` and assert stdout matches `hello from u-mode\nticks observed: N\n` with N > 0 (Phase 2 §Definition of done) |
 | `zig build e2e-multiproc-stub` | Run `ccc kernel-multi.elf` and assert stdout contains both `hello from u-mode\n` and `[2] hello from u-mode\n`, plus a `ticks observed: N\n` trailer (Plan 3.B milestone) |
 | `zig build e2e-fork` | Boot `kernel-fork.elf`; `init` forks `/bin/hello`; parent reaps; emulator returns 0 (Plan 3.C milestone) |
 | `zig build e2e-fs` | Boot `kernel-fs.elf` against `fs.img`; on-disk `/bin/init` opens `/etc/motd`, reads it, writes to fd 1, exits 0 (Plan 3.D milestone) |
+| `zig build e2e-shell` | Boot `kernel-fs.elf` against `shell-fs.img` with `--input tests/e2e/shell_input.txt`; assert prompt+command echo for the canonical `ls /bin / echo / cat / rm / exit` session and a clean halt (Plan 3.E milestone) |
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
@@ -128,11 +137,11 @@ to "GitHub Actions" in repo settings (one-time manual step).
 
 ## Status
 
-**Phase 3 Plan D done — bufcache + block driver + FS read path.** Plan 3.A
-merged: PLIC, simple block device, UART RX, `--disk` and `--input` flags,
-real `wfi` idle. Plan 3.B merged: free-list page allocator, `ptable[NPROC=16]`,
-round-robin scheduler with `swtch`, kernel-side ELF32 loader,
-`getpid`/`sbrk`/`yield` syscalls, second embedded user ELF,
+**Phase 3 Plan E done — FS write path + console fd + shell + utilities.**
+Plan 3.A merged: PLIC, simple block device, UART RX, `--disk` and `--input`
+flags, real `wfi` idle. Plan 3.B merged: free-list page allocator,
+`ptable[NPROC=16]`, round-robin scheduler with `swtch`, kernel-side ELF32
+loader, `getpid`/`sbrk`/`yield` syscalls, second embedded user ELF,
 `e2e-multiproc-stub` running PID 1 + PID 2. Plan 3.C merged: `fork` (full
 address-space copy), `execve` (in-place AS rebuild + System-V argv tail),
 `wait4` (sleep on self until zombie child), `exit` (reparent + zombie + wake
@@ -148,7 +157,21 @@ directory tree. `proc.exec` now resolves the path via `namei` + `readi` into
 a kernel scratch buffer (FS-mode), or via the embedded-blob lookup (single
 / multi / fork modes) — selected at compile time per kernel variant.
 `e2e-fs` runs `kernel-fs.elf` against `fs.img`: the on-disk `/bin/init` opens
-`/etc/motd`, reads it, writes the contents to fd 1, exits 0.
+`/etc/motd`, reads it, writes the contents to fd 1, exits 0. Plan 3.E
+merged: FS write path (`writei` with `bmap` lazy alloc, `iupdate`, `ialloc`,
+`itrunc`, `iput`-on-zero truncate, real `dirlink` + `dirunlink`,
+`fs/fsops.zig` glue), console as fd 0/1/2 with cooked-mode line discipline
+(echo, backspace, `^U`, `^C`, `^D`, line completion), UART RX delivered
+through PLIC IRQ #10 → `uart.isr` → `console.feedByte`, scheduler now
+`wfi`s in its idle window so `cpu.idleSpin` paces `--input` byte delivery
+to match interactive cadence. New syscalls: `mkdirat` (#34), `unlinkat`
+(#35); `openat` extended with `O_CREAT`/`O_TRUNC`/`O_APPEND`; `write` now
+routes any fd through `file.write`. User stdlib lands at
+`src/kernel/user/lib/` (`start.S`, `usys.S`, `ulib.zig`, `uprintf.zig`),
+fed by an `addUserBinary` build helper. Userland: `init` (init_shell:
+fork-exec-sh-wait), `sh` (line/token/redirect/builtins/fork+exec), `ls`,
+`cat`, `echo`, `mkdir`, `rm`. `e2e-shell` runs the canonical scripted
+session against `kernel-fs.elf` + `shell-fs.img`.
 
 **Phase 1 — RISC-V CPU emulator — complete.**
 
@@ -257,7 +280,53 @@ space. The on-disk `init` reads `/etc/motd` and writes it to UART:
     hello from phase 3
     ticks observed: 4
 
-Next: Plan 3.E — file write path + console line discipline + shell.
+Plan 3.E (FS write path + console fd + shell + utilities) is merged. The
+filesystem grew a write path: `inode.writei` with `bmap`'s lazy allocation
+(`for_write` flag), `iupdate` (in-memory → on-disk inode flush), `ialloc`
+(scan inode table + initial `iupdate`), `itrunc` (free direct + indirect
+blocks; called from `iput` when ref+nlink hit zero), `dirlink` (real impl
+with empty-slot scan), `dirunlink`, plus an `fs/fsops.zig` create/unlink
+glue. `openat` gained `O_CREAT` / `O_TRUNC` / `O_APPEND`; new syscalls
+`mkdirat` (#34) + `unlinkat` (#35). `console.zig` lands as the fd 0/1/2
+backing — cooked-mode line discipline (per-byte echo, backspace, `^U`
+line-kill, `^C` foreground-proc kill via `proc.kill`, `^D` EOF, `\n` line
+commit + sleeper wakeup), Raw mode arm wired but only exercised by 3.F's
+editor. UART RX is now alive: PLIC source 10 → `uart.isr` reads RBR until
+empty, feeding each byte to `console.feedByte`. The scheduler's idle path
+now executes `wfi` (so `cpu.idleSpin` runs and the emulator's `rx_pump`
+paces `--input` bytes one-per-iteration to interleave with cooked-mode
+echo); `s_kernel_trap_dispatch` advances `sepc` past the `wfi` so the
+SIE window can actually close. A small user stdlib lands at
+`src/kernel/user/lib/` (RV32 `_start` parsing argc/argv, 19 `ecall` stubs,
+`mem*`/`str*` + `O_*` constants, a minimal `printf`). The
+`addUserBinary` build helper packs 7 new userland binaries — `init_shell`
+(loops fork-exec-sh-wait, exits cleanly when sh exits 0), `sh`
+(line/token/redirect/builtins/fork+exec), `ls`, `cat`, `echo`, `mkdir`,
+`rm`. `mkfs.zig` learned `--init` (override `/bin/init`) and walks every
+top-level subdir of `--root` (so `/tmp/` empty-dir staging carries
+through). `shell-fs.img` is the parallel image that bakes init_shell as
+`/bin/init` and ships every utility under `/bin/`. The Phase 3.E milestone
+runs the scripted session through `--input`:
+
+    $ zig build kernel-fs shell-fs-img && zig build run -- --input tests/e2e/shell_input.txt --disk zig-out/shell-fs.img zig-out/bin/kernel-fs.elf
+    $ ls /bin
+    .
+    ..
+    cat
+    init
+    echo
+    sh
+    mkdir
+    ls
+    rm
+    $ echo hi > /tmp/x
+    $ cat /tmp/x
+    hi
+    $ rm /tmp/x
+    $ exit
+    ticks observed: 6
+
+Next: Plan 3.F — `edit` userland + raw-mode editor + `e2e-persist`.
 
 ## Layout
 
@@ -297,15 +366,17 @@ src/
     uart.zig          # kernel-side UART driver
     plic.zig          # kernel-side PLIC driver (setPriority/enable/setThreshold/claim/complete)
     block.zig         # kernel-side block driver (single-outstanding submit + sleep on req; isr wakes)
-    file.zig          # NFILE=64 file table + read/lseek/fstat (single Inode type in 3.D; Console in 3.E)
+    file.zig          # NFILE=64 file table + read/write/lseek/fstat — 3.E adds Console-typed entries for fd 0/1/2
+    console.zig       # 3.E: cooked-mode line discipline (echo + backspace + ^C/^U/^D + \n commit) + Raw arm; backs fd 0/1/2
     fs/
       layout.zig      # on-disk constants (BLOCK_SIZE, NBLOCKS, NINODES, SuperBlock, DiskInode, DirEntry)
       bufcache.zig    # NBUF=16 LRU buffer cache with sleep-on-busy + bget/brelse/bread/bwrite
-      balloc.zig      # block bitmap (alloc/free; write-side reserved for 3.E)
-      inode.zig       # NINODE=32 in-memory inode cache + iget/iput/ilock/iunlock + bmap + readi
-      dir.zig         # DirEntry record + dirlookup + dirlink stub (3.E)
+      balloc.zig      # block bitmap (alloc/free; write-side wired in 3.E)
+      inode.zig       # NINODE=32 in-memory inode cache + iget/iput/ilock/iunlock + bmap (lazy alloc on for_write) + readi/writei + iupdate + ialloc + itrunc
+      dir.zig         # DirEntry record + dirlookup + dirlink + dirunlink (3.E)
       path.zig        # namei + nameiparent (root for absolute, cur.cwd for relative)
-    mkfs.zig          # host-side tool: walks --root + --bin into a 4 MB image (super + bitmap + inodes + data)
+      fsops.zig       # 3.E: create + unlink glue used by sysOpenat (O_CREAT) / sysMkdirat / sysUnlinkat
+    mkfs.zig          # host-side tool: walks --root subdirs + --bin into a 4 MB image; --init overrides /bin/init
     linker.ld         # kernel.elf load layout
     user/
       userprog.zig    # PID 1 user payload (embedded into kernel.elf)
@@ -313,11 +384,28 @@ src/
       init.zig        # init userland for kernel-fork.elf (fork+exec+wait)
       hello.zig       # hello userland for kernel-fork.elf (write+exit)
       fs_init.zig     # on-disk /bin/init for kernel-fs.elf (open /etc/motd, read, write fd 1, exit)
+      init_shell.zig  # 3.E: on-disk /bin/init for shell-fs.img (loops fork-exec-sh-wait; exits cleanly on sh status 0)
+      sh.zig          # 3.E: shell — line read, token split, redirect (< > >>), builtins (cd / pwd / exit), fork+exec
+      ls.zig          # 3.E: directory listing + Stat dispatch
+      cat.zig         # 3.E: read fd or args, write fd 1
+      echo.zig        # 3.E: print joined args + \n
+      mkdir.zig       # 3.E: mkdirat for each arg
+      rm.zig          # 3.E: unlinkat for each arg
+      lib/
+        start.S       # 3.E: RV32 _start — parses argc/argv from sp tail, calls main, ecall exit
+        usys.S        # 3.E: 19 syscall stubs (li a7; ecall; ret)
+        ulib.zig      # 3.E: mem*/str* + syscall externs + Stat / O_* constants
+        uprintf.zig   # 3.E: minimal printf(fd, fmt, args)
       user_linker.ld  # user-side linker script
     userland/
       fs/
         etc/
           motd        # staged content for fs.img: "hello from phase 3\n"
+      shell-fs/        # 3.E: staging tree for shell-fs.img (init_shell + utilities go to /bin via mkfs)
+        etc/
+          motd        # same 19-byte content as userland/fs/etc/motd
+        tmp/
+          .gitkeep    # carrier for empty /tmp/ in git; mkfs skips dot-files
 demo/
   web_main.zig        # freestanding wasm entry — runStart/runStep/setMtimeNs/pushInput/consumeOutput, fixed 2 MB ELF buffer (programs fetched at runtime, not embedded)
 programs/
@@ -332,7 +420,10 @@ tests/
     multiproc.zig     # Plan 3.B verifier (PID 1 + PID 2 interleaving)
     fork.zig          # Plan 3.C verifier (fork/exec/wait/exit)
     fs.zig            # Plan 3.D verifier (init opens /etc/motd, writes contents to fd 1)
+    shell.zig         # Plan 3.E verifier (scripted ls/echo/cat/rm/exit session)
+    shell_input.txt   # 51-byte canonical session piped via --input
     snake.zig         # snake e2e verifier (deterministic input → GAME OVER)
+    snake_input.txt   # snake e2e input fixture
   fixtures/           # tiny hand-crafted ELF used only by elf.zig tests
   riscv-tests/        # upstream submodule: riscv-software-src/riscv-tests
   riscv-tests-shim/   # weak handlers + riscv_test.h overrides for the shared test env
