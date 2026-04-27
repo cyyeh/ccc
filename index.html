@@ -345,8 +345,8 @@
       <div class="toc-row">
         <div class="toc-num">3</div>
         <div class="toc-body">
-          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a + 3.b + 3.c + 3.d done</span></div>
-          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plans 3.A + 3.B + 3.C + 3.D landed:</strong> emulator PLIC + block + UART RX, the kernel-side <code class="inline">ptable</code> / scheduler / <code class="inline">swtch</code> / ELF loader, the full Unix-shaped <code class="inline">fork</code> / <code class="inline">exec</code> / <code class="inline">wait</code> / <code class="inline">exit</code> / kill-flag lifecycle, and a real read-side filesystem — bufcache + inode cache + <code class="inline">namei</code>, with <code class="inline">/bin/init</code> loaded from disk via <code class="inline">openat</code>/<code class="inline">read</code>.</div>
+          <div class="toc-head">Multi-process OS + shell <span class="toc-status active">in progress · 3.a + 3.b + 3.c + 3.d + 3.e done</span></div>
+          <div class="toc-sub">Process scheduler · fork/exec · block device · filesystem · tiny shell, <code class="inline">ls</code>/<code class="inline">cat</code>, an editor. <strong>Plans 3.A + 3.B + 3.C + 3.D + 3.E landed:</strong> emulator PLIC + block + UART RX, the kernel-side <code class="inline">ptable</code> / scheduler / <code class="inline">swtch</code> / ELF loader, the full Unix-shaped <code class="inline">fork</code> / <code class="inline">exec</code> / <code class="inline">wait</code> / <code class="inline">exit</code> / kill-flag lifecycle, the read-side filesystem (bufcache + inode cache + <code class="inline">namei</code> · <code class="inline">/bin/init</code> from disk), and finally the <strong>write side + console + shell</strong> — <code class="inline">writei</code> / <code class="inline">ialloc</code> / <code class="inline">itrunc</code> / <code class="inline">dirlink</code>, cooked-mode line discipline on fd 0/1/2, and a real <code class="inline">sh</code> driving <code class="inline">ls</code> / <code class="inline">cat</code> / <code class="inline">echo</code> / <code class="inline">mkdir</code> / <code class="inline">rm</code>.</div>
         </div>
       </div>
       <div class="toc-row">
@@ -371,7 +371,7 @@
         </div>
       </div>
     </div>
-    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A, 3.B, 3.C, and 3.D</strong> — the emulator-side substrate, the kernel-side multi-process foundation, the Unix-shaped process lifecycle, and the read-side filesystem that finally loads <code class="inline">/bin/init</code> from disk.</div>
+    <div class="caption">This deck walks <strong>Phase 1</strong> and <strong>Phase 2</strong> in full, plus <strong>Plans 3.A, 3.B, 3.C, 3.D, and 3.E</strong> — the emulator-side substrate, the kernel-side multi-process foundation, the Unix-shaped process lifecycle, the read-side filesystem that finally loads <code class="inline">/bin/init</code> from disk, and the write-side + console + shell that gives the OS its first interactive prompt.</div>
   </section>
 
   <!-- 3: Chapter 1.A · the hart -->
@@ -1441,11 +1441,139 @@ read stack
     <div class="caption"><strong>e2e-fs:</strong> <code class="inline">ccc --disk fs.img kernel-fs.elf</code> → stdout contains <code class="inline">hello from phase 3\n</code> (motd content) + the canonical PID-1 <code class="inline">ticks observed: N\n</code> trailer; exit 0. Getting here surfaced nine subtle bugs along the way — most memorably, <code class="inline">file.read</code>'s 4 KB stack-allocated <code class="inline">kbuf</code> overflowing the per-process kernel stack into the adjacent scheduler stack page (<code class="inline">var x = undefined</code>'s 0xaa fill made the corruption pattern unmissable). Hoisted to a <code class="inline">.bss</code> static; problem solved.</div>
   </section>
 
-  <!-- 35: Epilogue · where we are -->
+  <!-- 35: Chapter 3.E · FS write path -->
+  <section data-label="Ch 3.E · FS write path">
+    <div class="slide-label">chapter 3.e · the write side</div>
+    <h2 class="slide-title">From read-only to mutable: <span class="accent"><code>writei</code> + <code>ialloc</code> + <code>itrunc</code></span> + a real <code>dirlink</code></h2>
+    <p class="plain">Plan 3.D shipped the read side; 3.E completes the FS by adding the write side. <code>inode.writei</code> mirrors <code>readi</code> but flips a <code>for_write</code> flag through <code>bmap</code> so missing direct/indirect blocks get lazily allocated via <code>balloc</code>. <code>iupdate</code> flushes the in-memory <code>dinode</code> back to its inode-table block. <code>ialloc</code> claims the first free inode slot. <code>itrunc</code> frees direct + indirect blocks, called from <code>iput</code> when ref+nlink hit zero. <code>dirlink</code> stops being a stub — it scans for an empty slot or appends — and a new <code>dirunlink</code> zeros the directory entry. A new <code>fs/fsops.zig</code> wraps the create + unlink pipelines so the syscall layer stays thin.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="c">// fs/inode.zig — bmap with for_write hint</span>
+<span class="k">fn</span> bmap(ip: *InMemInode, bn: u32,
+        for_write: <span class="k">bool</span>) ?u32 {
+    <span class="k">if</span> (bn &lt; NDIRECT) {
+        <span class="k">var</span> a = ip.dinode.addrs[bn];
+        <span class="k">if</span> (a == 0 <span class="k">and</span> for_write) {
+            a = balloc.alloc() <span class="k">orelse return null</span>;
+            ip.dinode.addrs[bn] = a;
+            iupdate(ip); <span class="c">// flush</span>
+        }
+        <span class="k">return if</span> (a == 0) <span class="k">null else</span> a;
+    }
+    <span class="c">// indirect: same shape, one extra bread</span>
+    ...
+}
+
+<span class="c">// fsops.zig — the create pipeline</span>
+<span class="k">pub fn</span> create(path: []<span class="k">const</span> u8,
+                 t: InodeType) ?*InMemInode {
+    <span class="k">const</span> parent = nameiparent(path) <span class="k">orelse</span> ...;
+    <span class="k">const</span> name = lastComponent(path);
+    <span class="k">if</span> (dirlookup(parent, name)) |existing|
+        <span class="k">return</span> existing; <span class="c">// idempotent</span>
+    <span class="k">const</span> ip = ialloc(t) <span class="k">orelse return null</span>;
+    dirlink(parent, name, ip.inum);
+    <span class="k">return</span> ip;
+}</pre>
+      <div class="panel">
+        <h4>New + extended syscalls</h4>
+        <p style="font-size: 22px; line-height: 1.55;">
+          <strong>New:</strong> <code class="inline">mkdirat</code> (#34) · <code class="inline">unlinkat</code> (#35).<br>
+          <strong>Extended:</strong> <code class="inline">openat</code> with <code class="inline">O_CREAT</code> / <code class="inline">O_TRUNC</code> / <code class="inline">O_APPEND</code>.<br>
+          <strong>Refactored:</strong> <code class="inline">sysWrite</code> stops short-circuiting straight to UART — it routes any fd through <code class="inline">file.write</code>, which dispatches to <code class="inline">console.write</code> (for the new Console-typed entries on fd 0/1/2) or <code class="inline">writei</code> (for inode-backed fds).<br><br>
+          <span style="color: var(--muted);">The <code class="inline">file.write</code> reroute means every previous build that hadn't wired Console fds suddenly needs them — a regression caught by <code class="inline">e2e-kernel</code> + <code class="inline">e2e-multiproc-stub</code> going silent until <code class="inline">kmain</code>'s Phase 2 branch grew the same 3-line console install the FS branch already had.</span>
+        </p>
+      </div>
+    </div>
+    <div class="caption"><code class="inline">iput</code>-on-zero is the last piece: when a file's ref + nlink hit zero, <code class="inline">iput</code> calls <code class="inline">itrunc</code>, frees the inode, and writes a zero <code class="inline">type</code> back through <code class="inline">iupdate</code>. Combined with <code class="inline">unlinkat</code>'s <code>dirunlink + nlink--</code>, an <code class="inline">rm /tmp/x</code> actually returns the data blocks + inode slot to the pool.</div>
+  </section>
+
+  <!-- 36: Chapter 3.E · console + the WFI gotcha -->
+  <section data-label="Ch 3.E · console + WFI">
+    <div class="slide-label">chapter 3.e · the input side</div>
+    <h2 class="slide-title"><span class="accent">Cooked-mode line discipline</span> on fd 0/1/2 — and the WFI loop it surfaced</h2>
+    <p class="plain"><code>console.zig</code> is the new fd 0/1/2 backing. UART RX (PLIC source #10) drives <code>uart.isr</code>, which drains the FIFO via <code>console.feedByte</code>: cooked mode echoes the byte, handles backspace / <code>^U</code> line-kill / <code>^C</code>-via-<code>proc.kill</code> / <code>^D</code> EOF, and on <code>\n</code> commits the line + wakes any sleepers. Raw mode is wired (the <code>console_set_mode</code> syscall lands real this time) but only exercised by 3.F's editor. The trap dispatcher gains an <code>IRQ_UART_RX = 10</code> arm that mirrors the block IRQ shape — claim → <code>uart.isr</code> → complete.</p>
+    <div class="two-col">
+      <pre class="flow" style="margin: 0; font-size: 20px; line-height: 1.5;">the input loop · why WFI matters
+
+ host stdin
+   ─► <span class="dim">--input</span> bytes (one keystroke at a time)
+       ─► cpu.idleSpin (only fires on WFI)
+           rx_pump.drainOne ─► uart.pushRx
+               <span class="arrow">PLIC src 10</span>
+                 ─► s_trap_dispatch (cause 9)
+                     ─► uart.isr ─► console.feedByte
+                         echo ─► input.buf[]
+                         <span class="dim">on \n:</span> wakeup(&amp;input.r)
+       <span class="arrow">sh resumes</span> in console.read
+
+scheduler idle path  <span class="dim">(3.D shape)</span>
+   csrs SIE          <span class="dim">// open SIE briefly</span>
+   csrc SIE          <span class="dim">// close it</span>
+
+scheduler idle path  <span class="dim">(3.E)</span>
+   csrs SIE
+   <span class="arrow">wfi</span>            <span class="dim">// idleSpin runs</span>
+   csrc SIE</pre>
+      <div class="panel">
+        <h4>The fixed-point loop</h4>
+        <p style="font-size: 22px; line-height: 1.55;">
+          Adding <code class="inline">wfi</code> broke <code class="inline">e2e-fs</code> hard. <code class="inline">cpu.step</code>'s prologue raises any pending S-trap <em>before</em> the next instruction is fetched. With <code class="inline">SIE = 1</code>, the pending PLIC IRQ traps before <code class="inline">wfi</code> is fetched; <code class="inline">sret</code> returns to <code class="inline">wfi</code> (<code class="inline">sepc = wfi_addr</code>); the same trap fires again. Forever.<br><br>
+          <strong>Two fixes broke the loop:</strong> <code class="inline">s_kernel_trap_dispatch</code> advances <code class="inline">sepc</code> by 4 (the trap site is always the 4-byte WFI), and <code class="inline">idleSpin</code> drains <em>one byte per iteration</em> AFTER checking interrupts (so disk-I/O sleeps, where a block IRQ is already pending, don't leak <code class="inline">--input</code> bytes into the FIFO mid-boot — drain only happens when the guest is truly idle).
+        </p>
+      </div>
+    </div>
+    <div class="caption">The byte-at-a-time pacing matters: bulk-draining all 51 input bytes would emit every cooked-mode echo before <code class="inline">sh</code> can print its second-and-subsequent prompts. One byte per WFI iteration mirrors interactive-tty cadence, and the harness sees <code class="inline">$ ls /bin\n$ echo hi &gt; /tmp/x\n…</code> in the right order.</div>
+  </section>
+
+  <!-- 37: Chapter 3.E · shell + the milestone -->
+  <section data-label="Ch 3.E · shell + milestone">
+    <div class="slide-label">chapter 3.e · the milestone</div>
+    <h2 class="slide-title">An interactive prompt: <code>init_shell</code> forks <code>sh</code>, <span class="accent"><code>sh</code> forks <code>cat</code></span></h2>
+    <p class="plain">A small userland stdlib lands at <code>src/kernel/user/lib/</code>: <code>start.S</code> parses argc/argv from the System-V tail and calls <code>main</code>; <code>usys.S</code> emits 19 syscall stubs (<code>li a7; ecall; ret</code>); <code>ulib.zig</code> bundles <code>mem*</code>/<code>str*</code> + <code>Stat</code> + <code>O_*</code> constants; <code>uprintf.zig</code> is a 90-line <code>printf(fd, fmt, args)</code>. An <code>addUserBinary</code> build helper bolts these onto every userland binary identically. Seven binaries ship: <code>init_shell</code> (loops fork-exec-sh-wait, exits cleanly when sh status is 0), <code>sh</code> (line read + token split + redirect <code>&lt;</code>/<code>&gt;</code>/<code>&gt;&gt;</code> + builtins <code>cd</code>/<code>pwd</code>/<code>exit</code> + fork+exec, ~250 LoC), and the four utilities <code>ls</code> / <code>cat</code> / <code>echo</code> / <code>mkdir</code> / <code>rm</code>.</p>
+    <div class="two-col">
+      <pre class="code" style="margin: 0; font-size: 20px; padding: 18px 22px;"><span class="c">// kernel/user/sh.zig — main loop</span>
+<span class="k">export fn</span> main(argc: u32, argv: [*]<span class="k">const</span> [*:0]<span class="k">const</span> u8) i32 {
+    <span class="k">while</span> (<span class="k">true</span>) {
+        <span class="k">const</span> prompt: [2]u8 = .{ '$', ' ' };
+        _ = ulib.write(1, &amp;prompt, 2);
+
+        <span class="k">const</span> got = ulib.getline(0, &amp;line_buf, LINE_MAX);
+        <span class="k">if</span> (got &lt;= 0) <span class="k">return</span> 0;
+
+        <span class="k">const</span> parsed = parseLine(&amp;line_buf, got);
+        runCommand(&amp;parsed); <span class="c">// fork+exec or builtin</span>
+    }
+}</pre>
+      <pre class="flow" style="margin: 0; font-size: 20px; line-height: 1.5;">milestone session
+
+ $ <span class="dim">ccc --input shell_input.txt \</span>
+       <span class="dim">--disk shell-fs.img kernel-fs.elf</span>
+
+ $ ls /bin
+ .
+ ..
+ cat
+ init
+ echo
+ sh
+ mkdir
+ ls
+ rm
+ $ echo hi &gt; /tmp/x
+ $ cat /tmp/x
+ hi
+ $ rm /tmp/x
+ $ exit
+ ticks observed: 6</pre>
+    </div>
+    <div class="caption"><code class="inline">shell-fs.img</code> is the parallel image baking <code class="inline">init_shell</code> as <code class="inline">/bin/init</code> + every utility under <code class="inline">/bin/</code>. <code class="inline">mkfs.zig</code> learned <code class="inline">--init</code> (override) and walks every top-level subdir of <code class="inline">--root</code> (so the empty <code class="inline">/tmp/</code> staging carries through). The <code class="inline">e2e-shell</code> harness pipes the canonical session through <code class="inline">--input</code> and asserts each prompt + command echo + the <code class="inline">hi</code> round-trip + the clean halt. <strong>This is our first interactive shell.</strong></div>
+  </section>
+
+  <!-- 38: Epilogue · where we are -->
   <section data-label="Where we are">
     <div class="slide-label">epilogue · where we are</div>
     <h2 class="slide-title">Phase 1 · <span class="accent">complete</span>. Phase 2 · <span class="accent">complete</span>. Phase 3 · <span class="accent">underway</span>.</h2>
-    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> landed the emulator-side hardware (PLIC, block device, UART RX); <strong>Plan 3.B</strong> landed the kernel-side multi-process foundation (free-list <code>page_alloc</code>, <code>ptable[16]</code>, round-robin scheduler with <code>swtch</code>, kernel-side ELF loader); <strong>Plan 3.C</strong> landed the full Unix-shaped process lifecycle — <code>fork</code>, <code>execve</code>, <code>wait4</code>, <code>exit</code>, and a kill-flag — with <code>init</code> forking <code>/bin/hello</code> end-to-end on real ELFs; <strong>Plan 3.D</strong> just landed the read-side filesystem — bufcache, block driver with sleep-on-IRQ, inode cache + <code>bmap</code> + <code>readi</code>, <code>namei</code>, file table, seven new syscalls, and a host-side <code>mkfs</code> that builds a 4 MB image. <code>/bin/init</code> is no longer embedded — it loads from disk.</p>
+    <p class="plain">Phase 1 asked: can we run <code>hello world</code> end-to-end on an emulator we wrote? Yes. Phase 2 asked: can we host a real OS kernel? Also yes — three privilege levels, Sv32 paging, trap delegation, async timers, a one-process scheduler stub, and a user program that prints how many times the timer fired while it ran. Phase 3 is a multi-process OS with a filesystem and a shell — <strong>Plan 3.A</strong> landed the emulator-side hardware (PLIC, block device, UART RX); <strong>Plan 3.B</strong> landed the kernel-side multi-process foundation (free-list <code>page_alloc</code>, <code>ptable[16]</code>, round-robin scheduler with <code>swtch</code>, kernel-side ELF loader); <strong>Plan 3.C</strong> landed the full Unix-shaped process lifecycle — <code>fork</code>, <code>execve</code>, <code>wait4</code>, <code>exit</code>, and a kill-flag — with <code>init</code> forking <code>/bin/hello</code> end-to-end on real ELFs; <strong>Plan 3.D</strong> landed the read-side filesystem — bufcache, block driver with sleep-on-IRQ, inode cache + <code>bmap</code> + <code>readi</code>, <code>namei</code>, file table, seven new syscalls, and a host-side <code>mkfs</code> that builds a 4 MB image, with <code>/bin/init</code> loaded from disk; <strong>Plan 3.E</strong> just landed the write side + console + shell — <code>writei</code>/<code>ialloc</code>/<code>itrunc</code>/<code>dirlink</code>, cooked-mode line discipline on fd 0/1/2 driven by UART RX through PLIC IRQ #10, a small userland stdlib, and seven user binaries including a real <code>sh</code>. The OS finally has an interactive prompt.</p>
     <div class="two-col" style="grid-template-columns: 1.25fr 1fr; gap: 64px;">
       <div class="check-list">
         <div class="row">
@@ -1496,12 +1624,16 @@ read stack
           <div class="head">✓ 3.D · bufcache + block + FS read</div>
           <div class="sub">PLIC + block kernel drivers · NBUF=16 LRU bufcache (sleep-on-busy) · NINODE=32 inode cache + <code class="inline">bmap</code>/<code class="inline">readi</code> · <code class="inline">namei</code> · <code class="inline">NFILE=64</code> file table + per-proc <code class="inline">ofile[16]</code>/<code class="inline">cwd</code> · 7 new syscalls (<code class="inline">openat</code>/<code class="inline">close</code>/<code class="inline">read</code>/<code class="inline">lseek</code>/<code class="inline">fstat</code>/<code class="inline">chdir</code>/<code class="inline">getcwd</code>) · <code class="inline">mkfs</code> + 4 MB <code class="inline">fs.img</code> · separate kernel trap vector for the scheduler SIE window · <code class="inline">/bin/init</code> from disk · <code class="inline">e2e-fs</code></div>
         </div>
+        <div class="row">
+          <div class="head">✓ 3.E · FS write + console + shell</div>
+          <div class="sub"><code class="inline">writei</code>/<code class="inline">bmap</code> lazy alloc · <code class="inline">iupdate</code>/<code class="inline">ialloc</code>/<code class="inline">itrunc</code> · <code class="inline">dirlink</code>/<code class="inline">dirunlink</code> · <code class="inline">fsops.create</code>/<code class="inline">unlink</code> · <code class="inline">mkdirat</code>/<code class="inline">unlinkat</code> + <code class="inline">openat</code> <code class="inline">O_CREAT</code>/<code class="inline">O_TRUNC</code>/<code class="inline">O_APPEND</code> · console fd 0/1/2 cooked-mode line discipline · UART RX via PLIC #10 · scheduler WFI + <code class="inline">sepc</code>+4 + paced <code class="inline">rx_pump</code> · userland stdlib (<code class="inline">start.S</code>/<code class="inline">usys.S</code>/<code class="inline">ulib</code>/<code class="inline">uprintf</code>) · <code class="inline">init_shell</code>/<code class="inline">sh</code>/<code class="inline">ls</code>/<code class="inline">cat</code>/<code class="inline">echo</code>/<code class="inline">mkdir</code>/<code class="inline">rm</code> · <code class="inline">shell-fs.img</code> · <code class="inline">e2e-shell</code></div>
+        </div>
       </div>
       <div class="panel" style="align-self: center;">
-        <h4>Next · plan 3.e</h4>
+        <h4>Next · plan 3.f</h4>
         <p style="font-size: 28px; line-height: 1.5;">
-          Write side + console + shell.<br><br>
-          File <code class="inline">write</code>/<code class="inline">mkdirat</code>/<code class="inline">unlinkat</code> · console line discipline (<code class="inline">^C</code>, raw mode) · userland stdlib (<code class="inline">start.S</code>, <code class="inline">usys.S</code>, <code class="inline">ulib</code>, <code class="inline">uprintf</code>) · a tiny shell with <code class="inline">ls</code>/<code class="inline">cat</code>/<code class="inline">echo</code>. Milestone: a real interactive prompt.
+          Editor + persistence.<br><br>
+          A cursor-moving <code class="inline">edit</code> binary that exercises <strong>raw-mode</strong> console (already wired in 3.E) with ANSI escapes, <code class="inline">^S</code> save / <code class="inline">^X</code> exit through the new write path. Plus <code class="inline">e2e-persist</code> — re-run against the same <code class="inline">fs.img</code> and observe writes survived.
         </p>
       </div>
     </div>
