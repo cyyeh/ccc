@@ -1,3 +1,6 @@
 edit /etc/motd
 [C[CYcat /etc/motd
+edit /tmp/new.txt
+new
+cat /tmp/new.txt
 exit

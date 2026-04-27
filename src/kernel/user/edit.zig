@@ -15,9 +15,9 @@
 //   0x18      ^X — exit (restore cooked mode, exit 0)
 //   printable insert at cursor
 //
-// Files larger than 16 KB are truncated silently. Saved files are
-// rewritten in full via openat(O_WRONLY|O_TRUNC|O_CREAT) — consistent
-// with editors of this shape.
+// Files larger than 16 KB are truncated silently. Missing paths open
+// as an empty new-file buffer (vi/nano-style); ^S creates the file
+// via openat(O_WRONLY|O_CREAT|O_TRUNC).
 
 const ulib = @import("lib/ulib.zig");
 const uprintf = @import("lib/uprintf.zig");
@@ -232,19 +232,20 @@ export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
     path_buf[i] = 0;
     const path_z: [*:0]const u8 = @ptrCast(&path_buf[0]);
 
-    // Load file (silently truncate if > CONTENT_CAP).
+    // Load file if it exists; otherwise start with an empty buffer.
+    // ^S writes via openat(O_WRONLY|O_CREAT|O_TRUNC) so a missing path
+    // is created on first save (vi/nano-style new-file behavior).
+    // Files larger than CONTENT_CAP are silently truncated on load.
     const fd = ulib.openat(0, path_z, ulib.O_RDONLY);
-    if (fd < 0) {
-        uprintf.printf(2, "edit: cannot open %s\n", &.{.{ .s = path_z }});
-        return 1;
-    }
     var off: u32 = 0;
-    while (off < CONTENT_CAP) {
-        const n = ulib.read(@intCast(fd), content[off..].ptr, CONTENT_CAP - off);
-        if (n <= 0) break;
-        off += @intCast(n);
+    if (fd >= 0) {
+        while (off < CONTENT_CAP) {
+            const n = ulib.read(@intCast(fd), content[off..].ptr, CONTENT_CAP - off);
+            if (n <= 0) break;
+            off += @intCast(n);
+        }
+        _ = ulib.close(@intCast(fd));
     }
-    _ = ulib.close(@intCast(fd));
     content_len = off;
     cursor = 0;
 
