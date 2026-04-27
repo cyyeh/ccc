@@ -16,10 +16,33 @@
     <div class="program-selector">
       <label for="program-select">program:</label>
       <select id="program-select">
-        <option value="1" selected>snake.elf</option>
+        <option value="2" selected>shell.elf</option>
+        <option value="1">snake.elf</option>
         <option value="0">hello.elf</option>
       </select>
       <span class="program-hint">(click the terminal to play)</span>
+    </div>
+
+    <div class="program-instructions" id="shell-instructions">
+      <div class="instructions-row">
+        <strong>shell:</strong>
+        type a command and press <code>Enter</code> · try
+        <code>ls /bin</code> ·
+        <code>cat /etc/motd</code> ·
+        <code>echo hi &gt; /tmp/x</code> ·
+        <code>edit /etc/motd</code> ·
+        <code>^C</code> cancel ·
+        <code>exit</code> to halt
+      </div>
+      <div class="instructions-row">
+        <strong>what's running:</strong>
+        a from-scratch RV32 kernel (M-mode boot shim → S-mode kernel → cooked-mode console
+        → fork/exec → on-disk shell + utilities) booted from <code>shell-fs.img</code>
+        — the same binary that runs on the CLI via <code>zig build kernel-fs</code>.
+      </div>
+      <div class="device-warning">
+        ⚠ requires a physical keyboard — desktop or laptop only. Mobile and tablet devices can't drive per-byte input.
+      </div>
     </div>
 
     <div class="program-instructions" id="snake-instructions">
