@@ -33,11 +33,12 @@ ship with the page:
    `wasm32-freestanding`, installed as `zig-out/web/ccc.wasm` (~38 KB).
 2. `web_main.zig` exposes a chunked-step API rather than a blocking
    `run()`:
-   - `runStart(elf_len, trace) -> i32`, `runStep(max_instructions) -> i32`
+   - `runStart(elf_len, trace, disk_len) -> i32`, `runStep(max_instructions) -> i32`
    - `setMtimeNs(ns) -> void`, `pushInput(byte) -> void`
    - `outputPtr` / `consumeOutput` for UART output
    - `tracePtr` / `traceLen` for the optional instruction trace
-   - `elfBufferPtr` / `elfBufferCap` for a fixed in-wasm load buffer
+   - `elfBufferPtr` / `elfBufferCap` for the in-wasm ELF load buffer
+   - `diskBufferPtr` / `diskBufferCap` for the optional disk-image load buffer
 3. `runner.js` is a Web Worker that fetches `ccc.wasm` and the
    selected ELF on demand, copies the ELF bytes into the wasm load
    buffer, and drives `runStep()` in 50 000-instruction chunks via
@@ -60,7 +61,7 @@ takes an empty import object. The browser is the RISC-V machine.
 ## Local development
 
 ```sh
-./scripts/stage-web.sh                    # build + copy ccc.wasm + hello.elf + snake.elf into web/
+./scripts/stage-web.sh                    # build + copy all five wasm/ELF/disk artifacts into web/
 python3 -m http.server -d . 8000          # any static server works
 open http://localhost:8000/web/
 ```
