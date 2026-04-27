@@ -32,6 +32,20 @@ export class Ansi {
     }
   }
 
+  // Move cursor down one row. If we're already at the bottom row, scroll
+  // the screen up by one line: drop row 0, push a blank row at the bottom.
+  // Used by both \n in the input stream and any cursor positioning that
+  // would otherwise place the cursor past the last row.
+  _lineFeed() {
+    if (this.row >= this.H - 1) {
+      this.screen.shift();
+      this.screen.push(new Array(this.W).fill(" "));
+      this.row = this.H - 1;
+    } else {
+      this.row += 1;
+    }
+  }
+
   feed(bytes) {
     for (const b of bytes) this._byte(b);
   }
@@ -39,7 +53,7 @@ export class Ansi {
   _byte(b) {
     if (this.state === "GROUND") {
       if (b === 0x1b) { this.state = "ESC"; return; }
-      if (b === 0x0a) { this.row = Math.min(this.H - 1, this.row + 1); return; }
+      if (b === 0x0a) { this._lineFeed(); return; }
       if (b === 0x0d) { this.col = 0; return; }
       if (b < 0x20)   return; // other control: ignore
       if (b >= 0xC0 && b <= 0xF7) { this._utf8Start(b); return; }
