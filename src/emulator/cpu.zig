@@ -270,11 +270,23 @@ pub const Cpu = struct {
                 self.memory.block.pending_irq = false;
                 self.memory.block.last_op = null;
             }
+            // Take any immediately-deliverable interrupt before draining
+            // input. This covers the just-asserted block IRQ as well as
+            // a pending timer SSI. Returning early means we DON'T drain
+            // `--input` bytes during disk-I/O phases — drain happens
+            // only when the guest has no other work pending (e.g., the
+            // shell prompt is waiting in console.read).
+            if (check_interrupt(self)) return;
             // Drain host stdin if a pump is configured (Task 16 wires this).
+            // One byte per iteration — a busy-polling guest observes each
+            // `--input` byte as a separate keystroke, with the cooked-mode
+            // console echoing each byte before the next arrives. Bulk
+            // drains would emit every echo at once, racing the shell's
+            // prompt printing.
             if (self.memory.uart.rx_pump) |pump| {
-                pump.drainAvailable(self.memory.io, self.memory.uart);
+                pump.drainOne(self.memory.io, self.memory.uart);
             }
-            // Did we just get something interrupt-worthy?
+            // Fire any UART-RX-induced trap from the just-pushed byte.
             if (check_interrupt(self)) return;
 
             if (monotonicNs() - start > max_ns) return;
@@ -540,8 +552,15 @@ fn cpuRig() !*CpuRig {
     rig.plic = plic_dev.Plic.init();
     rig.block = block_dev_t.Block.init();
     rig.mem = try Memory.init(
-        std.testing.allocator, &rig.halt, &rig.uart, &rig.clint, &rig.plic, &rig.block,
-        std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator,
+        &rig.halt,
+        &rig.uart,
+        &rig.clint,
+        &rig.plic,
+        &rig.block,
+        std.testing.io,
+        null,
+        mem_mod.RAM_SIZE_DEFAULT,
     );
     rig.cpu = Cpu.init(&rig.mem, mem_mod.RAM_BASE);
     return rig;
@@ -679,7 +698,15 @@ test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
     var plic = plic_dev.Plic.init();
     var block = @import("devices/block.zig").Block.init();
     var mem = try Memory.init(
-        std.testing.allocator, &halt, &uart, &clint, &plic, &block, std.testing.io, null, mem_mod.RAM_SIZE_DEFAULT,
+        std.testing.allocator,
+        &halt,
+        &uart,
+        &clint,
+        &plic,
+        &block,
+        std.testing.io,
+        null,
+        mem_mod.RAM_SIZE_DEFAULT,
     );
     defer mem.deinit();
 
@@ -765,13 +792,17 @@ test "integration: CLINT → M MTI ISR → mip.SSIP → S SSI ISR end-to-end" {
     // Step through reset, then drop into U, then let CLINT fire.
     var i: u32 = 0;
     while (i < 30) : (i += 1) {
-        cpu.step() catch |e| switch (e) { error.Halt, error.FatalTrap => break };
+        cpu.step() catch |e| switch (e) {
+            error.Halt, error.FatalTrap => break,
+        };
     }
     // Now advance the wall clock so MTIP fires at the next boundary.
     clint_dev.fixture_clock_ns = 20_000; // mtime = 200, mtimecmp = 100 → pending
     i = 0;
     while (i < 200) : (i += 1) {
-        cpu.step() catch |e| switch (e) { error.Halt, error.FatalTrap => break };
+        cpu.step() catch |e| switch (e) {
+            error.Halt, error.FatalTrap => break,
+        };
         const sentinel = try mem.loadWordPhysical(RAM_BASE + 0x800);
         if (sentinel == 1) break;
     }
@@ -800,10 +831,10 @@ test "WFI returns promptly when a deliverable interrupt arrives during idle" {
     defer rig.deinit();
 
     // Configure delegation + enable so SEIP delivers to S.
-    rig.cpu.privilege = .U;                              // U < S → trap deliverable regardless of sstatus.SIE
+    rig.cpu.privilege = .U; // U < S → trap deliverable regardless of sstatus.SIE
     rig.cpu.csr.stvec = 0x8000_0500;
-    rig.cpu.csr.mideleg = 1 << 9;                        // delegate SEIP to S
-    rig.cpu.csr.mie = 1 << 9;                            // SEIE
+    rig.cpu.csr.mideleg = 1 << 9; // delegate SEIP to S
+    rig.cpu.csr.mie = 1 << 9; // SEIE
     // PLIC: src 1 priority 1, enabled, threshold 0.
     try rig.cpu.memory.plic.writeByte(0x0004, 1);
     try rig.cpu.memory.plic.writeByte(0x2080, 0x02);
