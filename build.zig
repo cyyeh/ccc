@@ -486,6 +486,11 @@ pub fn build(b: *std.Build) void {
     const kernel_sh_step = b.step("kernel-sh", "Build sh.elf (Phase 3.E)");
     kernel_sh_step.dependOn(&install_sh.step);
 
+    const edit_exe = addUserBinary(b, "edit", "src/kernel/user/edit.zig", rv_target, .ReleaseSmall);
+    const install_edit = b.addInstallFile(edit_exe.getEmittedBin(), "edit.elf");
+    const kernel_edit_step = b.step("kernel-edit", "Build edit.elf (Phase 3.F)");
+    kernel_edit_step.dependOn(&install_edit.step);
+
     // Phase 3.D: mkfs host tool.
     const mkfs_exe = b.addExecutable(.{
         .name = "mkfs",
@@ -527,6 +532,7 @@ pub fn build(b: *std.Build) void {
     _ = shell_fs_bin_stage.addCopyFile(echo_exe.getEmittedBin(), "echo");
     _ = shell_fs_bin_stage.addCopyFile(mkdir_exe.getEmittedBin(), "mkdir");
     _ = shell_fs_bin_stage.addCopyFile(rm_exe.getEmittedBin(), "rm");
+    _ = shell_fs_bin_stage.addCopyFile(edit_exe.getEmittedBin(), "edit");
 
     const shell_fs_img_run = b.addRunArtifact(mkfs_exe);
     shell_fs_img_run.addArg("--root");
