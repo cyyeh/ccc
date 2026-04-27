@@ -1,0 +1,2 @@
+echo replaced > /etc/motd
+exit

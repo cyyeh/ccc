@@ -861,6 +861,25 @@ pub fn build(b: *std.Build) void {
     const e2e_editor_step = b.step("e2e-editor", "Run the Phase 3.F editor e2e test");
     e2e_editor_step.dependOn(&editor_e2e_run.step);
 
+    const persist_e2e_exe = b.addExecutable(.{
+        .name = "e2e-persist",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/persist.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const persist_e2e_run = b.addRunArtifact(persist_e2e_exe);
+    persist_e2e_run.step.dependOn(b.getInstallStep());
+    persist_e2e_run.step.dependOn(shell_fs_img_step);
+    persist_e2e_run.addFileArg(exe.getEmittedBin());
+    persist_e2e_run.addFileArg(shell_fs_img);
+    persist_e2e_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    persist_e2e_run.addFileArg(b.path("tests/e2e/persist_input1.txt"));
+    persist_e2e_run.addFileArg(b.path("tests/e2e/persist_input2.txt"));
+    const e2e_persist_step = b.step("e2e-persist", "Run the Phase 3.F disk-persistence e2e test");
+    e2e_persist_step.dependOn(&persist_e2e_run.step);
+
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
     const qemu_diff_kernel_cmd = b.addSystemCommand(&.{
