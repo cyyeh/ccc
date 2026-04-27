@@ -88,6 +88,7 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build e2e-shell` | Boot `kernel-fs.elf` against `shell-fs.img` with `--input tests/e2e/shell_input.txt`; assert prompt+command echo for the canonical `ls /bin / echo / cat / rm / exit` session and a clean halt (Plan 3.E milestone) |
 | `zig build e2e-editor` | Boot `kernel-fs.elf` against a tmp copy of `shell-fs.img` with `--input tests/e2e/editor_input.txt`; assert post-editor `cat /etc/motd` shows the inserted-Y change `heYllo from phase 3\n` (Plan 3.F milestone) |
 | `zig build e2e-persist` | Run `ccc` twice on a tmp copy of `shell-fs.img`: pass 1 echos `replaced > /etc/motd`, pass 2 cats it; assert pass 2 sees `replaced\n` (Plan 3.F: writes survive emulator restart) |
+| `zig build e2e-cancel` | Pipe `cat\n\x03exit\n` to the shell; assert `cat\n^C\n$ exit` appears in stdout (proves Phase 3 §DoD's `^C cancels foreground program` kill-flag bullet end-to-end: console.feedByte(0x03) → proc.kill(fg_pid) → killed flag → console.read returns -1 → syscall dispatch calls proc.exit) |
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
@@ -342,9 +343,14 @@ and asserts the on-disk file matches "heYllo from phase 3\n".
 `e2e-persist` proves block-device writes survive: copy shell-fs.img to
 a tmp path, run ccc once with `echo replaced > /etc/motd\nexit\n`, run
 ccc again on the same image with `cat /etc/motd\nexit\n`, assert
-"replaced\n" appears in pass 2's stdout. The full Phase 3 §Definition
+"replaced\n" appears in pass 2's stdout. `e2e-cancel` closes the last
+DoD bullet — pipes `cat\n\x03exit\n` and asserts `cat\n^C\n$ exit`
+appears in stdout, proving the kill-flag chain (console.feedByte(0x03)
+→ proc.kill(fg_pid) → killed flag → console.read returns -1 → syscall
+dispatch calls proc.exit) works end-to-end. The full Phase 3 §Definition
 of Done holds: boot to a shell, run our own programs, edit a file
-interactively, observe the change persist across emulator restarts.
+interactively, observe the change persist across emulator restarts,
+^C cancels a foreground program.
 
 ## Layout
 
@@ -446,6 +452,8 @@ tests/
     persist.zig       # Plan 3.F verifier (ccc twice on same disk; second sees first's writes)
     persist_input1.txt # pass-1 input: echo replaced > /etc/motd; exit
     persist_input2.txt # pass-2 input: cat /etc/motd; exit
+    cancel.zig        # Phase 3 verifier (^C kill-flag — DoD bullet)
+    cancel_input.txt  # 10-byte fixture: cat\n\x03exit\n
     snake.zig         # snake e2e verifier (deterministic input → GAME OVER)
     snake_input.txt   # snake e2e input fixture
   fixtures/           # tiny hand-crafted ELF used only by elf.zig tests
