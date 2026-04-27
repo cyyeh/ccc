@@ -30,6 +30,9 @@ export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
         // Parent: wait for child.
         var status: i32 = 0;
         const reaped = ulib.wait(&status);
+        // If sh exited cleanly (status 0), shut down rather than restart.
+        // This lets the e2e harness observe a clean halt after `exit`.
+        if (status == 0) ulib.exit(0);
         uprintf.printf(1, "[init] sh (pid %d) exited %d; restarting\n", &.{
             .{ .i = reaped },
             .{ .i = status },
