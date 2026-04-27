@@ -180,6 +180,12 @@ export fn runStart(elf_len: u32, trace: i32, disk_len: u32) i32 {
     state_storage.clint = clint_dev.Clint.init(&jsClock);
     state_storage.plic = plic_dev.Plic.init();
     state_storage.block = block_dev.Block.init();
+
+    // Wire UART → PLIC so pushRx() raises src 10 (UART RX IRQ) when the
+    // FIFO transitions from empty → non-empty. Mirrors src/emulator/main.zig.
+    // Without this, browser keystrokes land in the FIFO but the kernel never
+    // takes the interrupt and never echoes/processes them.
+    state_storage.uart.plic = &state_storage.plic;
     if (disk_len > 0) {
         state_storage.block.disk_slice = disk_buffer[0..disk_len];
     }
