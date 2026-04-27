@@ -843,6 +843,24 @@ pub fn build(b: *std.Build) void {
     const e2e_shell_step = b.step("e2e-shell", "Run the Phase 3.E shell e2e test");
     e2e_shell_step.dependOn(&shell_e2e_run.step);
 
+    const editor_e2e_exe = b.addExecutable(.{
+        .name = "e2e-editor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/editor.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const editor_e2e_run = b.addRunArtifact(editor_e2e_exe);
+    editor_e2e_run.step.dependOn(b.getInstallStep());
+    editor_e2e_run.step.dependOn(shell_fs_img_step);
+    editor_e2e_run.addFileArg(exe.getEmittedBin());
+    editor_e2e_run.addFileArg(shell_fs_img);
+    editor_e2e_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    editor_e2e_run.addFileArg(b.path("tests/e2e/editor_input.txt"));
+    const e2e_editor_step = b.step("e2e-editor", "Run the Phase 3.F editor e2e test");
+    e2e_editor_step.dependOn(&editor_e2e_run.step);
+
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
     const qemu_diff_kernel_cmd = b.addSystemCommand(&.{
