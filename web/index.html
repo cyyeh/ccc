@@ -49,6 +49,11 @@
         → fork/exec → on-disk shell + utilities) booted from <code>shell-fs.img</code>
         — the same binary that runs on the CLI via <code>zig build kernel-fs</code>.
       </div>
+      <div class="instructions-row">
+        <strong>how it works:</strong>
+        <a href="https://github.com/cyyeh/ccc/blob/main/docs/references/shell-execution.md" target="_blank" rel="noopener"><svg class="link-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg> shell execution walkthrough</a>
+        — keystroke → UART RX → PLIC → S-trap → cooked console → fork/exec → /bin/* → UART TX → ANSI render
+      </div>
       <div class="device-warning">
         ⚠ requires a physical keyboard — desktop or laptop only. Mobile and tablet devices can't drive per-byte input.
       </div>
