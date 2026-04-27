@@ -1,14 +1,19 @@
 // web/ansi.js
 //
 // Minimal ANSI interpreter: enough escape sequences for snake's
-// full-redraw rendering. State machine walks bytes; CSI sequences
-// recognized:
+// full-redraw rendering and the shell's streaming output. State machine
+// walks bytes; CSI sequences recognized:
 //   ESC [ 2 J     → clear screen
 //   ESC [ H       → cursor (0,0)
 //   ESC [ r;c H   → cursor (r-1, c-1)
-//   ESC [ ? 25 l  → hide cursor (no-op visually)
-//   ESC [ ? 25 h  → show cursor (no-op)
-// Unrecognized sequences are consumed and ignored.
+//   ESC [ ? 25 l  → hide cursor (cursor_visible = false)
+//   ESC [ ? 25 h  → show cursor (cursor_visible = true)
+// C0 controls handled in GROUND:
+//   0x08 (BS)  → cursor left one column (clamped at 0)
+//   0x0a (LF)  → line feed (scrolls when at last row)
+//   0x0d (CR)  → cursor to column 0
+// Other bytes < 0x20 are silently dropped.
+// Unrecognized escape sequences are consumed and ignored.
 //
 // UTF-8 multibyte sequences (lead byte 0xC0–0xF7) are reassembled
 // into a single screen cell so box-drawing chars render correctly.
@@ -24,6 +29,10 @@ export class Ansi {
     this.state = "GROUND";
     this.csiBuf = "";
     this.utf8Pending = null;
+    // Tracks ESC[?25h (true, default) / ESC[?25l (false). Read by the
+    // demo's render() to show or hide the on-screen cursor — the editor
+    // toggles this on entry/exit to raw mode.
+    this.cursor_visible = true;
   }
 
   _reset() {
@@ -56,6 +65,7 @@ export class Ansi {
       if (b === 0x1b) { this.state = "ESC"; return; }
       if (b === 0x0a) { this._lineFeed(); return; }
       if (b === 0x0d) { this.col = 0; return; }
+      if (b === 0x08) { this.col = Math.max(0, this.col - 1); return; }
       if (b < 0x20)   return; // other control: ignore
       if (b >= 0xC0 && b <= 0xF7) { this._utf8Start(b); return; }
       if (b >= 0x80)   { this._utf8Continue(b); return; }
@@ -125,7 +135,9 @@ export class Ansi {
       }
       return;
     }
-    // ?25l, ?25h, anything else: ignore.
+    if (final === "l" && params === "?25") { this.cursor_visible = false; return; }
+    if (final === "h" && params === "?25") { this.cursor_visible = true;  return; }
+    // anything else: ignore.
   }
 
   text() {

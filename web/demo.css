@@ -84,6 +84,13 @@ button.run:disabled {
   min-height: 1.5em;
 }
 
+/* The terminal-wrapper anchors the absolutely-positioned #cursor span to
+   the same coordinate space as pre.output's content area. */
+.terminal-wrapper {
+  position: relative;
+  margin: 0 0 32px;
+}
+
 pre.output {
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -99,11 +106,36 @@ pre.output {
      program emits more than 24 rows. */
   min-height: 600px;
   overflow: auto;
-  margin: 0 0 32px;
+  margin: 0;
   /* The ANSI interpreter renders a fixed 80×24 grid as a single text string
      with hard \n at row boundaries — let the browser render it as-is, no
      re-wrapping. Horizontal scroll appears at narrow viewports. */
   white-space: pre;
+}
+
+/* Blinking block cursor positioned over the terminal at (row, col).
+   demo.js sets inline `top` / `left` on every render based on the ANSI
+   state. 1ch = width of '0' in the current monospace font; 1.55em
+   matches pre.output's line-height. The (20px, 24px) padding offsets
+   in JS match pre.output's padding above. */
+#cursor {
+  position: absolute;
+  width: 1ch;
+  height: 1.55em;
+  background: var(--accent);
+  opacity: 0.7;
+  pointer-events: none;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 15px;
+  line-height: 1.55;
+  animation: cursor-blink 1s steps(2, jump-none) infinite;
+}
+#cursor.hidden {
+  display: none;
+}
+@keyframes cursor-blink {
+  0%, 50%      { opacity: 0.7; }
+  50.01%, 100% { opacity: 0; }
 }
 pre.output .stderr { color: var(--muted); }
 pre.output .meta   { color: var(--dim); }

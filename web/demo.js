@@ -11,9 +11,18 @@ const sel = document.getElementById("program-select");
 const hint = document.querySelector(".program-hint");
 const snakeInstructions = document.getElementById("snake-instructions");
 const shellInstructions = document.getElementById("shell-instructions");
+const cursor = document.getElementById("cursor");
 
 const SNAKE_IDX = "1";
 const SHELL_IDX = "2";
+
+// Pixel offsets matching pre.output's padding (`padding: 20px 24px`) so
+// the absolutely-positioned cursor lands inside the content area, not on
+// the box border. Row stride uses `1.55em` (matches line-height); column
+// stride uses `1ch` — both as inline style strings so the browser
+// resolves them against the cursor's own font metrics.
+const PAD_TOP = 20;
+const PAD_LEFT = 24;
 
 function updateProgramInstructions() {
   if (snakeInstructions) snakeInstructions.classList.toggle("hidden", sel.value !== SNAKE_IDX);
@@ -115,6 +124,15 @@ function bytesForCurrentProgram(e) {
 
 function render() {
   out.textContent = ansi.text();
+  if (cursor) {
+    if (ansi.cursor_visible) {
+      cursor.classList.remove("hidden");
+      cursor.style.top  = `calc(${PAD_TOP}px + ${ansi.row} * 1.55em)`;
+      cursor.style.left = `calc(${PAD_LEFT}px + ${ansi.col} * 1ch)`;
+    } else {
+      cursor.classList.add("hidden");
+    }
+  }
 }
 
 function startCurrent() {
