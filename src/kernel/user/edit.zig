@@ -224,10 +224,16 @@ export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
         switch (esc_state) {
             .Normal => switch (b[0]) {
                 0x1B => esc_state = .GotEsc,
-                0x13 => save(path_z),                         // ^S
-                0x18 => return 0,                             // ^X
-                0x08, 0x7F => { backspace(); redraw(); },     // backspace / DEL
-                '\n', '\r' => { insertByte('\n'); redraw(); },
+                0x13 => save(path_z), // ^S
+                0x18 => return 0, // ^X
+                0x08, 0x7F => {
+                    backspace();
+                    redraw();
+                }, // backspace / DEL
+                '\n', '\r' => {
+                    insertByte('\n');
+                    redraw();
+                },
                 else => {
                     if (b[0] >= 0x20 and b[0] <= 0x7E) {
                         insertByte(b[0]);
@@ -244,10 +250,22 @@ export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
             },
             .GotCsi => {
                 switch (b[0]) {
-                    'A' => { moveUp(); redraw(); },
-                    'B' => { moveDown(); redraw(); },
-                    'C' => { moveRight(); redraw(); },
-                    'D' => { moveLeft(); redraw(); },
+                    'A' => {
+                        moveUp();
+                        redraw();
+                    },
+                    'B' => {
+                        moveDown();
+                        redraw();
+                    },
+                    'C' => {
+                        moveRight();
+                        redraw();
+                    },
+                    'D' => {
+                        moveLeft();
+                        redraw();
+                    },
                     else => {},
                 }
                 esc_state = .Normal;
