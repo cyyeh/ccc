@@ -819,6 +819,24 @@ pub fn build(b: *std.Build) void {
     const e2e_fs_step = b.step("e2e-fs", "Run the Phase 3.D fs-read e2e test (init opens /etc/motd)");
     e2e_fs_step.dependOn(&e2e_fs_run.step);
 
+    const shell_e2e_exe = b.addExecutable(.{
+        .name = "e2e-shell",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/shell.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const shell_e2e_run = b.addRunArtifact(shell_e2e_exe);
+    shell_e2e_run.step.dependOn(b.getInstallStep());
+    shell_e2e_run.step.dependOn(shell_fs_img_step);
+    shell_e2e_run.addFileArg(exe.getEmittedBin());
+    shell_e2e_run.addFileArg(shell_fs_img);
+    shell_e2e_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    shell_e2e_run.addFileArg(b.path("tests/e2e/shell_input.txt"));
+    const e2e_shell_step = b.step("e2e-shell", "Run the Phase 3.E shell e2e test");
+    e2e_shell_step.dependOn(&shell_e2e_run.step);
+
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
     const qemu_diff_kernel_cmd = b.addSystemCommand(&.{

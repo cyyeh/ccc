@@ -1,0 +1,5 @@
+ls /bin
+echo hi > /tmp/x
+cat /tmp/x
+rm /tmp/x
+exit
