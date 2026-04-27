@@ -1573,8 +1573,8 @@ scheduler idle path  <span class="dim">(3.E)</span>
   <section data-label="Ch 3.F · editor + persistence">
     <div class="slide-label">chapter 3.f · editor + persistence (final demo)</div>
     <h2 class="slide-title"><span class="accent">Chapter 3.F</span> — editor + persistence (final demo)</h2>
-    <p class="plain">Plan 3.E wired raw-mode in the kernel but never exercised it. Plan 3.F finally does, with a cursor-moving <code>edit</code> binary: <code>console_set_mode(1)</code> on entry, <code>console_set_mode(0)</code> on exit, a 16 KB content buffer with a single byte-offset cursor, and a redraw-on-every-keystroke ANSI loop dispatching ESC [ A/B/C/D arrows + printables + backspace + <code>^S</code> save + <code>^X</code> exit. <code>e2e-editor</code> drives the canonical session via a 43-byte binary fixture. <code>e2e-persist</code> proves the kernel's <code>bwrite</code> path actually persists by running ccc twice on the same disk image and asserting pass 2 sees pass 1's writes.</p>
-    <div class="caption">Phase 3 §Definition of Done holds end-to-end. <code>kernel.elf</code> + <code>shell-fs.img</code> boot to a shell, run our own programs, edit files interactively, observe changes survive emulator restarts. Next: Phase 4 (network stack) or Phase 6 (framebuffer + compositor — already specced as optional).</div>
+    <p class="plain">Plan 3.E wired raw-mode in the kernel but never exercised it. Plan 3.F finally does, with a cursor-moving <code class="inline">edit</code> binary: <code class="inline">console_set_mode(1)</code> on entry, <code class="inline">console_set_mode(0)</code> on exit, a 16 KB content buffer with a single byte-offset cursor, and a redraw-on-every-keystroke ANSI loop dispatching ESC [ A/B/C/D arrows + printables + backspace + <code class="inline">^S</code> save + <code class="inline">^X</code> exit. <code class="inline">e2e-editor</code> drives the canonical session via a 43-byte binary fixture. <code class="inline">e2e-persist</code> proves the kernel's <code class="inline">bwrite</code> path actually persists by running ccc twice on the same disk image and asserting pass 2 sees pass 1's writes.</p>
+    <div class="caption">Phase 3 §Definition of Done holds end-to-end. <code class="inline">kernel.elf</code> + <code class="inline">shell-fs.img</code> boot to a shell, run our own programs, edit files interactively, observe changes survive emulator restarts. Next: Phase 4 (network stack) or Phase 6 (framebuffer + compositor — already specced as optional).</div>
   </section>
 
   <!-- Epilogue · where we are -->
@@ -1636,11 +1636,11 @@ scheduler idle path  <span class="dim">(3.E)</span>
           <div class="head">✓ 3.E · FS write + console + shell</div>
           <div class="sub"><code class="inline">writei</code>/<code class="inline">bmap</code> lazy alloc · <code class="inline">iupdate</code>/<code class="inline">ialloc</code>/<code class="inline">itrunc</code> · <code class="inline">dirlink</code>/<code class="inline">dirunlink</code> · <code class="inline">fsops.create</code>/<code class="inline">unlink</code> · <code class="inline">mkdirat</code>/<code class="inline">unlinkat</code> + <code class="inline">openat</code> <code class="inline">O_CREAT</code>/<code class="inline">O_TRUNC</code>/<code class="inline">O_APPEND</code> · console fd 0/1/2 cooked-mode line discipline · UART RX via PLIC #10 · scheduler WFI + <code class="inline">sepc</code>+4 + paced <code class="inline">rx_pump</code> · userland stdlib (<code class="inline">start.S</code>/<code class="inline">usys.S</code>/<code class="inline">ulib</code>/<code class="inline">uprintf</code>) · <code class="inline">init_shell</code>/<code class="inline">sh</code>/<code class="inline">ls</code>/<code class="inline">cat</code>/<code class="inline">echo</code>/<code class="inline">mkdir</code>/<code class="inline">rm</code> · <code class="inline">shell-fs.img</code> · <code class="inline">e2e-shell</code></div>
         </div>
-      </div>
         <div class="row">
           <div class="head">✓ 3.F · editor + persistence</div>
           <div class="sub">cursor-moving <code class="inline">edit.zig</code> · raw-mode console exercised · 16 KB content buffer · ESC [ A/B/C/D arrow parser · ANSI redraw (clear + home + buffer + position) · <code class="inline">^S</code> save (close + O_TRUNC re-open) · <code class="inline">^X</code> exit + cooked restore · <code class="inline">e2e-editor</code> (43-byte fixture: edit → 2× right → Y → ^S^X → cat asserts <code class="inline">heYllo from phase 3</code>) · <code class="inline">e2e-persist</code> (two ccc passes on copied image; pass 2 sees pass 1's writes)</div>
         </div>
+      </div>
     </div>
   </section>
 
