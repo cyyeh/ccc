@@ -81,6 +81,44 @@ fn moveLeft() void {
     if (cursor > 0) cursor -= 1;
 }
 
+fn lineStart(off: u32) u32 {
+    // Return the offset of the first byte of the line containing `off`.
+    var i: u32 = off;
+    while (i > 0 and content[i - 1] != '\n') : (i -= 1) {}
+    return i;
+}
+
+fn lineEnd(off: u32) u32 {
+    // Return the offset of the \n that ends the line containing `off`,
+    // or content_len if the line is unterminated.
+    var i: u32 = off;
+    while (i < content_len and content[i] != '\n') : (i += 1) {}
+    return i;
+}
+
+fn moveUp() void {
+    const cur_start = lineStart(cursor);
+    if (cur_start == 0) return; // already on row 1
+    const col = cursor - cur_start;
+    const prev_end = cur_start - 1; // the \n just before cur_start
+    const prev_start = lineStart(prev_end);
+    const prev_len = prev_end - prev_start;
+    const target_col = if (col < prev_len) col else prev_len;
+    cursor = prev_start + target_col;
+}
+
+fn moveDown() void {
+    const cur_start = lineStart(cursor);
+    const cur_end = lineEnd(cursor);
+    if (cur_end == content_len) return; // no next line
+    const col = cursor - cur_start;
+    const next_start = cur_end + 1; // skip the \n
+    const next_end = lineEnd(next_start);
+    const next_len = next_end - next_start;
+    const target_col = if (col < next_len) col else next_len;
+    cursor = next_start + target_col;
+}
+
 /// Compute (row, col) for `offset` within content. Both are 1-based
 /// (matches ANSI `\x1b[<row>;<col>H` semantics). Walks newlines from
 /// the start.
@@ -206,9 +244,10 @@ export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
             },
             .GotCsi => {
                 switch (b[0]) {
+                    'A' => { moveUp(); redraw(); },
+                    'B' => { moveDown(); redraw(); },
                     'C' => { moveRight(); redraw(); },
                     'D' => { moveLeft(); redraw(); },
-                    'A', 'B' => {}, // up/down — Task 5 wires these
                     else => {},
                 }
                 esc_state = .Normal;
