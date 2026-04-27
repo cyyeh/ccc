@@ -486,6 +486,11 @@ pub fn build(b: *std.Build) void {
     const kernel_sh_step = b.step("kernel-sh", "Build sh.elf (Phase 3.E)");
     kernel_sh_step.dependOn(&install_sh.step);
 
+    const edit_exe = addUserBinary(b, "edit", "src/kernel/user/edit.zig", rv_target, .ReleaseSmall);
+    const install_edit = b.addInstallFile(edit_exe.getEmittedBin(), "edit.elf");
+    const kernel_edit_step = b.step("kernel-edit", "Build edit.elf (Phase 3.F)");
+    kernel_edit_step.dependOn(&install_edit.step);
+
     // Phase 3.D: mkfs host tool.
     const mkfs_exe = b.addExecutable(.{
         .name = "mkfs",
@@ -527,6 +532,7 @@ pub fn build(b: *std.Build) void {
     _ = shell_fs_bin_stage.addCopyFile(echo_exe.getEmittedBin(), "echo");
     _ = shell_fs_bin_stage.addCopyFile(mkdir_exe.getEmittedBin(), "mkdir");
     _ = shell_fs_bin_stage.addCopyFile(rm_exe.getEmittedBin(), "rm");
+    _ = shell_fs_bin_stage.addCopyFile(edit_exe.getEmittedBin(), "edit");
 
     const shell_fs_img_run = b.addRunArtifact(mkfs_exe);
     shell_fs_img_run.addArg("--root");
@@ -836,6 +842,61 @@ pub fn build(b: *std.Build) void {
     shell_e2e_run.addFileArg(b.path("tests/e2e/shell_input.txt"));
     const e2e_shell_step = b.step("e2e-shell", "Run the Phase 3.E shell e2e test");
     e2e_shell_step.dependOn(&shell_e2e_run.step);
+
+    const editor_e2e_exe = b.addExecutable(.{
+        .name = "e2e-editor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/editor.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const editor_e2e_run = b.addRunArtifact(editor_e2e_exe);
+    editor_e2e_run.step.dependOn(b.getInstallStep());
+    editor_e2e_run.step.dependOn(shell_fs_img_step);
+    editor_e2e_run.addFileArg(exe.getEmittedBin());
+    editor_e2e_run.addFileArg(shell_fs_img);
+    editor_e2e_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    editor_e2e_run.addFileArg(b.path("tests/e2e/editor_input.txt"));
+    const e2e_editor_step = b.step("e2e-editor", "Run the Phase 3.F editor e2e test");
+    e2e_editor_step.dependOn(&editor_e2e_run.step);
+
+    const persist_e2e_exe = b.addExecutable(.{
+        .name = "e2e-persist",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/persist.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const persist_e2e_run = b.addRunArtifact(persist_e2e_exe);
+    persist_e2e_run.step.dependOn(b.getInstallStep());
+    persist_e2e_run.step.dependOn(shell_fs_img_step);
+    persist_e2e_run.addFileArg(exe.getEmittedBin());
+    persist_e2e_run.addFileArg(shell_fs_img);
+    persist_e2e_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    persist_e2e_run.addFileArg(b.path("tests/e2e/persist_input1.txt"));
+    persist_e2e_run.addFileArg(b.path("tests/e2e/persist_input2.txt"));
+    const e2e_persist_step = b.step("e2e-persist", "Run the Phase 3.F disk-persistence e2e test");
+    e2e_persist_step.dependOn(&persist_e2e_run.step);
+
+    const cancel_e2e_exe = b.addExecutable(.{
+        .name = "e2e-cancel",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/cancel.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const cancel_e2e_run = b.addRunArtifact(cancel_e2e_exe);
+    cancel_e2e_run.step.dependOn(b.getInstallStep());
+    cancel_e2e_run.step.dependOn(shell_fs_img_step);
+    cancel_e2e_run.addFileArg(exe.getEmittedBin());
+    cancel_e2e_run.addFileArg(shell_fs_img);
+    cancel_e2e_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    cancel_e2e_run.addFileArg(b.path("tests/e2e/cancel_input.txt"));
+    const e2e_cancel_step = b.step("e2e-cancel", "Run the Phase 3 ^C kill-flag e2e test (proves console.feedByte(0x03) → proc.kill(fg_pid) chain)");
+    e2e_cancel_step.dependOn(&cancel_e2e_run.step);
 
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
