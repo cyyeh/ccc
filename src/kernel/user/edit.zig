@@ -44,7 +44,10 @@ fn leaveRaw() void {
 
 fn save(path_z: [*:0]const u8) void {
     const fd = ulib.openat(0, path_z, ulib.O_WRONLY | ulib.O_CREAT | ulib.O_TRUNC);
-    if (fd < 0) return; // silent failure — editor stays open
+    if (fd < 0) {
+        showStatus("save failed", path_z, 0);
+        return;
+    }
     var written: u32 = 0;
     while (written < content_len) {
         const w = ulib.write(@intCast(fd), content[written..].ptr, content_len - written);
@@ -52,6 +55,39 @@ fn save(path_z: [*:0]const u8) void {
         written += @intCast(w);
     }
     _ = ulib.close(@intCast(fd));
+    showStatus("saved", path_z, written);
+}
+
+/// Render a one-line status message at row 24 (the bottom of the 80×24
+/// terminal grid) and restore the cursor to the editing position.
+/// The next redraw (triggered by the next keystroke) clears the screen
+/// and the status disappears — that's the right model for "wrote the
+/// file" feedback: visible long enough to read, gone as soon as the
+/// user resumes editing.
+fn showStatus(verb: []const u8, path_z: [*:0]const u8, bytes: u32) void {
+    // Move to row 24, col 1.
+    writeStr("\x1b[24;1H");
+    writeStr("-- ");
+    writeStr(verb);
+    if (bytes > 0) {
+        writeStr(" ");
+        writeUint(bytes);
+        writeStr(" bytes to ");
+    } else {
+        writeStr(": ");
+    }
+    // C-string path → bounded length walk.
+    var n: u32 = 0;
+    while (path_z[n] != 0 and n < PATH_MAX) : (n += 1) {}
+    writeStr(path_z[0..n]);
+    writeStr(" --");
+    // Restore cursor to the editing offset.
+    const rc = rowCol(cursor);
+    writeStr("\x1b[");
+    writeUint(rc.row);
+    writeStr(";");
+    writeUint(rc.col);
+    writeStr("H");
 }
 
 fn insertByte(b: u8) void {
@@ -214,6 +250,11 @@ export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
 
     enterRaw();
     defer leaveRaw();
+    // Clear the screen on exit so the shell's next prompt lands on a
+    // fresh blank terminal (no leftover editor content). defers run in
+    // reverse order: the writeStr fires first, then leaveRaw — both
+    // happen before the shell's wait4 returns and the new prompt prints.
+    defer writeStr("\x1b[2J\x1b[H");
 
     redraw();
 

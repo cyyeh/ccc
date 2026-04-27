@@ -84,6 +84,13 @@ button.run:disabled {
   min-height: 1.5em;
 }
 
+/* The terminal-wrapper anchors the absolutely-positioned #cursor span to
+   the same coordinate space as pre.output's content area. */
+.terminal-wrapper {
+  position: relative;
+  margin: 0 0 32px;
+}
+
 pre.output {
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -91,13 +98,49 @@ pre.output {
   color: var(--fg);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 15px;
-  line-height: 1.55;
+  /* Tighter line-height (1.2) matches typical terminal-emulator spacing
+     (macOS Terminal ≈ 1.2, iTerm default 1.0–1.2). Was 1.55 (web-page
+     prose default), which felt double-spaced for shell output. The
+     cursor span and demo.js's render() use the same value so the
+     overlay sits exactly on the rendered glyph rows. */
+  line-height: 1.2;
   padding: 20px 24px;
-  height: 480px;
-  overflow-y: auto;
-  margin: 0 0 32px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  /* 24 rows × 15px × 1.2 line-height ≈ 432px content; +40px padding ≈ 472px.
+     min-height (not height) so the ANSI 24-row buffer is always fully visible
+     without forcing a scrollbar; overflow stays auto in case any future
+     program emits more than 24 rows. */
+  min-height: 480px;
+  overflow: auto;
+  margin: 0;
+  /* The ANSI interpreter renders a fixed 80×24 grid as a single text string
+     with hard \n at row boundaries — let the browser render it as-is, no
+     re-wrapping. Horizontal scroll appears at narrow viewports. */
+  white-space: pre;
+}
+
+/* Blinking block cursor positioned over the terminal at (row, col).
+   demo.js sets inline `top` / `left` on every render based on the ANSI
+   state. 1ch = width of '0' in the current monospace font; 1.2em
+   matches pre.output's line-height. The (20px, 24px) padding offsets
+   in JS match pre.output's padding above. */
+#cursor {
+  position: absolute;
+  width: 1ch;
+  height: 1.2em;
+  background: var(--accent);
+  opacity: 0.7;
+  pointer-events: none;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 15px;
+  line-height: 1.2;
+  animation: cursor-blink 1s steps(2, jump-none) infinite;
+}
+#cursor.hidden {
+  display: none;
+}
+@keyframes cursor-blink {
+  0%, 50%      { opacity: 0.7; }
+  50.01%, 100% { opacity: 0; }
 }
 pre.output .stderr { color: var(--muted); }
 pre.output .meta   { color: var(--dim); }

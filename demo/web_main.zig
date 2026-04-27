@@ -11,9 +11,11 @@
 //! keeping ccc.wasm at ~50 KB (just the emulator core).
 //!
 //! Exports:
-//!   elfBufferPtr()              [*]u8 — base of the 2 MB ELF receive buffer
-//!   elfBufferCap()              u32   — capacity of the ELF buffer (2 MB)
-//!   runStart(elf_len, trace)    i32   — initialise state, 0 on success
+//!   elfBufferPtr()                       [*]u8 — base of the 2 MB ELF receive buffer
+//!   elfBufferCap()                       u32   — capacity of the ELF buffer (2 MB)
+//!   diskBufferPtr()                      [*]u8 — base of the 4 MB disk receive buffer
+//!   diskBufferCap()                      u32   — capacity of the disk buffer (4 MB)
+//!   runStart(elf_len, trace, disk_len)   i32   — initialise state, 0 on success
 //!   runStep(maxInstructions)    i32   — -1 still running, ≥0 exit code
 //!   consumeOutput()             u32   — bytes available since last drain
 //!   outputPtr()                 [*]u8 — base of output buffer (drain offset)
@@ -46,6 +48,22 @@ export fn elfBufferCap() u32 {
     return ELF_BUFFER_CAP;
 }
 
+// 4 MB disk receive buffer. JS fetches the program's disk image
+// (currently only shell-fs.img for the shell demo), copies its bytes
+// here via diskBufferPtr/diskBufferCap, then calls runStart with a
+// non-zero disk_len. shell-fs.img is exactly 4 MB by mkfs convention.
+// Snake/hello pass disk_len=0 and the buffer is unused.
+const DISK_BUFFER_CAP: u32 = 4 * 1024 * 1024;
+var disk_buffer: [DISK_BUFFER_CAP]u8 = undefined;
+
+export fn diskBufferPtr() [*]u8 {
+    return &disk_buffer;
+}
+
+export fn diskBufferCap() u32 {
+    return DISK_BUFFER_CAP;
+}
+
 // 16 KB is comfortable headroom for a "hello world" run.
 const OUTPUT_BUF_SIZE: usize = 16 * 1024;
 var output_buf: [OUTPUT_BUF_SIZE]u8 = undefined;
@@ -68,8 +86,12 @@ fn jsClock() i128 {
     return mtime_ns;
 }
 
-// 16 MiB of guest RAM is plenty for hello.elf.
-const RAM_SIZE: usize = 16 * 1024 * 1024;
+// 128 MiB of guest RAM matches the CLI default (`--memory 128` in
+// src/emulator/main.zig). The kernel's trampoline page lives at
+// RAM_BASE + 128 MB - 4 KB (= 0x87FFF000), so anything smaller than
+// 128 MB triggers an access fault during kmain's page-table setup,
+// even though hello.elf alone would happily fit in 16 MB.
+const RAM_SIZE: usize = 128 * 1024 * 1024;
 
 // Module-level emulator state that survives across runStep calls.
 // The arena, devices, memory, and cpu all live here so no heap pointer
@@ -134,9 +156,10 @@ export fn pushInput(byte: u32) void {
 /// elf_buffer[0..elf_len] by JS (via elfBufferPtr/elfBufferCap + fetch).
 /// trace: non-zero enables per-instruction trace output.
 /// Returns 0 on success, negative on error:
-///   -1 mem init failed, -2 ELF parse/load failed, -5 bad elf_len.
-export fn runStart(elf_len: u32, trace: i32) i32 {
+///   -1 mem init failed, -2 ELF parse/load failed, -5 bad elf_len, -6 bad disk_len.
+export fn runStart(elf_len: u32, trace: i32, disk_len: u32) i32 {
     if (elf_len == 0 or elf_len > ELF_BUFFER_CAP) return -5;
+    if (disk_len > DISK_BUFFER_CAP) return -6;
 
     // Tear down any in-progress run before reinitialising.
     if (state != null) {
@@ -157,6 +180,15 @@ export fn runStart(elf_len: u32, trace: i32) i32 {
     state_storage.clint = clint_dev.Clint.init(&jsClock);
     state_storage.plic = plic_dev.Plic.init();
     state_storage.block = block_dev.Block.init();
+
+    // Wire UART → PLIC so pushRx() raises src 10 (UART RX IRQ) when the
+    // FIFO transitions from empty → non-empty. Mirrors src/emulator/main.zig.
+    // Without this, browser keystrokes land in the FIFO but the kernel never
+    // takes the interrupt and never echoes/processes them.
+    state_storage.uart.plic = &state_storage.plic;
+    if (disk_len > 0) {
+        state_storage.block.disk_slice = disk_buffer[0..disk_len];
+    }
 
     const io: std.Io = std.Io.failing;
 

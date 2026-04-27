@@ -5,7 +5,8 @@
 //   - exit code 0
 //   - stdout contains each of the scripted session landmarks:
 //       "$ ls /bin"        (prompt + command echo)
-//       "sh\n"             (ls output — sh binary present in /bin)
+//       " sh "             (ls output — sh binary present in /bin; ls now
+//                          prints space-separated entries on one line)
 //       "$ echo hi > /tmp/x"
 //       "$ cat /tmp/x"
 //       "hi\n"             (cat output)
@@ -89,7 +90,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     const landmarks = [_][]const u8{
         "$ ls /bin",
-        "sh\n",
+        " sh ",        // ls output is now space-separated on one line
         "$ echo hi > /tmp/x",
         "$ cat /tmp/x",
         "hi\n",

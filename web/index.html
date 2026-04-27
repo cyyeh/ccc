@@ -16,10 +16,47 @@
     <div class="program-selector">
       <label for="program-select">program:</label>
       <select id="program-select">
-        <option value="1" selected>snake.elf</option>
+        <option value="2" selected>shell.elf</option>
+        <option value="1">snake.elf</option>
         <option value="0">hello.elf</option>
       </select>
       <span class="program-hint">(click the terminal to play)</span>
+    </div>
+
+    <div class="program-instructions" id="shell-instructions">
+      <div class="instructions-row">
+        <strong>shell:</strong>
+        type a command and press <code>Enter</code> · try
+        <code>ls /bin</code> ·
+        <code>cat /etc/motd</code> ·
+        <code>echo hi &gt; /tmp/x</code> ·
+        <code>edit /etc/motd</code> ·
+        <code>^C</code> cancel ·
+        <code>exit</code> to halt
+      </div>
+      <div class="instructions-row">
+        <strong>editor:</strong>
+        arrow keys move ·
+        printable keys insert at cursor ·
+        <code>Backspace</code> delete ·
+        <code>^S</code> save ·
+        <code>^X</code> exit
+        — note: use <code>Ctrl</code> (not <code>Cmd</code> on macOS, which the browser keeps for itself).
+      </div>
+      <div class="instructions-row">
+        <strong>what's running:</strong>
+        a from-scratch RV32 kernel (M-mode boot shim → S-mode kernel → cooked-mode console
+        → fork/exec → on-disk shell + utilities) booted from <code>shell-fs.img</code>
+        — the same binary that runs on the CLI via <code>zig build kernel-fs</code>.
+      </div>
+      <div class="instructions-row">
+        <strong>how it works:</strong>
+        <a href="https://github.com/cyyeh/ccc/blob/main/docs/references/shell-execution.md" target="_blank" rel="noopener"><svg class="link-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg> shell execution walkthrough</a>
+        — keystroke → UART RX → PLIC → S-trap → cooked console → fork/exec → /bin/* → UART TX → ANSI render
+      </div>
+      <div class="device-warning">
+        ⚠ requires a physical keyboard — desktop or laptop only. Mobile and tablet devices can't drive per-byte input.
+      </div>
     </div>
 
     <div class="program-instructions" id="snake-instructions">
@@ -39,7 +76,10 @@
       </div>
     </div>
 
-    <pre class="output" id="output" tabindex="0"></pre>
+    <div class="terminal-wrapper">
+      <pre class="output" id="output" tabindex="0"></pre>
+      <span id="cursor" aria-hidden="true"></span>
+    </div>
 
     <details class="trace-details" id="trace-details" hidden>
       <summary>instruction trace <span class="trace-meta" id="trace-meta"></span></summary>
