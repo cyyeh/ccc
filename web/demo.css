@@ -93,11 +93,17 @@ pre.output {
   font-size: 15px;
   line-height: 1.55;
   padding: 20px 24px;
-  height: 480px;
-  overflow-y: auto;
+  /* 24 rows × 15px × 1.55 line-height ≈ 558px content; +40px padding ≈ 600px.
+     min-height (not height) so the ANSI 24-row buffer is always fully visible
+     without forcing a scrollbar; overflow stays auto in case any future
+     program emits more than 24 rows. */
+  min-height: 600px;
+  overflow: auto;
   margin: 0 0 32px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  /* The ANSI interpreter renders a fixed 80×24 grid as a single text string
+     with hard \n at row boundaries — let the browser render it as-is, no
+     re-wrapping. Horizontal scroll appears at narrow viewports. */
+  white-space: pre;
 }
 pre.output .stderr { color: var(--muted); }
 pre.output .meta   { color: var(--dim); }
