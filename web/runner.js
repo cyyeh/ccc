@@ -27,19 +27,43 @@ self.onmessage = async (e) => {
     const myRunId = ++currentRunId;
     const trace = msg.trace ? 1 : 0;
     try {
-      const resp = await fetch(msg.elfUrl);
-      if (!resp.ok) throw new Error(`fetch ${msg.elfUrl} → ${resp.status}`);
+      // Fetch ELF and (optional) disk image in parallel. Both go straight
+      // into wasm linear memory once they arrive — no double-buffering.
+      const elfFetch = fetch(msg.elfUrl).then(async (r) => {
+        if (!r.ok) throw new Error(`fetch ${msg.elfUrl} → ${r.status}`);
+        return new Uint8Array(await r.arrayBuffer());
+      });
+      const diskFetch = msg.diskUrl
+        ? fetch(msg.diskUrl).then(async (r) => {
+            if (!r.ok) throw new Error(`fetch ${msg.diskUrl} → ${r.status}`);
+            return new Uint8Array(await r.arrayBuffer());
+          })
+        : Promise.resolve(null);
+
+      const [elfBytes, diskBytes] = await Promise.all([elfFetch, diskFetch]);
       if (myRunId !== currentRunId) return; // superseded during fetch
-      const elfBytes = new Uint8Array(await resp.arrayBuffer());
-      if (myRunId !== currentRunId) return;
-      const cap = exports.elfBufferCap();
-      if (elfBytes.length > cap) {
-        throw new Error(`ELF too large: ${elfBytes.length} > ${cap}`);
+
+      // Copy ELF into wasm.
+      const elfCap = exports.elfBufferCap();
+      if (elfBytes.length > elfCap) {
+        throw new Error(`ELF too large: ${elfBytes.length} > ${elfCap}`);
       }
-      const ptr = exports.elfBufferPtr();
-      const dest = new Uint8Array(memory.buffer, ptr, elfBytes.length);
-      dest.set(elfBytes);
-      const rc = exports.runStart(elfBytes.length, trace);
+      const elfPtr = exports.elfBufferPtr();
+      new Uint8Array(memory.buffer, elfPtr, elfBytes.length).set(elfBytes);
+
+      // Copy disk into wasm if present.
+      let diskLen = 0;
+      if (diskBytes) {
+        const diskCap = exports.diskBufferCap();
+        if (diskBytes.length > diskCap) {
+          throw new Error(`disk too large: ${diskBytes.length} > ${diskCap}`);
+        }
+        const diskPtr = exports.diskBufferPtr();
+        new Uint8Array(memory.buffer, diskPtr, diskBytes.length).set(diskBytes);
+        diskLen = diskBytes.length;
+      }
+
+      const rc = exports.runStart(elfBytes.length, trace, diskLen);
       if (rc !== 0) {
         self.postMessage({ type: "halt", runId: myRunId, code: rc });
         return;
