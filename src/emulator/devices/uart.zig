@@ -132,6 +132,23 @@ pub const RxPump = struct {
         }
         for (buf[0..n]) |b| _ = uart.pushRx(b);
     }
+
+    /// Drain at most one byte. Used by idleSpin so a busy shell observes
+    /// each `--input` byte as a separate keystroke, with the cooked-mode
+    /// console echo interleaved with shell prompts. Bulk drains would
+    /// emit every echo at once, before the shell can print successive
+    /// prompts between commands.
+    pub fn drainOne(self: *RxPump, io: std.Io, uart: *Uart) void {
+        if (self.eof) return;
+        if (uart.rx_count >= RX_CAPACITY) return;
+        var b: [1]u8 = undefined;
+        const n = self.file.readStreaming(io, &.{&b}) catch 0;
+        if (n == 0) {
+            self.eof = true;
+            return;
+        }
+        _ = uart.pushRx(b[0]);
+    }
 };
 
 test "writing to THR sends byte to writer" {

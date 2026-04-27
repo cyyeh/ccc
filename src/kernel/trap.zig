@@ -107,6 +107,7 @@ const syscall = @import("syscall.zig");
 const proc = @import("proc.zig");
 const plic = @import("plic.zig");
 const block = @import("block.zig");
+const uart = @import("uart.zig");
 
 fn readScause() u32 {
     return asm volatile ("csrr %[out], scause"
@@ -122,11 +123,7 @@ fn readStval() u32 {
 
 fn clearSipSsip() void {
     // sip.SSIP is bit 1. `csrci sip, 2` clears it.
-    asm volatile ("csrci sip, 2"
-        :
-        :
-        : .{ .memory = true }
-    );
+    asm volatile ("csrci sip, 2" ::: .{ .memory = true });
 }
 
 /// S-from-S trap dispatcher. Installed via stvec only while sched.scheduler
@@ -146,6 +143,24 @@ export fn s_kernel_trap_dispatch() callconv(.c) void {
         : [m] "r" (@as(u32, 1 << 5)),
         : .{ .memory = true });
 
+    // Advance sepc past the trapping instruction. The only call site of
+    // s_kernel_trap_dispatch is sched.scheduler's WFI window. The trap
+    // boundary's sepc points at the WFI (or, in the no-WFI fallback the
+    // SIE-window pattern previously used, the trailing csrc — also 4-byte).
+    // Without this, sret would return to WFI again and cpu.step's prologue
+    // would re-fire the same trap before the wfi instruction is fetched,
+    // producing a fixed-point loop in which the scheduler can never
+    // re-scan ptable. Skipping past the WFI lands us on csrc, which then
+    // closes the SIE window (or, if csrc was already the trap site, on
+    // the trailing csrw — still safe because SPIE was just cleared).
+    const sepc_val = asm volatile ("csrr %[v], sepc"
+        : [v] "=r" (-> u32),
+    );
+    asm volatile ("csrw sepc, %[v]"
+        :
+        : [v] "r" (sepc_val +% 4),
+        : .{ .memory = true });
+
     if (is_interrupt and cause == 1) {
         clearSipSsip();
         return;
@@ -154,6 +169,7 @@ export fn s_kernel_trap_dispatch() callconv(.c) void {
         const irq = plic.claim();
         switch (irq) {
             plic.IRQ_BLOCK => block.isr(),
+            plic.IRQ_UART_RX => uart.isr(),
             else => kprintf.panic("unhandled PLIC src in kernel trap: {d}", .{irq}),
         }
         plic.complete(irq);
@@ -224,13 +240,14 @@ export fn s_trap_dispatch(tf: *TrapFrame) callconv(.c) void {
         // to its ISR, then complete so the device can re-assert when the
         // next edge fires.
         //
-        // 3.D wires only IRQ #1 (block); 3.E will add IRQ #10 (UART RX).
+        // 3.D wires IRQ #1 (block); 3.E adds IRQ #10 (UART RX).
         // An unknown/0 source means a spurious interrupt — the spec
         // permits 0 here when claim races a clear; we panic to surface
         // any kernel bug that wires a source we can't service.
         const irq = plic.claim();
         switch (irq) {
             plic.IRQ_BLOCK => block.isr(),
+            plic.IRQ_UART_RX => uart.isr(),
             else => kprintf.panic("unhandled PLIC src: {d}", .{irq}),
         }
         plic.complete(irq);

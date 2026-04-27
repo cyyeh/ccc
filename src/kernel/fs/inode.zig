@@ -15,14 +15,19 @@
 //   iunlock(ip):             busy=false; wakeup waiters.
 //   iput(ip):                refs -= 1. (3.E adds the on-zero on-disk
 //                            truncate when nlink == 0.)
-//   bmap(ip, bn):            translate logical block bn to disk block#.
-//                            Returns 0 for unallocated entries (read-as-EOF).
+//   bmap(ip, bn, for_write): translate logical block bn to disk block#.
+//                            When for_write=true, lazily allocates missing
+//                            blocks. Returns 0 for holes (for_write=false)
+//                            or on out-of-disk (for_write=true).
 //   readi(ip, dst, off, n):  copy n bytes into dst. Returns bytes copied
 //                            (clamped to ip.dinode.size).
+//   writei(ip, src, off, n): write n bytes from src at offset off, growing
+//                            the file as needed. Returns bytes written.
 
 const std = @import("std");
 const layout = @import("layout.zig");
 const bufcache = @import("bufcache.zig");
+const balloc = @import("balloc.zig");
 const proc = @import("../proc.zig");
 const kprintf = @import("../kprintf.zig");
 
@@ -95,30 +100,142 @@ pub fn iunlock(ip: *InMemInode) void {
 }
 
 pub fn iput(ip: *InMemInode) void {
-    if (ip.refs == 0) kprintf.panic("iput: refs == 0 (inum {d})", .{ip.inum});
-    ip.refs -= 1;
-    // 3.E: if refs == 0 and dinode.nlink == 0, ilock + truncate + zero
-    // the dinode + bwrite the inode block. 3.D never reaches this branch.
+    // If this is the last in-memory ref AND the file has been unlinked
+    // (nlink == 0), it's our job to free its on-disk resources.
+    if (ip.refs == 1 and ip.valid and ip.dinode.nlink == 0) {
+        // ilock-equivalent: ip is single-refed and we're the only caller,
+        // so busy is necessarily false. Set busy to keep the invariant
+        // (in case any future caller checks).
+        ip.busy = true;
+        itrunc(ip);
+        ip.dinode.type = .Free;
+        iupdate(ip);
+        ip.valid = false;
+        ip.busy = false;
+    }
+    if (ip.refs > 0) ip.refs -= 1;
+}
+
+/// Flush this inode's in-memory dinode back to its slot in the inode table.
+pub fn iupdate(ip: *InMemInode) void {
+    const blk = layout.INODE_START_BLK + ip.inum / layout.INODES_PER_BLOCK;
+    const slot = ip.inum % layout.INODES_PER_BLOCK;
+    const buf = bufcache.bread(blk);
+    const inodes: [*]layout.DiskInode = @ptrCast(@alignCast(&buf.data[0]));
+    inodes[slot] = ip.dinode;
+    bufcache.bwrite(buf);
+    bufcache.brelse(buf);
+}
+
+/// Find the first free disk inode (type == .Free), claim it with the
+/// given type (writes back via bwrite), and return the in-memory cache
+/// entry holding it. Returns null on full inode table.
+pub fn ialloc(itype: layout.FileType) ?*InMemInode {
+    var inum: u32 = 1; // inum 0 is the "no inode" sentinel; root is inum 1
+    while (inum < layout.NINODES) : (inum += 1) {
+        const blk = layout.INODE_START_BLK + inum / layout.INODES_PER_BLOCK;
+        const slot = inum % layout.INODES_PER_BLOCK;
+        const buf = bufcache.bread(blk);
+        const inodes: [*]layout.DiskInode = @ptrCast(@alignCast(&buf.data[0]));
+        if (inodes[slot].type == .Free) {
+            inodes[slot] = .{
+                .type = itype,
+                .nlink = 1,
+                .size = 0,
+                .addrs = std.mem.zeroes([layout.NDIRECT + 1]u32),
+                ._reserved = std.mem.zeroes([4]u8),
+            };
+            bufcache.bwrite(buf);
+            bufcache.brelse(buf);
+
+            // Bring it into the in-memory cache.
+            const ip = iget(inum);
+            ilock(ip);
+            // ip.dinode now reflects what we just wrote.
+            iunlock(ip);
+            return ip;
+        }
+        bufcache.brelse(buf);
+    }
+    return null;
+}
+
+/// Free every block held by `ip` (direct + indirect) and reset size to 0.
+/// Caller must hold ip.busy (i.e., must have ilock'd ip).
+pub fn itrunc(ip: *InMemInode) void {
+    var i: u32 = 0;
+    while (i < layout.NDIRECT) : (i += 1) {
+        if (ip.dinode.addrs[i] != 0) {
+            balloc.free(ip.dinode.addrs[i]);
+            ip.dinode.addrs[i] = 0;
+        }
+    }
+    if (ip.dinode.addrs[layout.NDIRECT] != 0) {
+        const buf = bufcache.bread(ip.dinode.addrs[layout.NDIRECT]);
+        const slots: [*]const u32 = @ptrCast(@alignCast(&buf.data[0]));
+        var j: u32 = 0;
+        while (j < layout.NINDIRECT) : (j += 1) {
+            if (slots[j] != 0) balloc.free(slots[j]);
+        }
+        bufcache.brelse(buf);
+        balloc.free(ip.dinode.addrs[layout.NDIRECT]);
+        ip.dinode.addrs[layout.NDIRECT] = 0;
+    }
+    ip.dinode.size = 0;
+    iupdate(ip);
 }
 
 /// Map logical block index `bn` (0-based) within the file to its on-disk
-/// block number. Returns 0 for blocks past the file's allocated extent
-/// (caller's readi treats 0 as a hole / EOF).
+/// block number. When `for_write` is true and the entry is unallocated (== 0),
+/// allocates a fresh block via balloc.alloc (zero-filling the indirect block
+/// on first allocation). Returns 0 for holes when for_write=false, or on
+/// out-of-disk when for_write=true.
 ///
 /// Caller MUST hold ip locked (busy=true, valid=true).
-pub fn bmap(ip: *InMemInode, bn: u32) u32 {
+pub fn bmap(ip: *InMemInode, bn: u32, for_write: bool) u32 {
     if (bn < layout.NDIRECT) {
-        return ip.dinode.addrs[bn];
+        var addr = ip.dinode.addrs[bn];
+        if (addr == 0 and for_write) {
+            addr = balloc.alloc();
+            if (addr == 0) return 0;
+            ip.dinode.addrs[bn] = addr;
+            // Caller is responsible for iupdate after the write.
+        }
+        return addr;
     }
-    if (bn < layout.NDIRECT + layout.NINDIRECT) {
-        const ind_blk = ip.dinode.addrs[layout.NDIRECT];
-        if (ind_blk == 0) return 0;
-        const b = bufcache.bread(ind_blk);
-        defer bufcache.brelse(b);
-        const ptrs: [*]const u32 = @ptrCast(@alignCast(&b.data[0]));
-        return ptrs[bn - layout.NDIRECT];
+
+    const ix = bn - layout.NDIRECT;
+    if (ix >= layout.NINDIRECT) {
+        kprintf.panic("bmap: out of range bn={d}", .{bn});
     }
-    kprintf.panic("bmap: bn {d} > MAX_FILE_BLOCKS", .{bn});
+
+    var ind = ip.dinode.addrs[layout.NDIRECT];
+    if (ind == 0) {
+        if (!for_write) return 0;
+        ind = balloc.alloc();
+        if (ind == 0) return 0;
+        ip.dinode.addrs[layout.NDIRECT] = ind;
+        // Zero-fill the new indirect block so unused entries read back as 0.
+        const zbuf = bufcache.bread(ind);
+        @memset(&zbuf.data, 0);
+        bufcache.bwrite(zbuf);
+        bufcache.brelse(zbuf);
+    }
+
+    const buf = bufcache.bread(ind);
+    const slots: [*]u32 = @ptrCast(@alignCast(&buf.data[0]));
+    var addr = slots[ix];
+    if (addr == 0 and for_write) {
+        addr = balloc.alloc();
+        if (addr == 0) {
+            bufcache.brelse(buf);
+            return 0;
+        }
+        slots[ix] = addr;
+        bufcache.bwrite(buf);
+    }
+    bufcache.brelse(buf);
+    return addr;
 }
 
 /// Copy up to n bytes from inode at offset off into dst. Reads past
@@ -140,7 +257,7 @@ pub fn readi(ip: *InMemInode, dst: [*]u8, off: u32, n: u32) u32 {
         else
             remain;
 
-        const dblk = bmap(ip, bn);
+        const dblk = bmap(ip, bn, false);
         if (dblk == 0) {
             // Hole — readi returns zeros without touching disk.
             var i: u32 = 0;
@@ -154,4 +271,39 @@ pub fn readi(ip: *InMemInode, dst: [*]u8, off: u32, n: u32) u32 {
         copied += chunk;
     }
     return copied;
+}
+
+/// Write `n` bytes from `src` to inode `ip` starting at offset `off`.
+/// Returns bytes actually written (may be < n if disk fills) or -1 on
+/// bad arguments.
+pub fn writei(ip: *InMemInode, src: [*]const u8, off: u32, n: u32) i32 {
+    if (off + n > layout.MAX_FILE_BLOCKS * layout.BLOCK_SIZE) return -1;
+
+    var written: u32 = 0;
+    while (written < n) {
+        const cur_off = off + written;
+        const bn = cur_off / layout.BLOCK_SIZE;
+        const within = cur_off % layout.BLOCK_SIZE;
+        const remain_block = layout.BLOCK_SIZE - within;
+        const remain_total = n - written;
+        const chunk = if (remain_block < remain_total) remain_block else remain_total;
+
+        const blk = bmap(ip, bn, true);
+        if (blk == 0) break; // out of disk
+
+        const buf = bufcache.bread(blk);
+        var i: u32 = 0;
+        while (i < chunk) : (i += 1) {
+            buf.data[within + i] = src[written + i];
+        }
+        bufcache.bwrite(buf);
+        bufcache.brelse(buf);
+        written += chunk;
+    }
+
+    if (off + written > ip.dinode.size) {
+        ip.dinode.size = off + written;
+    }
+    iupdate(ip);
+    return @intCast(written);
 }

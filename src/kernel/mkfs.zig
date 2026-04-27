@@ -168,6 +168,8 @@ const ImageBuilder = struct {
 fn populateFromDir(io: Io, builder: *ImageBuilder, dir_inum: u32, dir: Io.Dir, gpa: std.mem.Allocator) !void {
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
+        // Skip dot-files (.gitkeep, .DS_Store, etc.).
+        if (entry.name.len > 0 and entry.name[0] == '.') continue;
         switch (entry.kind) {
             .file => {
                 var f = try dir.openFile(io, entry.name, .{});
@@ -179,6 +181,8 @@ fn populateFromDir(io: Io, builder: *ImageBuilder, dir_inum: u32, dir: Io.Dir, g
                 try builder.createFile(dir_inum, entry.name, buf);
             },
             .directory => {
+                // Create the Dir inode and link it into the parent — even if
+                // the subdirectory is empty (e.g. tmp/ with only a .gitkeep).
                 const sub_inum = try builder.createDir(dir_inum);
                 try builder.appendDirEntry(dir_inum, entry.name, sub_inum);
                 var sub_dir = try dir.openDir(io, entry.name, .{ .iterate = true });
@@ -204,6 +208,7 @@ pub fn main(init: std.process.Init) !void {
     var root_path: ?[]const u8 = null;
     var bin_path: ?[]const u8 = null;
     var out_path: ?[]const u8 = null;
+    var init_path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < argv.len) {
         if (std.mem.eql(u8, argv[i], "--root") and i + 1 < argv.len) {
@@ -215,6 +220,9 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, argv[i], "--out") and i + 1 < argv.len) {
             out_path = argv[i + 1];
             i += 2;
+        } else if (std.mem.eql(u8, argv[i], "--init") and i + 1 < argv.len) {
+            init_path = argv[i + 1];
+            i += 2;
         } else {
             stderr.print("mkfs: unexpected arg {s}\n", .{argv[i]}) catch {};
             stderr.flush() catch {};
@@ -222,7 +230,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     if (root_path == null or bin_path == null or out_path == null) {
-        stderr.print("usage: mkfs --root <dir> --bin <dir> --out <path>\n", .{}) catch {};
+        stderr.print("usage: mkfs --root <dir> --bin <dir> --out <path> [--init <path>]\n", .{}) catch {};
         stderr.flush() catch {};
         std.process.exit(2);
     }
@@ -244,25 +252,31 @@ pub fn main(init: std.process.Init) !void {
     try builder.appendDirEntry(root_inum, ".", root_inum);
     try builder.appendDirEntry(root_inum, "..", root_inum);
 
-    // /etc + /bin subdirectories.
-    const etc_inum = try builder.createDir(root_inum);
-    try builder.appendDirEntry(root_inum, "etc", etc_inum);
+    // /bin subdirectory (always created).
     const bin_inum = try builder.createDir(root_inum);
     try builder.appendDirEntry(root_inum, "bin", bin_inum);
 
-    // Walk --root: every file goes into /etc (3.D simplification — only
-    // /etc is supported; the spec eventually expands to /var, /tmp, etc.,
-    // but 3.D's e2e only needs /etc/motd).
+    // Walk --root: iterate all top-level subdirectories and create them
+    // under root.  Files directly in --root are ignored (only dirs).
+    // The /bin dir above is wired separately via --bin; skip it here.
     var root_dir = Io.Dir.cwd().openDir(io, root_path.?, .{ .iterate = true }) catch |err| {
         stderr.print("mkfs: cannot open --root {s}: {s}\n", .{ root_path.?, @errorName(err) }) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
     defer root_dir.close(io);
-    var etc_dir_opt: ?Io.Dir = root_dir.openDir(io, "etc", .{ .iterate = true }) catch null;
-    if (etc_dir_opt) |*d| {
-        defer d.close(io);
-        try populateFromDir(io, builder, etc_inum, d.*, gpa);
+    {
+        var it = root_dir.iterate();
+        while (try it.next(io)) |entry| {
+            if (entry.name.len > 0 and entry.name[0] == '.') continue; // skip dot-files
+            if (entry.kind != .directory) continue;
+            if (std.mem.eql(u8, entry.name, "bin")) continue; // handled via --bin
+            const sub_inum = try builder.createDir(root_inum);
+            try builder.appendDirEntry(root_inum, entry.name, sub_inum);
+            var sub_dir = try root_dir.openDir(io, entry.name, .{ .iterate = true });
+            defer sub_dir.close(io);
+            try populateFromDir(io, builder, sub_inum, sub_dir, gpa);
+        }
     }
 
     // Walk --bin: every file goes into /bin.
@@ -273,6 +287,22 @@ pub fn main(init: std.process.Init) !void {
     };
     defer bin_dir.close(io);
     try populateFromDir(io, builder, bin_inum, bin_dir, gpa);
+
+    // If --init <path> was given, install that binary as /bin/init (overrides
+    // any "init" file already present from --bin walk).
+    if (init_path) |ipath| {
+        var init_f = Io.Dir.cwd().openFile(io, ipath, .{}) catch |err| {
+            stderr.print("mkfs: cannot open --init {s}: {s}\n", .{ ipath, @errorName(err) }) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        defer init_f.close(io);
+        const sz = try init_f.length(io);
+        const buf = try gpa.alloc(u8, sz);
+        defer gpa.free(buf);
+        _ = try init_f.readPositionalAll(io, buf, 0);
+        try builder.createFile(bin_inum, "init", buf);
+    }
 
     builder.finalize();
 

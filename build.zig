@@ -445,6 +445,47 @@ pub fn build(b: *std.Build) void {
     const kernel_fs_init_step = b.step("kernel-fs-init", "Build the Phase 3.D fs_init.elf");
     kernel_fs_init_step.dependOn(&install_kernel_fs_init_elf.step);
 
+    const init_shell_exe = addUserBinary(
+        b,
+        "init_shell",
+        "src/kernel/user/init_shell.zig",
+        rv_target,
+        .ReleaseSmall,
+    );
+    const install_init_shell = b.addInstallFile(init_shell_exe.getEmittedBin(), "init_shell.elf");
+    const kernel_init_shell_step = b.step("kernel-init-shell", "Build init_shell.elf (Phase 3.E /bin/init)");
+    kernel_init_shell_step.dependOn(&install_init_shell.step);
+
+    const echo_exe = addUserBinary(b, "echo", "src/kernel/user/echo.zig", rv_target, .ReleaseSmall);
+    const install_echo = b.addInstallFile(echo_exe.getEmittedBin(), "echo.elf");
+    const kernel_echo_step = b.step("kernel-echo", "Build echo.elf (Phase 3.E)");
+    kernel_echo_step.dependOn(&install_echo.step);
+
+    const cat_exe = addUserBinary(b, "cat", "src/kernel/user/cat.zig", rv_target, .ReleaseSmall);
+    const install_cat = b.addInstallFile(cat_exe.getEmittedBin(), "cat.elf");
+    const kernel_cat_step = b.step("kernel-cat", "Build cat.elf (Phase 3.E)");
+    kernel_cat_step.dependOn(&install_cat.step);
+
+    const ls_exe = addUserBinary(b, "ls", "src/kernel/user/ls.zig", rv_target, .ReleaseSmall);
+    const install_ls = b.addInstallFile(ls_exe.getEmittedBin(), "ls.elf");
+    const kernel_ls_step = b.step("kernel-ls", "Build ls.elf (Phase 3.E)");
+    kernel_ls_step.dependOn(&install_ls.step);
+
+    const mkdir_exe = addUserBinary(b, "mkdir", "src/kernel/user/mkdir.zig", rv_target, .ReleaseSmall);
+    const install_mkdir = b.addInstallFile(mkdir_exe.getEmittedBin(), "mkdir.elf");
+    const kernel_mkdir_step = b.step("kernel-mkdir", "Build mkdir.elf (Phase 3.E)");
+    kernel_mkdir_step.dependOn(&install_mkdir.step);
+
+    const rm_exe = addUserBinary(b, "rm", "src/kernel/user/rm.zig", rv_target, .ReleaseSmall);
+    const install_rm = b.addInstallFile(rm_exe.getEmittedBin(), "rm.elf");
+    const kernel_rm_step = b.step("kernel-rm", "Build rm.elf (Phase 3.E)");
+    kernel_rm_step.dependOn(&install_rm.step);
+
+    const sh_exe = addUserBinary(b, "sh", "src/kernel/user/sh.zig", rv_target, .ReleaseSmall);
+    const install_sh = b.addInstallFile(sh_exe.getEmittedBin(), "sh.elf");
+    const kernel_sh_step = b.step("kernel-sh", "Build sh.elf (Phase 3.E)");
+    kernel_sh_step.dependOn(&install_sh.step);
+
     // Phase 3.D: mkfs host tool.
     const mkfs_exe = b.addExecutable(.{
         .name = "mkfs",
@@ -474,6 +515,30 @@ pub fn build(b: *std.Build) void {
     const install_fs_img = b.addInstallFile(fs_img, "fs.img");
     const fs_img_step = b.step("fs-img", "Build fs.img from staged userland + mkfs");
     fs_img_step.dependOn(&install_fs_img.step);
+
+    // Phase 3.E: shell-fs.img — install init_shell as /bin/init plus the
+    // six utility binaries (sh, ls, cat, echo, mkdir, rm). The shell-fs/
+    // staging tree carries /etc/motd and the empty /tmp/ directory.
+    const shell_fs_bin_stage = b.addWriteFiles();
+    _ = shell_fs_bin_stage.addCopyFile(init_shell_exe.getEmittedBin(), "init");
+    _ = shell_fs_bin_stage.addCopyFile(sh_exe.getEmittedBin(), "sh");
+    _ = shell_fs_bin_stage.addCopyFile(ls_exe.getEmittedBin(), "ls");
+    _ = shell_fs_bin_stage.addCopyFile(cat_exe.getEmittedBin(), "cat");
+    _ = shell_fs_bin_stage.addCopyFile(echo_exe.getEmittedBin(), "echo");
+    _ = shell_fs_bin_stage.addCopyFile(mkdir_exe.getEmittedBin(), "mkdir");
+    _ = shell_fs_bin_stage.addCopyFile(rm_exe.getEmittedBin(), "rm");
+
+    const shell_fs_img_run = b.addRunArtifact(mkfs_exe);
+    shell_fs_img_run.addArg("--root");
+    shell_fs_img_run.addDirectoryArg(b.path("src/kernel/userland/shell-fs"));
+    shell_fs_img_run.addArg("--bin");
+    shell_fs_img_run.addDirectoryArg(shell_fs_bin_stage.getDirectory());
+    shell_fs_img_run.addArg("--out");
+    const shell_fs_img = shell_fs_img_run.addOutputFileArg("shell-fs.img");
+
+    const install_shell_fs_img = b.addInstallFile(shell_fs_img, "shell-fs.img");
+    const shell_fs_img_step = b.step("shell-fs-img", "Build shell-fs.img with all Phase 3.E binaries");
+    shell_fs_img_step.dependOn(&install_shell_fs_img.step);
 
     const multi_boot_config_stub_dir = b.addWriteFiles();
     const multi_boot_config_zig = multi_boot_config_stub_dir.add(
@@ -753,6 +818,24 @@ pub fn build(b: *std.Build) void {
 
     const e2e_fs_step = b.step("e2e-fs", "Run the Phase 3.D fs-read e2e test (init opens /etc/motd)");
     e2e_fs_step.dependOn(&e2e_fs_run.step);
+
+    const shell_e2e_exe = b.addExecutable(.{
+        .name = "e2e-shell",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/shell.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const shell_e2e_run = b.addRunArtifact(shell_e2e_exe);
+    shell_e2e_run.step.dependOn(b.getInstallStep());
+    shell_e2e_run.step.dependOn(shell_fs_img_step);
+    shell_e2e_run.addFileArg(exe.getEmittedBin());
+    shell_e2e_run.addFileArg(shell_fs_img);
+    shell_e2e_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    shell_e2e_run.addFileArg(b.path("tests/e2e/shell_input.txt"));
+    const e2e_shell_step = b.step("e2e-shell", "Run the Phase 3.E shell e2e test");
+    e2e_shell_step.dependOn(&shell_e2e_run.step);
 
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
@@ -1086,8 +1169,8 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    wasm_exe.entry = .disabled;        // we call our own export, not _start
-    wasm_exe.rdynamic = true;          // expose `export fn` symbols
+    wasm_exe.entry = .disabled; // we call our own export, not _start
+    wasm_exe.rdynamic = true; // expose `export fn` symbols
 
     const install_wasm = b.addInstallArtifact(wasm_exe, .{
         .dest_dir = .{ .override = .{ .custom = "web" } },
@@ -1102,4 +1185,49 @@ pub fn build(b: *std.Build) void {
     const install_web_snake = b.addInstallFile(snake_elf.getEmittedBin(), "web/snake.elf");
     wasm_step.dependOn(&install_web_hello.step);
     wasm_step.dependOn(&install_web_snake.step);
+}
+
+/// Build a user binary by linking start.S + usys.S + ulib.zig + uprintf.zig +
+/// the binary's main.zig against user_linker.ld. Returns the executable so
+/// callers can wire its install step into a build target.
+fn addUserBinary(
+    b: *std.Build,
+    name: []const u8,
+    main_src: []const u8,
+    rv_target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    // Compile the binary's main.zig as an object (its `@import("lib/ulib.zig")` etc.
+    // pulls ulib + uprintf in transitively).
+    const main_obj = b.addObject(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(main_src),
+            .target = rv_target,
+            .optimize = optimize,
+            // Strip debug sections — fs.img has 4 MB of data blocks total;
+            // 7 binaries × ~150 KB debug each won't fit. The kernel ELF
+            // loader only loads PT_LOAD segments anyway.
+            .strip = true,
+            .single_threaded = true,
+        }),
+    });
+
+    const exe = b.addExecutable(.{
+        .name = b.fmt("{s}.elf", .{name}),
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = rv_target,
+            .optimize = optimize,
+            .strip = true,
+            .single_threaded = true,
+        }),
+    });
+    exe.root_module.addObject(main_obj);
+    exe.root_module.addAssemblyFile(b.path("src/kernel/user/lib/start.S"));
+    exe.root_module.addAssemblyFile(b.path("src/kernel/user/lib/usys.S"));
+    exe.setLinkerScript(b.path("src/kernel/user/user_linker.ld"));
+    exe.entry = .{ .symbol_name = "_start" };
+
+    return exe;
 }

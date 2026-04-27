@@ -13,14 +13,22 @@
 // ABI unchanged: a7 = syscall number, a0..a5 = args, a0 = return.
 
 const trap = @import("trap.zig");
-const uart = @import("uart.zig");
 const proc = @import("proc.zig");
 const page_alloc = @import("page_alloc.zig");
 const vm = @import("vm.zig");
 const file = @import("file.zig");
+const console = @import("console.zig");
 const inode = @import("fs/inode.zig");
 const path_mod = @import("fs/path.zig");
+const fsops = @import("fs/fsops.zig");
 const layout = @import("fs/layout.zig");
+
+pub const O_RDONLY: u32 = 0x000;
+pub const O_WRONLY: u32 = 0x001;
+pub const O_RDWR: u32 = 0x002;
+pub const O_CREAT: u32 = 0x040;
+pub const O_TRUNC: u32 = 0x200;
+pub const O_APPEND: u32 = 0x400;
 
 const SSTATUS_SUM: u32 = 1 << 18;
 
@@ -54,18 +62,11 @@ fn copyStrFromUser(user_va: u32, buf: []u8) ?[]u8 {
     return null;
 }
 
-fn sysWrite(fd: u32, buf_va: u32, len: u32) u32 {
-    if (fd != 1 and fd != 2) {
-        return @bitCast(@as(i32, -9)); // -EBADF
-    }
-    setSum();
-    var i: u32 = 0;
-    while (i < len) : (i += 1) {
-        const p: *const volatile u8 = @ptrFromInt(buf_va + i);
-        uart.writeByte(p.*);
-    }
-    clearSum();
-    return len;
+fn sysWrite(fd: u32, buf_va: u32, len: u32) i32 {
+    if (fd >= proc.NOFILE) return -1;
+    const idx = proc.cur().ofile[fd];
+    if (idx == 0) return -1;
+    return file.write(idx, buf_va, len);
 }
 
 pub fn sysExit(status: u32) noreturn {
@@ -106,16 +107,26 @@ fn sysSbrk(incr_signed: u32) u32 {
     return old_sz;
 }
 
-/// 56 openat(dirfd, path, flags) — 3.D ignores dirfd and flags
-/// (read-only existing file). Returns fd ≥ 0 or -1.
+/// 56 openat(dirfd, path, flags) — handles O_CREAT, O_TRUNC, O_APPEND.
+/// Returns fd ≥ 0 or -1.
 fn sysOpenat(dirfd: u32, path_user_va: u32, flags: u32) i32 {
     _ = dirfd;
-    _ = flags;
 
     var pbuf: [path_mod.MAX_PATH]u8 = undefined;
     const p = copyStrFromUser(path_user_va, &pbuf) orelse return -1;
 
-    const ip = path_mod.namei(p) orelse return -1;
+    // Resolve, or O_CREAT a new file.
+    const ip = path_mod.namei(p) orelse blk: {
+        if ((flags & O_CREAT) == 0) return -1;
+        break :blk fsops.create(p, .File) orelse return -1;
+    };
+
+    // O_TRUNC on a regular file: free all data blocks, reset size to 0.
+    if ((flags & O_TRUNC) != 0) {
+        inode.ilock(ip);
+        if (ip.dinode.type == .File) inode.itrunc(ip);
+        inode.iunlock(ip);
+    }
 
     const fidx = file.alloc() orelse {
         inode.iput(ip);
@@ -123,9 +134,16 @@ fn sysOpenat(dirfd: u32, path_user_va: u32, flags: u32) i32 {
     };
     file.ftable[fidx].type = .Inode;
     file.ftable[fidx].ip = ip;
-    file.ftable[fidx].off = 0;
 
-    // Allocate the lowest free fd in cur.ofile.
+    // O_APPEND: seek to EOF.
+    if ((flags & O_APPEND) != 0) {
+        inode.ilock(ip);
+        file.ftable[fidx].off = ip.dinode.size;
+        inode.iunlock(ip);
+    } else {
+        file.ftable[fidx].off = 0;
+    }
+
     const cur_p = proc.cur();
     var fd: u32 = 0;
     while (fd < proc.NOFILE) : (fd += 1) {
@@ -134,8 +152,6 @@ fn sysOpenat(dirfd: u32, path_user_va: u32, flags: u32) i32 {
             return @intCast(fd);
         }
     }
-
-    // No free fd — release the file table entry + inode.
     file.close(fidx);
     return -1;
 }
@@ -174,6 +190,26 @@ fn sysFstat(fd: u32, stat_user_va: u32) i32 {
     const idx = proc.cur().ofile[fd];
     if (idx == 0) return -1;
     return file.fstat(idx, stat_user_va);
+}
+
+/// 34 mkdirat(dirfd, path) — 3.E ignores dirfd. Returns 0 / -1.
+fn sysMkdirat(dirfd: u32, path_va: u32) i32 {
+    _ = dirfd;
+    var pbuf: [path_mod.MAX_PATH]u8 = undefined;
+    const p = copyStrFromUser(path_va, &pbuf) orelse return -1;
+    const ip = fsops.create(p, .Dir) orelse return -1;
+    inode.iput(ip);
+    return 0;
+}
+
+/// 35 unlinkat(dirfd, path, flags) — 3.E ignores dirfd and flags.
+/// Returns 0 / -1.
+fn sysUnlinkat(dirfd: u32, path_va: u32, flags: u32) i32 {
+    _ = dirfd;
+    _ = flags;
+    var pbuf: [path_mod.MAX_PATH]u8 = undefined;
+    const p = copyStrFromUser(path_va, &pbuf) orelse return -1;
+    return fsops.unlink(p);
 }
 
 /// Compose a new cwd_path given the current cwd_path and a relative or
@@ -285,7 +321,7 @@ fn sysGetcwd(buf_user_va: u32, sz: u32) i32 {
 /// `^C` should target. 3.C accepts and discards; 3.E (when the console
 /// line discipline lands) wires this to the actual fg_pid global.
 fn sysSetFgPid(pid: u32) u32 {
-    _ = pid;
+    console.setFgPid(pid);
     return 0;
 }
 
@@ -293,19 +329,21 @@ fn sysSetFgPid(pid: u32) u32 {
 /// line discipline. 3.C accepts and discards; 3.E wires this to the
 /// console state machine.
 fn sysConsoleSetMode(mode: u32) u32 {
-    _ = mode;
+    console.setMode(mode);
     return 0;
 }
 
 pub fn dispatch(tf: *trap.TrapFrame) void {
     switch (tf.a7) {
         17 => tf.a0 = @bitCast(sysGetcwd(tf.a0, tf.a1)),
+        34 => tf.a0 = @bitCast(sysMkdirat(tf.a0, tf.a1)),
+        35 => tf.a0 = @bitCast(sysUnlinkat(tf.a0, tf.a1, tf.a2)),
         49 => tf.a0 = @bitCast(sysChdir(tf.a0)),
         56 => tf.a0 = @bitCast(sysOpenat(tf.a0, tf.a1, tf.a2)),
         57 => tf.a0 = @bitCast(sysClose(tf.a0)),
         62 => tf.a0 = @bitCast(sysLseek(tf.a0, tf.a1, tf.a2)),
         63 => tf.a0 = @bitCast(sysRead(tf.a0, tf.a1, tf.a2)),
-        64 => tf.a0 = sysWrite(tf.a0, tf.a1, tf.a2),
+        64 => tf.a0 = @bitCast(sysWrite(tf.a0, tf.a1, tf.a2)),
         80 => tf.a0 = @bitCast(sysFstat(tf.a0, tf.a1)),
         93 => sysExit(tf.a0),
         124 => tf.a0 = sysYield(),
@@ -317,5 +355,11 @@ pub fn dispatch(tf: *trap.TrapFrame) void {
         5000 => tf.a0 = sysSetFgPid(tf.a0),
         5001 => tf.a0 = sysConsoleSetMode(tf.a0),
         else => tf.a0 = @bitCast(@as(i32, -38)), // -ENOSYS
+    }
+
+    // Phase 3.E: if the process was killed (e.g. by ^C while sleeping
+    // in this syscall), exit on the way back to user instead of returning.
+    if (proc.cur().killed != 0) {
+        proc.exit(-1);
     }
 }

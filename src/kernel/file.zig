@@ -19,6 +19,7 @@ const std = @import("std");
 const inode = @import("fs/inode.zig");
 const proc = @import("proc.zig");
 const layout = @import("fs/layout.zig");
+const console = @import("console.zig");
 
 pub const NFILE: u32 = 64;
 const READ_CHUNK: u32 = 4096;
@@ -106,6 +107,11 @@ var read_kbuf: [READ_CHUNK]u8 align(4) = undefined;
 pub fn read(idx: u32, dst_user_va: u32, n: u32) i32 {
     if (idx == 0 or idx >= NFILE) return -1;
     const f = &ftable[idx];
+
+    if (f.type == .Console) {
+        return console.read(dst_user_va, n);
+    }
+
     if (f.type != .Inode or f.ip == null) return -1;
 
     const want = if (n > READ_CHUNK) READ_CHUNK else n;
@@ -127,9 +133,44 @@ pub fn read(idx: u32, dst_user_va: u32, n: u32) i32 {
     return @intCast(got);
 }
 
+// Static staging buffer for file.write inode path (Task 12 fills in writei).
+var write_kbuf: [4096]u8 align(4) = undefined;
+
+/// Write up to `n` bytes from user VA `src_user_va` to file `idx`.
+/// Returns bytes written (≥ 0) or -1 on bad fd.
+pub fn write(idx: u32, src_user_va: u32, n: u32) i32 {
+    if (idx == 0 or idx >= NFILE) return -1;
+    const f = &ftable[idx];
+
+    if (f.type == .Console) {
+        return console.write(src_user_va, n);
+    }
+
+    if (f.type != .Inode or f.ip == null) return -1;
+
+    const want = if (n > write_kbuf.len) write_kbuf.len else n;
+
+    // SUM-1 copy from user into kernel staging buffer.
+    setSum();
+    var i: u32 = 0;
+    while (i < want) : (i += 1) {
+        const src_p: *const volatile u8 = @ptrFromInt(src_user_va + i);
+        write_kbuf[i] = src_p.*;
+    }
+    clearSum();
+
+    inode.ilock(f.ip.?);
+    const wrote = inode.writei(f.ip.?, &write_kbuf, f.off, @intCast(want));
+    inode.iunlock(f.ip.?);
+
+    if (wrote > 0) f.off += @intCast(wrote);
+    return wrote;
+}
+
 pub fn lseek(idx: u32, off: i32, whence: u32) i32 {
     if (idx == 0 or idx >= NFILE) return -1;
     const f = &ftable[idx];
+    if (f.type == .Console) return -1; // not seekable
     if (f.type != .Inode or f.ip == null) return -1;
 
     const new_off: i64 = switch (whence) {
@@ -152,6 +193,14 @@ pub fn lseek(idx: u32, off: i32, whence: u32) i32 {
 pub fn fstat(idx: u32, stat_user_va: u32) i32 {
     if (idx == 0 or idx >= NFILE) return -1;
     const f = &ftable[idx];
+    if (f.type == .Console) {
+        const stat: Stat = .{ .type = @intFromEnum(layout.FileType.File), .size = 0 };
+        setSum();
+        const dst: *volatile Stat = @ptrFromInt(stat_user_va);
+        dst.* = stat;
+        clearSum();
+        return 0;
+    }
     if (f.type != .Inode or f.ip == null) return -1;
 
     inode.ilock(f.ip.?);

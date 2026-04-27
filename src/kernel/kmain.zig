@@ -18,6 +18,8 @@ const plic = @import("plic.zig");
 const block = @import("block.zig");
 const bufcache = @import("fs/bufcache.zig");
 const inode = @import("fs/inode.zig");
+const file = @import("file.zig");
+const console = @import("console.zig");
 
 const SATP_MODE_SV32: u32 = 1 << 31;
 
@@ -41,6 +43,10 @@ export fn kmain() callconv(.c) noreturn {
         plic.setPriority(plic.IRQ_BLOCK, 1);
         plic.enable(plic.IRQ_BLOCK);
         plic.setThreshold(0);
+        plic.setPriority(plic.IRQ_UART_RX, 1);
+        plic.enable(plic.IRQ_UART_RX);
+        // (threshold already set to 0 above; same threshold gates both sources)
+        console.init();
 
         const init_p = proc.alloc() orelse kprintf.panic("kmain: alloc init", .{});
         @memcpy(init_p.name[0..4], "init");
@@ -50,6 +56,21 @@ export fn kmain() callconv(.c) noreturn {
         vm.mapKernelAndMmio(init_root);
         init_p.sz = 0;
         init_p.cwd = 0; // lazy-root
+
+        // Phase 3.E: initialize file table + install console fds 0/1/2 onto
+        // init so /bin/init inherits stdin/stdout/stderr.
+        file.init();
+
+        const console_fidx = file.alloc() orelse kprintf.panic("kmain: file.alloc console", .{});
+        file.ftable[console_fidx].type = .Console;
+        file.ftable[console_fidx].ip = null;
+        file.ftable[console_fidx].off = 0;
+        // alloc gave us ref_count=1; bring to 3 (one per fd 0/1/2).
+        _ = file.dup(console_fidx);
+        _ = file.dup(console_fidx);
+        init_p.ofile[0] = console_fidx;
+        init_p.ofile[1] = console_fidx;
+        init_p.ofile[2] = console_fidx;
 
         // Install S-mode trap setup BEFORE exec — exec calls block.read
         // which sleeps, which transitively requires the IRQ + trap path
@@ -142,6 +163,21 @@ export fn kmain() callconv(.c) noreturn {
         init_p.sz = vm.USER_TEXT_VA + 0x10000;
         init_p.state = .Runnable;
 
+        // Phase 3.E: initialize file table + install console fds 0/1/2 onto
+        // init so /bin/init inherits stdin/stdout/stderr.
+        file.init();
+
+        const console_fidx = file.alloc() orelse kprintf.panic("kmain: file.alloc console", .{});
+        file.ftable[console_fidx].type = .Console;
+        file.ftable[console_fidx].ip = null;
+        file.ftable[console_fidx].off = 0;
+        // alloc gave us ref_count=1; bring to 3 (one per fd 0/1/2).
+        _ = file.dup(console_fidx);
+        _ = file.dup(console_fidx);
+        init_p.ofile[0] = console_fidx;
+        init_p.ofile[1] = console_fidx;
+        init_p.ofile[2] = console_fidx;
+
         // Skip the single + multi setup blocks below — install stvec + sscratch
         // + sstatus and jump into scheduler() the same way they do.
         const stvec_val_fork: u32 = @intCast(@intFromPtr(&s_trap_entry));
@@ -213,6 +249,23 @@ export fn kmain() callconv(.c) noreturn {
     pid1.sz = vm.USER_TEXT_VA + 0x10000; // initial brk above text region
     pid1.state = .Runnable;
 
+    // Phase 3.E: sysWrite routes through file.write, so each user proc's
+    // ofile[0..2] must point at a Console-typed file entry. Without this
+    // wiring, write(1, ...) returns -1 and the user payload's "hello from
+    // u-mode" output disappears. Install one shared console entry; PID 1
+    // gets fds 0/1/2 dup'd onto it, and (if MULTI_PROC) PID 2 gets the
+    // same.
+    file.init();
+    const console_fidx = file.alloc() orelse kprintf.panic("kmain: file.alloc console", .{});
+    file.ftable[console_fidx].type = .Console;
+    file.ftable[console_fidx].ip = null;
+    file.ftable[console_fidx].off = 0;
+    _ = file.dup(console_fidx);
+    _ = file.dup(console_fidx);
+    pid1.ofile[0] = console_fidx;
+    pid1.ofile[1] = console_fidx;
+    pid1.ofile[2] = console_fidx;
+
     // Optional: PID 2.
     if (boot_config.MULTI_PROC) {
         const pid2 = proc.alloc() orelse kprintf.panic("kmain: alloc PID 2", .{});
@@ -229,6 +282,13 @@ export fn kmain() callconv(.c) noreturn {
         pid2.tf.sp = vm.USER_STACK_TOP;
         pid2.sz = vm.USER_TEXT_VA + 0x10000;
         pid2.state = .Runnable;
+
+        _ = file.dup(console_fidx);
+        _ = file.dup(console_fidx);
+        _ = file.dup(console_fidx);
+        pid2.ofile[0] = console_fidx;
+        pid2.ofile[1] = console_fidx;
+        pid2.ofile[2] = console_fidx;
     }
 
     // Install the S-mode trap vector + sscratch (will be overwritten on

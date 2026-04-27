@@ -20,7 +20,7 @@ pub const PLIC_THRESHOLD_S: u32 = 0x0c20_1000; // S-context threshold
 pub const PLIC_CLAIM_S: u32 = 0x0c20_1004; // read = claim, write = complete
 
 pub const IRQ_BLOCK: u32 = 1;
-// IRQ_UART_RX = 10  (3.E)
+pub const IRQ_UART_RX: u32 = 10;
 
 pub fn setPriority(src: u32, prio: u32) void {
     const reg: *volatile u32 = @ptrFromInt(PLIC_PRIORITY_BASE + src * 4);

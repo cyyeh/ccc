@@ -75,21 +75,30 @@ pub fn scheduler() noreturn {
             while (true) asm volatile ("wfi");
         }
         // Nothing runnable but something is alive (embryo / sleeping /
-        // zombie). Open a one-instruction SIE window so a pending PLIC
-        // block IRQ (or timer SSI) can be delivered. While the window
-        // is open, swap stvec to s_kernel_trap_entry — the user vector
-        // would clobber the sleeping proc's tf and kstack. The kernel
-        // vector saves caller-saved regs on the current (scheduler)
-        // stack, runs s_kernel_trap_dispatch, restores, and srets back
-        // here. SPIE is forced to 0 by the dispatcher so the trailing
-        // csrc closes the window without re-trapping on a still-pending
-        // timer SSI.
+        // zombie). Open a WFI window so a pending PLIC block IRQ (or
+        // timer SSI) can be delivered. While the window is open, swap
+        // stvec to s_kernel_trap_entry — the user vector would clobber
+        // the sleeping proc's tf and kstack. The kernel vector saves
+        // caller-saved regs on the current (scheduler) stack, runs
+        // s_kernel_trap_dispatch, restores, and srets back here. SPIE
+        // is forced to 0 by the dispatcher so the trailing csrc closes
+        // the window without re-trapping on a still-pending timer SSI.
+        // s_kernel_trap_dispatch also advances sepc by 4 so sret returns
+        // to the post-wfi instruction (csrc) rather than re-executing
+        // wfi in a fixed-point loop.
+        //
+        // WFI (instead of a bare csrs/csrc pair) is required so that the
+        // emulator's UART RX pump runs (cpu.idleSpin fires on WFI).
+        // Without WFI the pump never drains --input bytes into the RX
+        // FIFO, so PLIC source 10 never asserts and the shell never
+        // receives its input.
         const kvec: u32 = @intCast(@intFromPtr(&s_kernel_trap_entry));
         const uvec: u32 = @intCast(@intFromPtr(&s_trap_entry));
         const SSTATUS_SIE: u32 = 1 << 1;
         asm volatile (
             \\ csrw stvec, %[k]
             \\ csrs sstatus, %[b]
+            \\ wfi
             \\ csrc sstatus, %[b]
             \\ csrw stvec, %[u]
             :
