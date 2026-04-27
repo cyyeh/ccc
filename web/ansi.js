@@ -41,11 +41,16 @@ export class Ansi {
     }
   }
 
-  // Move cursor down one row. If we're already at the bottom row, scroll
-  // the screen up by one line: drop row 0, push a blank row at the bottom.
-  // Called from the \n branch in _byte. (Future ESC D / IND or NEL would
-  // be natural additional callers; cursor-positioning CSI H clamps inline
-  // and intentionally doesn't scroll.)
+  // Handle LF (\n): move cursor down one row AND reset column to 0,
+  // matching the standard ONLCR cooked-tty behavior that the host
+  // terminal would apply to CLI output. Without the column reset, ls
+  // output would form a staircase ("ls\n.\n ..\n  bin\n...") because
+  // the kernel emits bare \n, not \r\n. Snake explicitly writes \r\n
+  // (programs/snake/snake.zig), so it's unaffected; the editor uses
+  // ESC[r;cH for positioning and never relies on LF for column reset.
+  //
+  // If we're at the bottom row, scroll the screen up by one line first
+  // (drop row 0, push a blank row at the bottom).
   _lineFeed() {
     if (this.row >= this.H - 1) {
       this.screen.shift();
@@ -54,6 +59,7 @@ export class Ansi {
     } else {
       this.row += 1;
     }
+    this.col = 0;
   }
 
   feed(bytes) {
