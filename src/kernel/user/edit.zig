@@ -51,6 +51,25 @@ fn save(path_z: [*:0]const u8) void {
     _ = ulib.close(@intCast(fd));
 }
 
+fn insertByte(b: u8) void {
+    if (content_len >= CONTENT_CAP) return; // silently drop on full
+    // Shift tail right one byte.
+    var i: u32 = content_len;
+    while (i > cursor) : (i -= 1) content[i] = content[i - 1];
+    content[cursor] = b;
+    content_len += 1;
+    cursor += 1;
+}
+
+fn backspace() void {
+    if (cursor == 0) return;
+    // Shift tail left one byte (overwriting the byte before cursor).
+    var i: u32 = cursor - 1;
+    while (i + 1 < content_len) : (i += 1) content[i] = content[i + 1];
+    content_len -= 1;
+    cursor -= 1;
+}
+
 export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
     if (argc < 2) {
         uprintf.printf(2, "usage: edit <path>\n", &.{});
@@ -88,9 +107,14 @@ export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
         const got = ulib.read(0, &b, 1);
         if (got <= 0) return 0;
         switch (b[0]) {
-            0x13 => save(path_z), // ^S
-            0x18 => return 0,     // ^X
-            else => {},
+            0x13 => save(path_z),                         // ^S
+            0x18 => return 0,                             // ^X
+            0x08, 0x7F => backspace(),                    // backspace / DEL
+            '\n', '\r' => insertByte('\n'),               // newline (normalize \r → \n)
+            else => {
+                if (b[0] >= 0x20 and b[0] <= 0x7E) insertByte(b[0]);
+                // else: drop unknown control byte
+            },
         }
     }
 }
