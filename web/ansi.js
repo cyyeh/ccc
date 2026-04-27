@@ -34,8 +34,9 @@ export class Ansi {
 
   // Move cursor down one row. If we're already at the bottom row, scroll
   // the screen up by one line: drop row 0, push a blank row at the bottom.
-  // Used by both \n in the input stream and any cursor positioning that
-  // would otherwise place the cursor past the last row.
+  // Called from the \n branch in _byte. (Future ESC D / IND or NEL would
+  // be natural additional callers; cursor-positioning CSI H clamps inline
+  // and intentionally doesn't scroll.)
   _lineFeed() {
     if (this.row >= this.H - 1) {
       this.screen.shift();
