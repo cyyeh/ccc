@@ -77,6 +77,7 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build kernel-echo` | Build the Phase 3.E `echo.elf` |
 | `zig build kernel-mkdir` | Build the Phase 3.E `mkdir.elf` |
 | `zig build kernel-rm` | Build the Phase 3.E `rm.elf` |
+| `zig build kernel-edit` | Build the Phase 3.F `edit.elf` (cursor-moving raw-mode editor with ANSI redraw) |
 | `zig build mkfs` | Build the host-side `mkfs` tool (lays out a 4 MB image: superblock + bitmap + inode table + data blocks) |
 | `zig build fs-img` | Stage `userland/fs/` + `fs_init.elf` and run `mkfs` to produce `zig-out/fs.img` |
 | `zig build shell-fs-img` | Stage `userland/shell-fs/` + every Phase 3.E userland binary and run `mkfs` to produce `zig-out/shell-fs.img` (init_shell at `/bin/init`) |
@@ -85,6 +86,8 @@ and `build.zig.zon` pins the minimum Zig version (0.16.0).
 | `zig build e2e-fork` | Boot `kernel-fork.elf`; `init` forks `/bin/hello`; parent reaps; emulator returns 0 (Plan 3.C milestone) |
 | `zig build e2e-fs` | Boot `kernel-fs.elf` against `fs.img`; on-disk `/bin/init` opens `/etc/motd`, reads it, writes to fd 1, exits 0 (Plan 3.D milestone) |
 | `zig build e2e-shell` | Boot `kernel-fs.elf` against `shell-fs.img` with `--input tests/e2e/shell_input.txt`; assert prompt+command echo for the canonical `ls /bin / echo / cat / rm / exit` session and a clean halt (Plan 3.E milestone) |
+| `zig build e2e-editor` | Boot `kernel-fs.elf` against a tmp copy of `shell-fs.img` with `--input tests/e2e/editor_input.txt`; assert post-editor `cat /etc/motd` shows the inserted-Y change `heYllo from phase 3\n` (Plan 3.F milestone) |
+| `zig build e2e-persist` | Run `ccc` twice on a tmp copy of `shell-fs.img`: pass 1 echos `replaced > /etc/motd`, pass 2 cats it; assert pass 2 sees `replaced\n` (Plan 3.F: writes survive emulator restart) |
 | `zig build qemu-diff-kernel` | Diff the kernel.elf trace against `qemu-system-riscv32` (debug aid; needs QEMU installed) |
 | `zig build plic-block-test` | Build the Phase 3.A integration test ELF (asm-only S-mode program) |
 | `zig build e2e-plic-block` | Build a 4 MB test image, run `ccc --disk … plic_block_test.elf`, assert exit 0 (Plan 3.A milestone: full CMD → IRQ → trap → claim path) |
@@ -137,7 +140,7 @@ to "GitHub Actions" in repo settings (one-time manual step).
 
 ## Status
 
-**Phase 3 Plan E done — FS write path + console fd + shell + utilities.**
+**Phase 3 complete — multi-process OS + filesystem + shell.**
 Plan 3.A merged: PLIC, simple block device, UART RX, `--disk` and `--input`
 flags, real `wfi` idle. Plan 3.B merged: free-list page allocator,
 `ptable[NPROC=16]`, round-robin scheduler with `swtch`, kernel-side ELF32
@@ -213,7 +216,7 @@ Debug aids: `zig build qemu-diff-kernel` runs `scripts/qemu-diff-kernel.sh`,
 which compares per-instruction traces between our emulator and QEMU.
 Requires `qemu-system-riscv32`; not a CI gate.
 
-**Phase 3 — multi-process OS + filesystem + shell — in progress.**
+**Phase 3 — multi-process OS + filesystem + shell — complete.**
 
 Plan 3.A (emulator: PLIC + simple block device + UART RX + `--disk`/`--input`
 flags + real `wfi` idle) is merged. The CPU now blocks in `wfi` until an
@@ -326,7 +329,22 @@ runs the scripted session through `--input`:
     $ exit
     ticks observed: 6
 
-Next: Plan 3.F — `edit` userland + raw-mode editor + `e2e-persist`.
+Plan 3.F (editor + persistence + final demo) is merged. `edit.zig` is
+the cursor-moving text editor that finally exercises 3.E's raw-mode
+console arm: load a file into a 16 KB buffer, switch to raw mode, run
+a redraw-on-every-keystroke loop dispatching ESC [ A/B/C/D arrow
+sequences, printable inserts at cursor, backspace, ^S save (close +
+re-open with O_TRUNC + write), and ^X exit (cooked mode + exit 0).
+ANSI redraw clears the screen, prints the buffer, and lands the cursor
+at the byte-offset's row/col. `e2e-editor` scripts a 43-byte session
+through `--input` (edit /etc/motd → 2× right-arrow → Y → ^S → ^X → cat)
+and asserts the on-disk file matches "heYllo from phase 3\n".
+`e2e-persist` proves block-device writes survive: copy shell-fs.img to
+a tmp path, run ccc once with `echo replaced > /etc/motd\nexit\n`, run
+ccc again on the same image with `cat /etc/motd\nexit\n`, assert
+"replaced\n" appears in pass 2's stdout. The full Phase 3 §Definition
+of Done holds: boot to a shell, run our own programs, edit a file
+interactively, observe the change persist across emulator restarts.
 
 ## Layout
 
@@ -391,6 +409,7 @@ src/
       echo.zig        # 3.E: print joined args + \n
       mkdir.zig       # 3.E: mkdirat for each arg
       rm.zig          # 3.E: unlinkat for each arg
+      edit.zig        # 3.F: cursor-moving editor — load 16 KB buffer, raw mode in/out, ESC arrow keys, ^S save, ^X exit, ANSI redraw
       lib/
         start.S       # 3.E: RV32 _start — parses argc/argv from sp tail, calls main, ecall exit
         usys.S        # 3.E: 19 syscall stubs (li a7; ecall; ret)
@@ -422,6 +441,11 @@ tests/
     fs.zig            # Plan 3.D verifier (init opens /etc/motd, writes contents to fd 1)
     shell.zig         # Plan 3.E verifier (scripted ls/echo/cat/rm/exit session)
     shell_input.txt   # 51-byte canonical session piped via --input
+    editor.zig        # Plan 3.F verifier (edit /etc/motd → 2× right → Y → ^S^X → cat asserts)
+    editor_input.txt  # 43-byte binary fixture (ESC sequences + control bytes for the editor session)
+    persist.zig       # Plan 3.F verifier (ccc twice on same disk; second sees first's writes)
+    persist_input1.txt # pass-1 input: echo replaced > /etc/motd; exit
+    persist_input2.txt # pass-2 input: cat /etc/motd; exit
     snake.zig         # snake e2e verifier (deterministic input → GAME OVER)
     snake_input.txt   # snake e2e input fixture
   fixtures/           # tiny hand-crafted ELF used only by elf.zig tests
