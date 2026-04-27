@@ -28,6 +28,9 @@ var content: [CONTENT_CAP]u8 = undefined;
 var content_len: u32 = 0;
 var cursor: u32 = 0;
 
+const EscState = enum { Normal, GotEsc, GotCsi };
+var esc_state: EscState = .Normal;
+
 const PATH_MAX: u32 = 256;
 var path_buf: [PATH_MAX]u8 = undefined;
 
@@ -70,6 +73,78 @@ fn backspace() void {
     cursor -= 1;
 }
 
+fn moveRight() void {
+    if (cursor < content_len) cursor += 1;
+}
+
+fn moveLeft() void {
+    if (cursor > 0) cursor -= 1;
+}
+
+/// Compute (row, col) for `offset` within content. Both are 1-based
+/// (matches ANSI `\x1b[<row>;<col>H` semantics). Walks newlines from
+/// the start.
+fn rowCol(offset: u32) struct { row: u32, col: u32 } {
+    var row: u32 = 1;
+    var col: u32 = 1;
+    var i: u32 = 0;
+    while (i < offset) : (i += 1) {
+        if (content[i] == '\n') {
+            row += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    return .{ .row = row, .col = col };
+}
+
+fn writeStr(s: []const u8) void {
+    _ = ulib.write(1, s.ptr, @intCast(s.len));
+}
+
+/// Decimal-print n into a small fixed buffer; emit via writeStr.
+fn writeUint(n: u32) void {
+    var buf: [11]u8 = undefined;
+    var i: u32 = 0;
+    var v: u32 = n;
+    if (v == 0) {
+        buf[0] = '0';
+        i = 1;
+    } else {
+        while (v > 0) {
+            buf[i] = @intCast('0' + (v % 10));
+            i += 1;
+            v /= 10;
+        }
+        // reverse in place
+        var lo: u32 = 0;
+        var hi: u32 = i - 1;
+        while (lo < hi) {
+            const t = buf[lo];
+            buf[lo] = buf[hi];
+            buf[hi] = t;
+            lo += 1;
+            hi -= 1;
+        }
+    }
+    writeStr(buf[0..i]);
+}
+
+fn redraw() void {
+    // Clear screen + home cursor.
+    writeStr("\x1b[2J\x1b[H");
+    // Render the buffer.
+    if (content_len > 0) writeStr(content[0..content_len]);
+    // Position cursor at the byte-offset's (row, col).
+    const rc = rowCol(cursor);
+    writeStr("\x1b[");
+    writeUint(rc.row);
+    writeStr(";");
+    writeUint(rc.col);
+    writeStr("H");
+}
+
 export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
     if (argc < 2) {
         uprintf.printf(2, "usage: edit <path>\n", &.{});
@@ -102,18 +177,41 @@ export fn main(argc: u32, argv: [*]const [*:0]const u8) i32 {
     enterRaw();
     defer leaveRaw();
 
+    redraw();
+
     while (true) {
         var b: [1]u8 = .{0};
         const got = ulib.read(0, &b, 1);
         if (got <= 0) return 0;
-        switch (b[0]) {
-            0x13 => save(path_z),                         // ^S
-            0x18 => return 0,                             // ^X
-            0x08, 0x7F => backspace(),                    // backspace / DEL
-            '\n', '\r' => insertByte('\n'),               // newline (normalize \r → \n)
-            else => {
-                if (b[0] >= 0x20 and b[0] <= 0x7E) insertByte(b[0]);
-                // else: drop unknown control byte
+        switch (esc_state) {
+            .Normal => switch (b[0]) {
+                0x1B => esc_state = .GotEsc,
+                0x13 => save(path_z),                         // ^S
+                0x18 => return 0,                             // ^X
+                0x08, 0x7F => { backspace(); redraw(); },     // backspace / DEL
+                '\n', '\r' => { insertByte('\n'); redraw(); },
+                else => {
+                    if (b[0] >= 0x20 and b[0] <= 0x7E) {
+                        insertByte(b[0]);
+                        redraw();
+                    }
+                },
+            },
+            .GotEsc => {
+                if (b[0] == '[') {
+                    esc_state = .GotCsi;
+                } else {
+                    esc_state = .Normal;
+                }
+            },
+            .GotCsi => {
+                switch (b[0]) {
+                    'C' => { moveRight(); redraw(); },
+                    'D' => { moveLeft(); redraw(); },
+                    'A', 'B' => {}, // up/down — Task 5 wires these
+                    else => {},
+                }
+                esc_state = .Normal;
             },
         }
     }
