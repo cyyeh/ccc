@@ -82,7 +82,13 @@ self.onmessage = async (e) => {
 
 function runLoop(runId) {
   const startMs = performance.now();
-  const CHUNK = 50000;
+  // 500K instructions per chunk ≈ 30-100ms on typical wasm (~5-15 MIPS).
+  // Was 50K — fine for snake (8 Hz tick) but ~10× too slow for the shell,
+  // which has to traverse fork/exec/disk-read paths and burns most cycles
+  // on wfi-spin idleness. Bigger chunks → more progress per setTimeout(0)
+  // overhead (~4ms per yield), at the cost of slightly higher input
+  // latency. 50ms ceiling is invisible for human typing.
+  const CHUNK = 500000;
 
   function tick() {
     if (runId !== currentRunId) return; // superseded — abandon this chain

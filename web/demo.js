@@ -139,7 +139,7 @@ function render() {
   if (cursor) {
     if (ansi.cursor_visible) {
       cursor.classList.remove("hidden");
-      cursor.style.top  = `calc(${PAD_TOP}px + ${ansi.row} * 1.55em)`;
+      cursor.style.top  = `calc(${PAD_TOP}px + ${ansi.row} * 1.2em)`;
       cursor.style.left = `calc(${PAD_LEFT}px + ${ansi.col} * 1ch)`;
     } else {
       cursor.classList.add("hidden");
