@@ -35,6 +35,15 @@
         <code>exit</code> to halt
       </div>
       <div class="instructions-row">
+        <strong>editor:</strong>
+        arrow keys move ·
+        printable keys insert at cursor ·
+        <code>Backspace</code> delete ·
+        <code>^S</code> save ·
+        <code>^X</code> exit
+        — note: use <code>Ctrl</code> (not <code>Cmd</code> on macOS, which the browser keeps for itself).
+      </div>
+      <div class="instructions-row">
         <strong>what's running:</strong>
         a from-scratch RV32 kernel (M-mode boot shim → S-mode kernel → cooked-mode console
         → fork/exec → on-disk shell + utilities) booted from <code>shell-fs.img</code>
