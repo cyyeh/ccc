@@ -86,8 +86,12 @@ fn jsClock() i128 {
     return mtime_ns;
 }
 
-// 16 MiB of guest RAM is plenty for hello.elf.
-const RAM_SIZE: usize = 16 * 1024 * 1024;
+// 128 MiB of guest RAM matches the CLI default (`--memory 128` in
+// src/emulator/main.zig). The kernel's trampoline page lives at
+// RAM_BASE + 128 MB - 4 KB (= 0x87FFF000), so anything smaller than
+// 128 MB triggers an access fault during kmain's page-table setup,
+// even though hello.elf alone would happily fit in 16 MB.
+const RAM_SIZE: usize = 128 * 1024 * 1024;
 
 // Module-level emulator state that survives across runStep calls.
 // The arena, devices, memory, and cpu all live here so no heap pointer
