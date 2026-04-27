@@ -4,10 +4,19 @@ A single-page browser demo of [`ccc`](../), a from-scratch RISC-V CPU
 emulator written in Zig. The same emulator modules that power the
 native CLI (`cpu.zig`, `memory.zig`, `elf.zig`, `devices/*.zig`) are
 cross-compiled to `wasm32-freestanding` via a thin entry point
-(`demo/web_main.zig`) and loaded into your browser. Two RV32 programs
+(`demo/web_main.zig`) and loaded into your browser. Three RV32 programs
 ship with the page:
 
-- **`snake.elf`** (default) — an interactive snake game. A bare M-mode
+- **`shell.elf`** (default) — a full Phase 3.E + 3.F shell. The page
+  loads `kernel-fs.elf` (M-mode boot shim → S-mode kernel → cooked-mode
+  console → fork/exec → on-disk init) plus `shell-fs.img` (a 4 MB FS
+  image with `/bin/{sh,ls,cat,echo,mkdir,rm,edit}` + `/etc/motd`).
+  Click the terminal, then type `ls /bin`, `cat /etc/motd`,
+  `echo hi > /tmp/x`, `edit /etc/motd`, `^C` to cancel a foreground
+  program, `exit` to halt. **Requires a physical keyboard — desktop
+  or laptop only.** Disk writes live in wasm linear memory and reset
+  on every page load.
+- **`snake.elf`** — an interactive snake game. A bare M-mode
   supervisor drives a CLINT timer IRQ for the game tick and polls
   UART RX for input. Click the terminal, then move with `W` / `A` /
   `S` / `D`, press `Space` to start, `Q` to quit. **Requires a
@@ -33,7 +42,13 @@ ship with the page:
    selected ELF on demand, copies the ELF bytes into the wasm load
    buffer, and drives `runStep()` in 50 000-instruction chunks via
    `setTimeout`. Yielding between chunks lets the Worker service
-   `pushInput` messages — a single blocking `run()` couldn't.
+   `pushInput` messages — a single blocking `run()` couldn't. When
+   the selected program has a disk image (currently only `shell.elf`,
+   which fetches `shell-fs.img`), the Worker fetches it in parallel
+   with the ELF and copies it into a 4 MB `disk_buffer` exposed by the
+   wasm via `diskBufferPtr/Cap`; `runStart` then receives a non-zero
+   `disk_len` and wires the buffer slice into the emulator's block
+   device.
 4. `demo.js` (main thread) decodes captured UART bytes through a
    ~120-line ANSI interpreter (`ansi.js`, full-redraw subset) into a
    focusable `<pre>` and forwards key events to the Worker. The
@@ -50,10 +65,11 @@ python3 -m http.server -d . 8000          # any static server works
 open http://localhost:8000/web/
 ```
 
-`web/ccc.wasm`, `web/hello.elf`, and `web/snake.elf` are gitignored —
-all three are produced by `zig build wasm` and overlaid into the Pages
-artifact in CI. Run `stage-web.sh` (or `zig build wasm` + the three
-`cp` commands it wraps) before serving locally.
+`web/ccc.wasm`, `web/hello.elf`, `web/snake.elf`, `web/kernel-fs.elf`,
+and `web/shell-fs.img` are gitignored — all five are produced by
+`zig build wasm` and overlaid into the Pages artifact in CI. Run
+`stage-web.sh` (or `zig build wasm` + the five `cp` commands it wraps)
+before serving locally.
 
 ## Adding another demo
 
