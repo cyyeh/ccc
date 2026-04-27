@@ -8,3 +8,5 @@ zig-out/
 web/ccc.wasm
 web/hello.elf
 web/snake.elf
+web/kernel-fs.elf
+web/shell-fs.img

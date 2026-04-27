@@ -1239,13 +1239,22 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "Cross-compile ccc to wasm32-freestanding");
     wasm_step.dependOn(&install_wasm.step);
 
-    // Install hello.elf and snake.elf alongside the wasm so the demo
-    // can fetch them at runtime. Keeps the wasm tiny (~50 KB instead of
-    // ~1.5 MB) and lets new programs be dropped in without recompiling.
-    const install_web_hello = b.addInstallFile(hello_elf.getEmittedBin(), "web/hello.elf");
-    const install_web_snake = b.addInstallFile(snake_elf.getEmittedBin(), "web/snake.elf");
+    // Install hello.elf, snake.elf, kernel-fs.elf, and shell-fs.img
+    // alongside the wasm so the demo can fetch them at runtime. Keeps
+    // the wasm tiny (~50 KB instead of bundling the binaries) and lets
+    // programs be added by dropping a file next to index.html.
+    //
+    // shell-fs.img is the 4 MB FS image baked by the shell-fs-img build
+    // step; the wasm demo loads it into its disk_buffer when the visitor
+    // selects shell.elf.
+    const install_web_hello        = b.addInstallFile(hello_elf.getEmittedBin(),     "web/hello.elf");
+    const install_web_snake        = b.addInstallFile(snake_elf.getEmittedBin(),     "web/snake.elf");
+    const install_web_kernel_fs    = b.addInstallFile(kernel_fs_elf.getEmittedBin(), "web/kernel-fs.elf");
+    const install_web_shell_fs_img = b.addInstallFile(shell_fs_img,                  "web/shell-fs.img");
     wasm_step.dependOn(&install_web_hello.step);
     wasm_step.dependOn(&install_web_snake.step);
+    wasm_step.dependOn(&install_web_kernel_fs.step);
+    wasm_step.dependOn(&install_web_shell_fs_img.step);
 }
 
 /// Build a user binary by linking start.S + usys.S + ulib.zig + uprintf.zig +
