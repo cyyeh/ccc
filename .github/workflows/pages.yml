@@ -82,9 +82,12 @@ jobs:
           mkdir -p _site/web
           cp index.html deck-stage.js .nojekyll _site/
           cp -r web/. _site/web/
-          cp zig-out/web/ccc.wasm  _site/web/ccc.wasm
-          cp zig-out/web/hello.elf _site/web/hello.elf
-          cp zig-out/web/snake.elf _site/web/snake.elf
+          # Copy every artifact zig build wasm installs into zig-out/web/
+          # (ccc.wasm + hello.elf + snake.elf + kernel-fs.elf + shell-fs.img,
+          # plus anything future tasks add). Wildcard avoids the per-file
+          # allowlist drift that bit us when shell-fs.img + kernel-fs.elf
+          # were added — see plan 2026-04-27-web-shell-demo Task 3.
+          cp -r zig-out/web/. _site/web/
           ls -lh _site _site/web
 
       - name: Configure Pages
