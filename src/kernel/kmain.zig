@@ -249,6 +249,23 @@ export fn kmain() callconv(.c) noreturn {
     pid1.sz = vm.USER_TEXT_VA + 0x10000; // initial brk above text region
     pid1.state = .Runnable;
 
+    // Phase 3.E: sysWrite routes through file.write, so each user proc's
+    // ofile[0..2] must point at a Console-typed file entry. Without this
+    // wiring, write(1, ...) returns -1 and the user payload's "hello from
+    // u-mode" output disappears. Install one shared console entry; PID 1
+    // gets fds 0/1/2 dup'd onto it, and (if MULTI_PROC) PID 2 gets the
+    // same.
+    file.init();
+    const console_fidx = file.alloc() orelse kprintf.panic("kmain: file.alloc console", .{});
+    file.ftable[console_fidx].type = .Console;
+    file.ftable[console_fidx].ip = null;
+    file.ftable[console_fidx].off = 0;
+    _ = file.dup(console_fidx);
+    _ = file.dup(console_fidx);
+    pid1.ofile[0] = console_fidx;
+    pid1.ofile[1] = console_fidx;
+    pid1.ofile[2] = console_fidx;
+
     // Optional: PID 2.
     if (boot_config.MULTI_PROC) {
         const pid2 = proc.alloc() orelse kprintf.panic("kmain: alloc PID 2", .{});
@@ -265,6 +282,13 @@ export fn kmain() callconv(.c) noreturn {
         pid2.tf.sp = vm.USER_STACK_TOP;
         pid2.sz = vm.USER_TEXT_VA + 0x10000;
         pid2.state = .Runnable;
+
+        _ = file.dup(console_fidx);
+        _ = file.dup(console_fidx);
+        _ = file.dup(console_fidx);
+        pid2.ofile[0] = console_fidx;
+        pid2.ofile[1] = console_fidx;
+        pid2.ofile[2] = console_fidx;
     }
 
     // Install the S-mode trap vector + sscratch (will be overwritten on
