@@ -122,7 +122,19 @@ function bytesForCurrentProgram(e) {
   return null; // hello: no input
 }
 
+// True between `start` and the first byte of program output. While true,
+// render() shows a "waiting..." placeholder and hides the cursor — the
+// kernel takes ~1s of wasm-chunked stepping to boot to its first prompt,
+// and a blinking cursor on an empty screen looks like the program is
+// waiting for input when it's actually still initialising.
+let booting = false;
+
 function render() {
+  if (booting) {
+    out.textContent = "waiting...";
+    if (cursor) cursor.classList.add("hidden");
+    return;
+  }
   out.textContent = ansi.text();
   if (cursor) {
     if (ansi.cursor_visible) {
@@ -147,9 +159,11 @@ function startCurrent() {
 
   ansi._reset();
   ansi.row = 0; ansi.col = 0;
+  booting = true;
   render();
 
   if (!elfUrl) {
+    booting = false;
     out.textContent = `[unknown program idx ${idx}]`;
     return;
   }
@@ -179,6 +193,7 @@ worker.onmessage = (e) => {
   // the freshly cleared screen.
   if (msg.runId !== undefined && msg.runId !== currentRunId) return;
   if (msg.type === "output") {
+    if (booting) booting = false; // first byte arrived → switch from "waiting..." to live render
     ansi.feed(msg.bytes);
     render();
     return;
@@ -193,6 +208,8 @@ worker.onmessage = (e) => {
     return;
   }
   if (msg.type === "halt") {
+    booting = false; // clear in case the program halted before any output
+    if (cursor) cursor.classList.add("hidden");
     const errSuffix = msg.error ? ` (${msg.error})` : "";
     out.textContent = ansi.text() + `\n[program halted${errSuffix} — change selection or refresh to replay]`;
     return;
