@@ -252,25 +252,31 @@ pub fn main(init: std.process.Init) !void {
     try builder.appendDirEntry(root_inum, ".", root_inum);
     try builder.appendDirEntry(root_inum, "..", root_inum);
 
-    // /etc + /bin subdirectories.
-    const etc_inum = try builder.createDir(root_inum);
-    try builder.appendDirEntry(root_inum, "etc", etc_inum);
+    // /bin subdirectory (always created).
     const bin_inum = try builder.createDir(root_inum);
     try builder.appendDirEntry(root_inum, "bin", bin_inum);
 
-    // Walk --root: every file goes into /etc (3.D simplification — only
-    // /etc is supported; the spec eventually expands to /var, /tmp, etc.,
-    // but 3.D's e2e only needs /etc/motd).
+    // Walk --root: iterate all top-level subdirectories and create them
+    // under root.  Files directly in --root are ignored (only dirs).
+    // The /bin dir above is wired separately via --bin; skip it here.
     var root_dir = Io.Dir.cwd().openDir(io, root_path.?, .{ .iterate = true }) catch |err| {
         stderr.print("mkfs: cannot open --root {s}: {s}\n", .{ root_path.?, @errorName(err) }) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
     defer root_dir.close(io);
-    var etc_dir_opt: ?Io.Dir = root_dir.openDir(io, "etc", .{ .iterate = true }) catch null;
-    if (etc_dir_opt) |*d| {
-        defer d.close(io);
-        try populateFromDir(io, builder, etc_inum, d.*, gpa);
+    {
+        var it = root_dir.iterate();
+        while (try it.next(io)) |entry| {
+            if (entry.name.len > 0 and entry.name[0] == '.') continue; // skip dot-files
+            if (entry.kind != .directory) continue;
+            if (std.mem.eql(u8, entry.name, "bin")) continue; // handled via --bin
+            const sub_inum = try builder.createDir(root_inum);
+            try builder.appendDirEntry(root_inum, entry.name, sub_inum);
+            var sub_dir = try root_dir.openDir(io, entry.name, .{ .iterate = true });
+            defer sub_dir.close(io);
+            try populateFromDir(io, builder, sub_inum, sub_dir, gpa);
+        }
     }
 
     // Walk --bin: every file goes into /bin.
