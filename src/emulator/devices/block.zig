@@ -5,6 +5,7 @@ pub const BLOCK_SIZE: u32 = 0x10;
 
 pub const SECTOR_BYTES: u32 = 4096;
 pub const NSECTORS: u32 = 1024; // 4 MB total disk
+pub const RAM_BASE: u32 = 0x8000_0000;
 
 pub const BlockError = error{UnexpectedRegister};
 
@@ -122,12 +123,18 @@ pub const Block = struct {
         self.last_sector = self.sector;
         self.last_buffer_pa = self.buffer_pa;
 
+        // Sector range — shared gate for both the slice and file paths.
+        if (self.sector >= NSECTORS) {
+            self.status = @intFromEnum(Status.Error);
+            return;
+        }
+
         // Slice-backed path takes precedence (used by wasm demo).
         if (self.disk_slice) |disk| {
-            // Sector range check (sector already bounds-checked above? — re-check
-            // for the slice path explicitly since the file path's check used to
-            // gate everything; we keep the existing `sector >= NSECTORS` check
-            // earlier and re-validate the slice has the bytes).
+            // sector >= NSECTORS already gated above; re-check the actual
+            // slice bounds in case the slice is shorter than the canonical
+            // 4 MB (defense-in-depth — the wasm caller passes exactly
+            // NSECTORS * SECTOR_BYTES, but tests may use smaller slices).
             const disk_off: usize = @as(usize, self.sector) * SECTOR_BYTES;
             if (disk_off + SECTOR_BYTES > disk.len) {
                 self.status = @intFromEnum(Status.Error);
@@ -135,7 +142,6 @@ pub const Block = struct {
             }
 
             // RAM range (mirrors the file path's check).
-            const RAM_BASE: u32 = 0x8000_0000;
             if (self.buffer_pa < RAM_BASE) {
                 self.status = @intFromEnum(Status.Error);
                 return;
@@ -169,15 +175,8 @@ pub const Block = struct {
             return;
         };
 
-        // Sector range.
-        if (self.sector >= NSECTORS) {
-            self.status = @intFromEnum(Status.Error);
-            return;
-        }
-
         // RAM range. buffer_pa is a physical address; we expect 0x8000_0000-based.
         // Compute offset; bounds-check; set Error if out of range.
-        const RAM_BASE: u32 = 0x8000_0000;
         if (self.buffer_pa < RAM_BASE) {
             self.status = @intFromEnum(Status.Error);
             return;
@@ -425,4 +424,30 @@ test "performTransfer disk_slice precedence: slice wins when both set" {
 
     try std.testing.expectEqual(@intFromEnum(Status.Ready), b.status);
     try std.testing.expectEqualSlices(u8, disk_data[0..], ram_buf[0..]);
+}
+
+test "performTransfer disk_slice with buffer_pa below RAM_BASE sets Error" {
+    var disk_data: [SECTOR_BYTES]u8 = undefined;
+    var b = Block.init();
+    b.disk_slice = disk_data[0..];
+    b.sector = 0;
+    b.buffer_pa = 0x1000_0000; // below RAM_BASE
+    var ram_buf: [SECTOR_BYTES]u8 = undefined;
+    try b.writeByte(0x8, 1);
+    b.performTransfer(std.testing.io, ram_buf[0..]);
+    try std.testing.expectEqual(@intFromEnum(Status.Error), b.status);
+    try std.testing.expect(b.pending_irq);
+}
+
+test "performTransfer disk_slice with RAM offset past ram_buf sets Error" {
+    var disk_data: [SECTOR_BYTES]u8 = undefined;
+    var b = Block.init();
+    b.disk_slice = disk_data[0..];
+    b.sector = 0;
+    b.buffer_pa = RAM_BASE + SECTOR_BYTES; // demands ram[4096..8192]
+    var ram_buf: [SECTOR_BYTES]u8 = undefined; // only 4096 bytes available
+    try b.writeByte(0x8, 1);
+    b.performTransfer(std.testing.io, ram_buf[0..]);
+    try std.testing.expectEqual(@intFromEnum(Status.Error), b.status);
+    try std.testing.expect(b.pending_irq);
 }
