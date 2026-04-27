@@ -19,8 +19,6 @@ fn printName(name: *const [DIR_NAME_LEN]u8) void {
     var n: u32 = 0;
     while (n < DIR_NAME_LEN and name[n] != 0) : (n += 1) {}
     _ = ulib.write(1, name, n);
-    const nl: [1]u8 = .{'\n'};
-    _ = ulib.write(1, &nl, 1);
 }
 
 fn lsPath(path: [*:0]const u8) void {
@@ -50,12 +48,26 @@ fn lsPath(path: [*:0]const u8) void {
         return;
     }
 
+    // Print entries space-separated on a single line (`. .. bin etc tmp`),
+    // matching standard ls's default columnar output. A more complete ls
+    // would lay out into terminal-width columns, but space-separation is
+    // the right shape for the small filesystem this shell ships against.
     var de: DirEntry = .{ .inum = 0, .name = [_]u8{0} ** DIR_NAME_LEN };
+    var first: bool = true;
     while (true) {
         const got = ulib.read(@intCast(fd), @ptrCast(&de), @sizeOf(DirEntry));
         if (got != @sizeOf(DirEntry)) break;
         if (de.inum == 0) continue;
+        if (!first) {
+            const sp: [1]u8 = .{' '};
+            _ = ulib.write(1, &sp, 1);
+        }
         printName(&de.name);
+        first = false;
+    }
+    if (!first) {
+        const nl: [1]u8 = .{'\n'};
+        _ = ulib.write(1, &nl, 1);
     }
 }
 
