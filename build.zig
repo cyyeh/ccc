@@ -880,6 +880,24 @@ pub fn build(b: *std.Build) void {
     const e2e_persist_step = b.step("e2e-persist", "Run the Phase 3.F disk-persistence e2e test");
     e2e_persist_step.dependOn(&persist_e2e_run.step);
 
+    const cancel_e2e_exe = b.addExecutable(.{
+        .name = "e2e-cancel",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/cancel.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const cancel_e2e_run = b.addRunArtifact(cancel_e2e_exe);
+    cancel_e2e_run.step.dependOn(b.getInstallStep());
+    cancel_e2e_run.step.dependOn(shell_fs_img_step);
+    cancel_e2e_run.addFileArg(exe.getEmittedBin());
+    cancel_e2e_run.addFileArg(shell_fs_img);
+    cancel_e2e_run.addFileArg(kernel_fs_elf.getEmittedBin());
+    cancel_e2e_run.addFileArg(b.path("tests/e2e/cancel_input.txt"));
+    const e2e_cancel_step = b.step("e2e-cancel", "Run the Phase 3 ^C kill-flag e2e test (proves console.feedByte(0x03) → proc.kill(fg_pid) chain)");
+    e2e_cancel_step.dependOn(&cancel_e2e_run.step);
+
     // qemu-diff-kernel: debug-only trace diff against QEMU. Requires
     // qemu-system-riscv32 on PATH; not run by CI.
     const qemu_diff_kernel_cmd = b.addSystemCommand(&.{
