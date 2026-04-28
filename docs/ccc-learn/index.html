@@ -33,7 +33,7 @@
       background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
       color: #fff; padding: 2.5rem 2rem; text-align: center;
     }
-    header h1 { font-size: 2rem; font-weight: 700; margin-bottom: .25rem; font-family: "SF Mono", "Menlo", "Consolas", monospace; }
+    header h1 { font-size: 2rem; font-weight: 700; margin-bottom: .25rem; font-family: "SF Mono", "Menlo", "Consolas", monospace; overflow-wrap: anywhere; word-break: break-word; }
     header .subtitle { opacity: .85; font-size: 1.1rem; }
     header .back {
       display: inline-block; color: rgba(255,255,255,.8); text-decoration: none;
@@ -74,8 +74,8 @@
       display: flex; flex-direction: column;
     }
     .card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
-    .card h2 { font-size: 1.15rem; color: var(--primary); margin-bottom: .5rem; font-family: "SF Mono", "Menlo", "Consolas", monospace; }
-    .card p { font-size: .9rem; color: var(--text-light); line-height: 1.6; flex: 1; }
+    .card h2 { font-size: 1.15rem; color: var(--primary); margin-bottom: .5rem; font-family: "SF Mono", "Menlo", "Consolas", monospace; overflow-wrap: anywhere; word-break: break-word; }
+    .card p { font-size: .9rem; color: var(--text-light); line-height: 1.6; flex: 1; overflow-wrap: anywhere; word-break: break-word; }
     .card .badge-row { margin-top: .75rem; display: flex; gap: .4rem; flex-wrap: wrap; }
     .badge { font-size: .75rem; padding: .15rem .55rem; border-radius: 9999px; border: 1px solid var(--border); color: var(--text-light); }
     .card.cross-topic { border-left: 4px solid var(--accent2); }
