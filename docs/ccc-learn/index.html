@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ccc-learn — From-scratch RISC-V Computer</title>
+  <meta name="description" content="Learn ccc, the Claude Code Computer: a from-scratch RV32 emulator, bare-metal kernel, multi-process OS, filesystem and shell, all in Zig.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='4' fill='%230e7490'/%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='monospace' font-size='14' font-weight='700' fill='%23f59e0b'%3E%26gt;_%3C/text%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <style>
+    :root {
+      --primary: #0e7490;
+      --primary-light: #06b6d4;
+      --accent: #f59e0b;
+      --accent2: #8b5cf6;
+      --bg: #f7fafc;
+      --card-bg: #fff;
+      --text: #2d3748;
+      --text-light: #616b7c;
+      --border: #e2e8f0;
+      --radius: 12px;
+      --shadow: 0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
+      --shadow-lg: 0 10px 15px -3px rgba(0,0,0,.1), 0 4px 6px -2px rgba(0,0,0,.05);
+    }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.8;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden; overscroll-behavior: none;
+    }
+    header {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+      color: #fff; padding: 2.5rem 2rem; text-align: center;
+    }
+    header h1 { font-size: 2rem; font-weight: 700; margin-bottom: .25rem; font-family: "SF Mono", "Menlo", "Consolas", monospace; }
+    header .subtitle { opacity: .85; font-size: 1.1rem; }
+    header .back {
+      display: inline-block; color: rgba(255,255,255,.8); text-decoration: none;
+      margin-bottom: .75rem; font-size: .95rem; transition: color .2s;
+    }
+    header .back:hover { color: #fff; }
+    .nav-tabs {
+      display: flex; justify-content: center; gap: .5rem;
+      padding: 1.25rem 2rem 0; max-width: 1400px; margin: 0 auto;
+      overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
+      scrollbar-width: none;
+    }
+    .nav-tabs::-webkit-scrollbar { display: none; }
+    .nav-tab {
+      padding: .75rem 2rem; border: none; background: var(--card-bg); cursor: pointer;
+      font-size: 1.05rem; font-weight: 600; color: var(--text-light);
+      border-radius: var(--radius) var(--radius) 0 0;
+      border: 1px solid var(--border); border-bottom: none;
+      transition: color .2s, background .2s; font-family: inherit;
+      white-space: nowrap; flex-shrink: 0;
+      position: relative; top: 1px;
+    }
+    .nav-tab.active { color: var(--primary); background: var(--bg); border-bottom: 2px solid var(--bg); }
+    .nav-tab.active.cross { color: var(--accent2); }
+    .nav-tab.active.roadmap { color: var(--accent); }
+    .nav-tab.active.glossary { color: #38a169; }
+    .nav-tab:hover:not(.active) { color: var(--primary); background: #edf2f7; }
+    .nav-tab .count { display: none; }
+    @media (min-width: 641px) { .nav-tab .count { display: inline; font-size: .8rem; font-weight: 400; color: var(--text-light); margin-left: .35rem; } }
+    .home { max-width: 1400px; margin: 0 auto; padding: 0 2rem 2rem; min-height: 60vh; }
+    .section-divider { border-top: 2px solid var(--border); padding-top: 1.5rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.25rem; }
+    .card {
+      background: var(--card-bg); border-radius: var(--radius); padding: 1.5rem;
+      text-decoration: none; color: var(--text); box-shadow: var(--shadow);
+      border: 1px solid var(--border); transition: transform .2s, box-shadow .2s;
+      display: flex; flex-direction: column;
+    }
+    .card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
+    .card h2 { font-size: 1.15rem; color: var(--primary); margin-bottom: .5rem; font-family: "SF Mono", "Menlo", "Consolas", monospace; }
+    .card p { font-size: .9rem; color: var(--text-light); line-height: 1.6; flex: 1; }
+    .card .badge-row { margin-top: .75rem; display: flex; gap: .4rem; flex-wrap: wrap; }
+    .badge { font-size: .75rem; padding: .15rem .55rem; border-radius: 9999px; border: 1px solid var(--border); color: var(--text-light); }
+    .card.cross-topic { border-left: 4px solid var(--accent2); }
+    .card.cross-topic h2 { color: var(--accent2); }
+    .card.cross-topic .badge.topic-badge { background: #f3e8ff; border-color: #d6bcfa; color: #6b46c1; }
+    .reader { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    .tabs { display: flex; gap: .25rem; margin-bottom: 1.5rem; border-bottom: 2px solid var(--border); overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      padding: .6rem 1.25rem; border: none; background: none; cursor: pointer;
+      font-size: .95rem; color: var(--text-light); border-bottom: 2px solid transparent;
+      margin-bottom: -2px; transition: color .2s, border-color .2s; font-family: inherit;
+    }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    .tab:hover { color: var(--primary-light); }
+    .content-box {
+      background: var(--card-bg); border-radius: var(--radius); padding: 2.5rem;
+      box-shadow: var(--shadow); border: 1px solid var(--border); min-height: 300px;
+    }
+    .copy-md-wrap { display: flex; justify-content: flex-end; margin-bottom: .75rem; }
+    .copy-md-btn {
+      display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px;
+      font-size: .82rem; font-family: inherit; color: var(--text-light);
+      background: #edf2f7; border: 1px solid var(--border); border-radius: 6px;
+      cursor: pointer; transition: background .2s, color .2s;
+    }
+    .copy-md-btn:hover { background: var(--primary); color: #fff; }
+    .copy-md-btn.copied { background: #48bb78; color: #fff; border-color: #48bb78; }
+    .content-box.loading { display: flex; align-items: center; justify-content: center; color: var(--text-light); min-height: 60vh; }
+    .content-box iframe { width: 100%; height: 80vh; border: none; border-radius: 8px; }
+    .content-box h1 { font-size: 1.7rem; margin: 1.5rem 0 .75rem; color: var(--primary); font-family: "SF Mono", "Menlo", "Consolas", monospace; }
+    .content-box h2 { font-size: 1.35rem; margin: 2rem 0 .6rem; padding-bottom: .4rem; border-bottom: 1px solid var(--border); }
+    .content-box h3 { font-size: 1.15rem; margin: 1.5rem 0 .5rem; }
+    .content-box h4 { font-size: 1.05rem; margin: 1rem 0 .4rem; }
+    .content-box p { margin: .6rem 0; }
+    .content-box ul, .content-box ol { margin: .6rem 0; padding-left: 1.5rem; }
+    .content-box li { margin: .2rem 0; }
+    .content-box blockquote {
+      border-left: 4px solid var(--accent); padding: .5rem 1rem; margin: 1rem 0;
+      color: var(--text-light); background: #fffaf0; border-radius: 0 8px 8px 0;
+    }
+    .content-box code { background: #edf2f7; padding: .1rem .35rem; border-radius: 4px; font-size: .88em; font-family: "SF Mono", "Menlo", "Consolas", monospace; }
+    .content-box pre {
+      background: #1a202c; color: #e2e8f0; padding: 1rem; border-radius: 8px;
+      overflow-x: auto; margin: 1rem 0;
+    }
+    .content-box pre code { background: none; padding: 0; color: inherit; font-size: .9em; }
+    .content-box table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .95rem; }
+    .content-box th, .content-box td { border: 1px solid var(--border); padding: .5rem .75rem; text-align: left; }
+    .content-box th { background: #edf2f7; font-weight: 600; }
+    .content-box tr:nth-child(even) { background: #f7fafc; }
+    .content-box strong { color: var(--primary); }
+    .content-box hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+    .content-box a { color: var(--primary-light); text-decoration: underline; }
+    .content-box a:hover { color: var(--primary); }
+    .content-disclaimer {
+      text-align: center; padding: 1rem 2rem; margin: 0 auto; max-width: 700px;
+      color: #b7791f; background: #fefcbf; border: 1px solid #ecc94b;
+      border-radius: 8px; font-size: .82rem; line-height: 1.5;
+    }
+    footer { text-align: center; padding: 2rem; color: var(--text-light); font-size: .85rem; }
+    footer a { color: var(--primary-light); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+    .search-wrapper { max-width: 600px; margin: 1.25rem auto 0; padding: 0 2rem; position: relative; }
+    .search-input-box {
+      display: flex; align-items: center; background: var(--card-bg);
+      border: 2px solid var(--border); border-radius: var(--radius);
+      padding: .5rem 1rem; transition: border-color .2s, box-shadow .2s;
+    }
+    .search-input-box:focus-within { border-color: var(--primary-light); box-shadow: 0 0 0 3px rgba(14,116,144,.18); }
+    .search-input-box svg { flex-shrink: 0; width: 18px; height: 18px; color: var(--text-light); margin-right: .6rem; }
+    .search-input-box input {
+      flex: 1; border: none; outline: none; font-size: 1rem;
+      font-family: inherit; color: var(--text); background: transparent;
+    }
+    .search-input-box input::placeholder { color: var(--text-light); }
+    .search-input-box .search-clear {
+      flex-shrink: 0; background: none; border: none; cursor: pointer;
+      font-size: 1.2rem; color: var(--text-light); padding: 0 .25rem; display: none; line-height: 1;
+    }
+    .search-input-box .search-clear:hover { color: var(--text); }
+    .search-input-box .index-status { flex-shrink: 0; font-size: .72rem; color: var(--text-light); white-space: nowrap; margin-left: .35rem; transition: opacity .5s; }
+    .search-results-dropdown {
+      position: absolute; top: 100%; left: 2rem; right: 2rem;
+      background: var(--card-bg); border: 1px solid var(--border);
+      border-radius: 0 0 var(--radius) var(--radius); box-shadow: var(--shadow-lg);
+      max-height: 420px; overflow-y: auto; z-index: 100; display: none;
+    }
+    .search-results-dropdown.visible { display: block; }
+    .search-result-item {
+      display: flex; align-items: flex-start; gap: .75rem; padding: .75rem 1rem;
+      text-decoration: none; color: var(--text); border-bottom: 1px solid var(--border);
+      transition: background .15s; cursor: pointer;
+    }
+    .search-result-item:last-child { border-bottom: none; }
+    .search-result-item:hover { background: #edf2f7; }
+    .search-result-item .result-icon {
+      flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .8rem; font-weight: 700; color: #fff; margin-top: 2px;
+    }
+    .search-result-item .result-icon.topic-icon { background: var(--primary-light); }
+    .search-result-item .result-icon.cross-icon { background: var(--accent2); }
+    .search-result-item .result-icon.glossary-icon { background: #38a169; }
+    .search-result-item .result-info { flex: 1; min-width: 0; }
+    .search-result-item .result-title { font-weight: 600; font-size: .95rem; margin-bottom: .15rem; }
+    .search-result-item .result-title mark { background: #fefcbf; color: var(--text); border-radius: 2px; padding: 0 1px; }
+    .search-result-item .result-desc { font-size: .82rem; color: var(--text-light); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .search-result-item .result-desc mark { background: #fefcbf; color: var(--text-light); border-radius: 2px; padding: 0 1px; }
+    .search-result-item .result-badges { display: flex; gap: .3rem; margin-top: .35rem; flex-wrap: wrap; }
+    .search-result-item .result-badges .badge { font-size: .7rem; }
+    .search-result-item .result-badges .badge.content-badge { background: #ebf8ff; border-color: #90cdf4; color: #2b6cb0; }
+    .search-result-item .result-desc.result-snippet { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; }
+    .search-result-item .result-badges .badge.glossary-badge { background: #f0fff4; border-color: #9ae6b4; color: #276749; }
+    .search-no-result { padding: 1.5rem 1rem; text-align: center; color: var(--text-light); font-size: .95rem; }
+    .search-hint { padding: .5rem 1rem; text-align: right; color: var(--text-light); font-size: .78rem; border-top: 1px solid var(--border); }
+    .error { text-align: center; color: #e53e3e; padding: 2rem; }
+    @media (max-width: 1024px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 640px) {
+      header { padding: 1.5rem 1rem; }
+      header h1 { font-size: 1.35rem; }
+      header .subtitle { font-size: .95rem; }
+      .nav-tabs { padding: .75rem .75rem 0; gap: .25rem; justify-content: flex-start; }
+      .nav-tab { padding: .6rem 1rem; font-size: .95rem; }
+      .home { padding: .75rem; }
+      .grid { grid-template-columns: 1fr; gap: .75rem; }
+      .card { padding: 1.15rem; }
+      .card h2 { font-size: 1.05rem; }
+      .reader { padding: .75rem; }
+      .tabs { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; white-space: nowrap; gap: 0; }
+      .tab { padding: .5rem .9rem; font-size: .88rem; flex-shrink: 0; }
+      .content-box { padding: 1rem; border-radius: 8px; }
+      .content-box h1 { font-size: 1.35rem; }
+      .content-box h2 { font-size: 1.15rem; }
+      .content-box h3 { font-size: 1.05rem; }
+      .content-box table { font-size: .85rem; display: block; overflow-x: auto; }
+      .content-box pre { font-size: .82rem; padding: .75rem; }
+      .content-box iframe { height: 60vh; }
+      footer { padding: 1.25rem; }
+      .content-disclaimer { margin: 0 .75rem; padding: .75rem 1rem; font-size: .78rem; }
+      .search-wrapper { padding: 0 .75rem; margin-top: .75rem; }
+      .search-results-dropdown { left: .75rem; right: .75rem; max-height: 320px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>ccc-learn</h1>
+      <p class="subtitle">From-scratch RISC-V emulator, kernel & OS in Zig</p>
+    </header>
+    <div class="nav-tabs">
+      <button class="nav-tab active roadmap">Roadmap</button>
+      <button class="nav-tab">Topics</button>
+      <button class="nav-tab cross">Walkthroughs</button>
+      <button class="nav-tab glossary">Glossary</button>
+    </div>
+    <main class="reader section-divider"><div class="content-box loading" style="min-height:60vh">Loading…</div></main>
+    <div class="content-disclaimer">Educational reference for the <a href="https://github.com/cyyeh/ccc">ccc</a> codebase. Always cross-check claims against the source — this site explains <em>what shipped</em>, not abstract theory.</div>
+    <footer>Created by Jimmy Yeh — <a href="https://github.com/cyyeh">github.com/cyyeh</a></footer>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    const CONFIG = {
+      readmePath: 'README.md',
+      roadmapPath: 'src/learning-roadmap.md',
+      glossaryPath: 'src/glossary.md',
+      topicSectionHeader: 'Topics',
+      crossSectionHeader: 'Walkthroughs',
+      keywords: {
+        plain: ['guide', 'beginner', 'plain'],
+        interactive: [],
+        casestudy: ['case', 'cases'],
+        quiz: ['quiz', 'practice'],
+        further: ['resource', 'further', 'reading'],
+        cross: []
+      },
+      tabLabels: {
+        professional: 'Analysis',
+        plain: 'Beginner Guide',
+        interactive: 'Interactive',
+        casestudy: 'Cases',
+        quiz: 'Quiz',
+        further: 'Further Reading',
+        cross: 'Walkthrough'
+      },
+      strings: {
+        searchPlaceholder: 'Search topics, terms, content…',
+        loadingText: 'Loading…',
+        indexing: 'indexing…',
+        indexReady: '✓ indexed',
+        indexingProgress: '{done}/{total}',
+        noResults: 'No results for "{query}"',
+        resultCount: '{count} result(s) — Esc to close',
+        loadError: 'Failed to load. Run `make serve` and refresh.',
+        copyMarkdown: 'Copy markdown',
+        copied: 'Copied!',
+        copyFailed: 'Copy failed',
+        backToTopics: '← Topics',
+        backToCross: '← Walkthroughs',
+        searchIconTopic: 'T',
+        searchIconCross: 'W',
+        searchIconGlossary: 'G',
+        searchIconContent: '→',
+        contentMatch: 'match'
+      }
+    };
+
+    let topicSections = [], crossSections = [], glossaryEntries = [], contentIndex = [];
+    let indexReady = false, currentTabIdx = 0, activeHomeTab = 'roadmap';
+
+    marked.setOptions({ breaks: true, gfm: true });
+
+    function createCopyMdBtn(raw) {
+      const btn = document.createElement('button');
+      btn.className = 'copy-md-btn';
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' + CONFIG.strings.copyMarkdown;
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(raw);
+          btn.classList.add('copied');
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>' + CONFIG.strings.copied;
+          setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' + CONFIG.strings.copyMarkdown; }, 2000);
+        } catch (e) { btn.textContent = CONFIG.strings.copyFailed; }
+      });
+      const wrap = document.createElement('div'); wrap.className = 'copy-md-wrap'; wrap.appendChild(btn); return wrap;
+    }
+
+    function parseReadme(md) {
+      const topics = [], cross = []; let cur = null, inCross = false;
+      for (const line of md.split('\n')) {
+        const h2 = line.match(/^##\s+(.+)/);
+        if (h2) { const t = h2[1].trim(); if (t === CONFIG.crossSectionHeader) { inCross = true; cur = null; continue; } if (t === CONFIG.topicSectionHeader) { inCross = false; cur = null; continue; } cur = null; continue; }
+        const hdr = line.match(/^###\s+(.+)/);
+        if (hdr) { cur = { title: hdr[1].trim(), links: [], isCross: inCross }; if (inCross) cross.push(cur); else topics.push(cur); continue; }
+        if (!cur) continue;
+        const lnk = line.match(/^-\s+\[(.+?)\]\((.+?)\)\s*[—–\-]\s*(.+)/);
+        if (lnk) {
+          const [, text, url, desc] = lnk; let type = 'professional';
+          const tl = text.toLowerCase(), ul = url.toLowerCase();
+          if (CONFIG.keywords.plain.some(k => tl.includes(k) || ul.includes(k))) type = 'plain';
+          if (ul.endsWith('.html')) type = 'interactive';
+          if (CONFIG.keywords.casestudy.some(k => tl.includes(k) || ul.includes(k))) type = 'casestudy';
+          if (CONFIG.keywords.quiz.some(k => tl.includes(k) || ul.includes(k))) type = 'quiz';
+          if (CONFIG.keywords.further.some(k => tl.includes(k) || ul.includes(k))) type = 'further';
+          if (inCross) type = 'cross';
+          cur.links.push({ text: text.trim(), url: url.trim(), description: desc.trim(), type });
+        }
+      }
+      return { topics, cross };
+    }
+
+    function parseGlossary(md) {
+      const entries = []; let cat = '';
+      for (const line of md.split('\n')) {
+        const h2 = line.match(/^##\s+(.+)/); if (h2) { cat = h2[1].trim(); continue; }
+        const row = line.match(/^\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|$/);
+        if (row) { const [, term, eng, def] = row; if (term.match(/^-+$/) || eng.match(/^-+$/) || term.toLowerCase() === 'term') continue; entries.push({ term: term.trim(), english: eng.trim(), definition: def.trim(), category: cat }); }
+      }
+      return entries;
+    }
+
+    function tabLabel(link) { return CONFIG.tabLabels[link.type] || CONFIG.tabLabels.professional; }
+    function stripMdLinks(s) { return s.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); }
+    function highlightMatch(text, q) { if (!q) return text; return text.replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark>$1</mark>'); }
+
+    function extractSnippet(content, query, max = 100) {
+      const plain = content.replace(/^#{1,6}\s+/gm, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[*_~`>|]/g, '').replace(/\n{2,}/g, '\n').replace(/---+/g, '');
+      const idx = plain.toLowerCase().indexOf(query.toLowerCase()); if (idx === -1) return '';
+      const s = Math.max(0, idx - 30), e = Math.min(plain.length, idx + query.length + max - 30);
+      let snip = plain.slice(s, e).replace(/\n/g, ' ').trim();
+      if (s > 0) snip = '…' + snip; if (e < plain.length) snip += '…'; return snip;
+    }
+
+    function searchBarHTML() {
+      return `<div class="search-wrapper" id="search-wrapper"><div class="search-input-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="text" id="search-input" placeholder="${CONFIG.strings.searchPlaceholder}" autocomplete="off" /><button class="search-clear" id="search-clear">&times;</button><span id="index-status" class="index-status">${indexReady ? '' : CONFIG.strings.indexing}</span></div><div class="search-results-dropdown" id="search-dropdown"></div></div>`;
+    }
+
+    function performSearch(query) {
+      if (!query || !query.trim()) return []; const q = query.trim().toLowerCase(); const results = [], seen = new Set();
+      const all = [...topicSections.map(t=>({...t,isCross:false})), ...crossSections.map(t=>({...t,isCross:true}))];
+      for (const topic of all) {
+        const tm = topic.title.toLowerCase().includes(q); const dm = []; const bl = [];
+        for (const l of topic.links) { const d = stripMdLinks(l.description||''); if (d.toLowerCase().includes(q)) dm.push(d); bl.push(tabLabel(l)); if (l.text.toLowerCase().includes(q) && !tm) dm.push(l.text); }
+        if (tm || dm.length) { const pro = topic.links.find(l=>l.type==='professional'||l.type==='cross'); results.push({ resultType:'topic', title:topic.title, description:stripMdLinks(pro?pro.description:topic.links[0]?.description||''), isCross:topic.isCross, badges:bl, titleMatch:tm }); seen.add(topic.title); }
+      }
+      for (const e of glossaryEntries) { if ([e.term,e.english,e.definition].some(s=>s.toLowerCase().includes(q))) results.push({ resultType:'glossary', title:e.term, english:e.english, description:e.definition, category:e.category, titleMatch:e.term.toLowerCase().includes(q)||e.english.toLowerCase().includes(q) }); }
+      if (indexReady || contentIndex.length) { for (const item of contentIndex) { if (!item.content.toLowerCase().includes(q)) continue; const ex = results.find(r=>r.resultType==='topic'&&r.title===item.topicTitle); if (ex) { if (!ex.contentSnippet) { ex.contentSnippet=extractSnippet(item.content,q); ex.contentMatchType=item.linkType; } continue; } if (seen.has(item.topicTitle)) continue; results.push({ resultType:'content', title:item.topicTitle, linkType:item.linkType, isCross:item.isCross, snippet:extractSnippet(item.content,q), titleMatch:false }); seen.add(item.topicTitle); } }
+      results.sort((a,b)=>{ if (a.titleMatch&&!b.titleMatch) return -1; if (!a.titleMatch&&b.titleMatch) return 1; const o={topic:0,glossary:1,content:2}; return (o[a.resultType]??3)-(o[b.resultType]??3); });
+      return results;
+    }
+
+    function renderSearchResults(results, query) {
+      const dd = document.getElementById('search-dropdown'); if (!dd) return;
+      if (!results.length) { dd.innerHTML = `<div class="search-no-result">${CONFIG.strings.noResults.replace('{query}',query)}</div>`; dd.classList.add('visible'); return; }
+      dd.innerHTML = results.map(r => {
+        if (r.resultType==='glossary') return `<a class="search-result-item" href="#" data-glossary-term="${r.title}"><div class="result-icon glossary-icon">${CONFIG.strings.searchIconGlossary}</div><div class="result-info"><div class="result-title">${highlightMatch(r.title,query)} <span style="font-weight:400;color:var(--text-light);font-size:.85rem">${highlightMatch(r.english,query)}</span></div><div class="result-desc">${highlightMatch(r.description,query)}</div><div class="result-badges"><span class="badge glossary-badge">${r.category}</span></div></div></a>`;
+        if (r.resultType==='content') return `<a class="search-result-item" href="#${encodeURIComponent(r.title)}"><div class="result-icon ${r.isCross?'cross-icon':'topic-icon'}">${r.isCross?CONFIG.strings.searchIconCross:CONFIG.strings.searchIconContent}</div><div class="result-info"><div class="result-title">${highlightMatch(r.title,query)}</div><div class="result-desc result-snippet">${highlightMatch(r.snippet,query)}</div></div></a>`;
+        const badges = r.badges?r.badges.map(b=>`<span class="badge">${b}</span>`).join(''):'';
+        const extra = r.contentSnippet?`<div class="result-badges"><span class="badge content-badge">${tabLabel({type:r.contentMatchType})} ${CONFIG.strings.contentMatch}</span></div>`:'';
+        return `<a class="search-result-item" href="#${encodeURIComponent(r.title)}"><div class="result-icon ${r.isCross?'cross-icon':'topic-icon'}">${r.isCross?CONFIG.strings.searchIconCross:CONFIG.strings.searchIconTopic}</div><div class="result-info"><div class="result-title">${highlightMatch(r.title,query)}</div><div class="result-desc">${highlightMatch(r.contentSnippet||r.description,query)}</div><div class="result-badges">${badges}</div>${extra}</div></a>`;
+      }).join('') + `<div class="search-hint">${CONFIG.strings.resultCount.replace('{count}',results.length)}</div>`;
+      dd.classList.add('visible');
+    }
+
+    function bindSearchEvents() {
+      const input = document.getElementById('search-input'), clear = document.getElementById('search-clear'), dd = document.getElementById('search-dropdown');
+      if (!input) return; let timer;
+      input.addEventListener('input', () => { clearTimeout(timer); const v = input.value; clear.style.display = v.length?'block':'none'; timer = setTimeout(() => { if (!v.trim()) { dd.classList.remove('visible'); return; } renderSearchResults(performSearch(v), v.trim()); }, 200); });
+      clear.addEventListener('click', () => { input.value=''; clear.style.display='none'; dd.classList.remove('visible'); input.focus(); });
+      document.addEventListener('click', e => { const w = document.getElementById('search-wrapper'); if (w && !w.contains(e.target)) dd.classList.remove('visible'); });
+      input.addEventListener('keydown', e => { if (e.key==='Escape') { dd.classList.remove('visible'); input.blur(); } });
+      dd.addEventListener('click', e => {
+        const item = e.target.closest('.search-result-item'); if (!item) return;
+        dd.classList.remove('visible'); input.value=''; clear.style.display='none';
+        const gt = item.dataset.glossaryTerm; if (gt) { e.preventDefault(); location.hash=''; activeHomeTab='glossary'; renderHome();
+          const w = setInterval(()=>{ const box=document.getElementById('glossary-content'); if (!box||box.classList.contains('loading')) return; clearInterval(w); for (const cell of box.querySelectorAll('td')) { if (cell.textContent.trim()===gt) { const row=cell.closest('tr'); if (row) { row.scrollIntoView({behavior:'smooth',block:'center'}); row.style.transition='background .3s'; row.style.background='#fefcbf'; setTimeout(()=>{row.style.background='';},2500); } break; } } }, 100); }
+      });
+    }
+
+    function convertInternalLinks(container) {
+      const all = [...topicSections,...crossSections];
+      container.querySelectorAll('a[href]').forEach(a => { const href = decodeURIComponent(a.getAttribute('href')); const m = href.match(/\.\.?\/([^/]+)\/[^/]+\.md$/); if (m) { const t = all.find(t=>t.title===m[1]); if (t) { a.href='#'+encodeURIComponent(t.title); a.style.color='var(--primary-light)'; a.style.textDecoration='underline'; } } });
+    }
+
+    function renderHome() {
+      currentTabIdx = 0;
+      const tc = topicSections.map(t => { const pro=t.links.find(l=>l.type==='professional'); const desc=stripMdLinks(pro?pro.description:t.links[0]?.description||''); const badges=t.links.map(l=>`<span class="badge">${tabLabel(l)}</span>`).join(''); return `<a class="card" href="#${encodeURIComponent(t.title)}"><h2>${t.title}</h2><p>${desc}</p><div class="badge-row">${badges}</div></a>`; }).join('');
+      const cc = crossSections.map(t => { const desc=stripMdLinks(t.links[0]?.description||''); return `<a class="card cross-topic" href="#${encodeURIComponent(t.title)}"><h2>${t.title}</h2><p>${desc}</p></a>`; }).join('');
+      const isT=activeHomeTab==='topics', isR=activeHomeTab==='roadmap', isG=activeHomeTab==='glossary';
+      let main; if (isR) main=`<main class="reader section-divider"><div class="content-box loading" id="roadmap-content">${CONFIG.strings.loadingText}</div></main>`; else if (isG) main=`<main class="reader section-divider"><div class="content-box loading" id="glossary-content">${CONFIG.strings.loadingText}</div></main>`; else main=`<main class="home section-divider"><div class="grid">${isT?tc:cc}</div></main>`;
+      document.getElementById('app').innerHTML = `<header><h1>ccc-learn</h1><p class="subtitle">From-scratch RISC-V emulator, kernel & OS in Zig</p>${searchBarHTML()}</header><div class="nav-tabs"><button class="nav-tab${isR?' active roadmap':' roadmap'}" data-tab="roadmap">Roadmap</button><button class="nav-tab${isT?' active':''}" data-tab="topics">Topics${window.innerWidth>=641?`<span class="count">${topicSections.length}</span>`:''}</button><button class="nav-tab${activeHomeTab==='cross'?' active cross':' cross'}" data-tab="cross">Walkthroughs${window.innerWidth>=641?`<span class="count">${crossSections.length}</span>`:''}</button><button class="nav-tab${isG?' active glossary':' glossary'}" data-tab="glossary">Glossary</button></div>${main}<div class="content-disclaimer">Educational reference for the <a href="https://github.com/cyyeh/ccc">ccc</a> codebase. Always cross-check claims against the source — this site explains <em>what shipped</em>, not abstract theory.</div><footer>Created by Jimmy Yeh — <a href="https://github.com/cyyeh">github.com/cyyeh</a></footer>`;
+      document.querySelectorAll('.nav-tab').forEach(b => b.addEventListener('click', () => { activeHomeTab=b.dataset.tab; renderHome(); }));
+      bindSearchEvents(); if (isR) loadRoadmap(); if (isG) loadGlossary();
+    }
+
+    async function loadRoadmap() {
+      const el=document.getElementById('roadmap-content'); if (!el) return;
+      try { const r=await fetch(encodeURI(CONFIG.roadmapPath)); if (!r.ok) throw 0; const md=await r.text(); el.className='content-box'; el.innerHTML=marked.parse(md); el.prepend(createCopyMdBtn(md));
+        el.querySelectorAll('strong').forEach(s => { const t=[...topicSections,...crossSections].find(t=>t.title===s.textContent.trim()); if (t) { const a=document.createElement('a'); a.href='#'+encodeURIComponent(t.title); a.textContent=s.textContent; a.style.color='var(--primary-light)'; a.style.textDecoration='underline'; a.style.fontWeight='600'; s.replaceWith(a); } });
+      } catch(e) { el.className='content-box error'; el.textContent=CONFIG.strings.loadError; }
+    }
+
+    async function loadGlossary() {
+      const el=document.getElementById('glossary-content'); if (!el) return;
+      try { const r=await fetch(encodeURI(CONFIG.glossaryPath)); if (!r.ok) throw 0; const md=await r.text(); el.className='content-box'; el.innerHTML=marked.parse(md); el.prepend(createCopyMdBtn(md)); convertInternalLinks(el);
+      } catch(e) { el.className='content-box error'; el.textContent=CONFIG.strings.loadError; }
+    }
+
+    async function renderTopic(topic) {
+      if (currentTabIdx>=topic.links.length) currentTabIdx=0;
+      const tabs=topic.links.map((l,i)=>`<button class="tab${i===currentTabIdx?' active':''}" data-idx="${i}">${tabLabel(l)}</button>`).join('');
+      const back=topic.isCross?CONFIG.strings.backToCross:CONFIG.strings.backToTopics;
+      document.getElementById('app').innerHTML = `<header><a class="back" href="#" data-back="${topic.isCross?'cross':'topics'}">${back}</a><h1>${topic.title}</h1>${searchBarHTML()}</header><main class="reader">${topic.links.length>1?`<div class="tabs">${tabs}</div>`:''}<div class="content-box loading" id="md-content">${CONFIG.strings.loadingText}</div></main><div class="content-disclaimer">Educational reference for the <a href="https://github.com/cyyeh/ccc">ccc</a> codebase. Always cross-check claims against the source — this site explains <em>what shipped</em>, not abstract theory.</div><footer>Created by Jimmy Yeh — <a href="https://github.com/cyyeh">github.com/cyyeh</a></footer>`;
+      document.querySelector('.back').addEventListener('click', e => { e.preventDefault(); activeHomeTab=e.target.dataset.back||'topics'; location.hash=''; });
+      document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => { currentTabIdx=parseInt(b.dataset.idx); document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); b.classList.add('active'); loadContent(topic.links[currentTabIdx]); }));
+      bindSearchEvents(); await loadContent(topic.links[currentTabIdx]);
+    }
+
+    async function loadContent(link) {
+      const el=document.getElementById('md-content'); el.className='content-box loading'; el.textContent=CONFIG.strings.loadingText;
+      if (link.type==='interactive') { el.className='content-box'; el.innerHTML=`<iframe src="${encodeURI(link.url)}"></iframe>`; return; }
+      try { const r=await fetch(encodeURI(link.url)); if (!r.ok) throw 0; const md=await r.text(); el.className='content-box'; el.innerHTML=marked.parse(md); convertInternalLinks(el); el.prepend(createCopyMdBtn(md)); } catch(e) { el.className='content-box error'; el.textContent=CONFIG.strings.loadError; }
+    }
+
+    function route() { window.scrollTo(0,0); const h=decodeURIComponent(location.hash.slice(1)); if (!h) { renderHome(); return; } const t=[...topicSections,...crossSections].find(t=>t.title===h); if (t) { currentTabIdx=0; renderTopic(t); } else renderHome(); }
+
+    async function buildContentIndex() {
+      const all=[...topicSections.map(t=>({...t,isCross:false})),...crossSections.map(t=>({...t,isCross:true}))]; const tasks=[];
+      for (const topic of all) for (const link of topic.links) if (!link.url.endsWith('.html')) tasks.push({topicTitle:topic.title,link,isCross:topic.isCross});
+      for (let i=0;i<tasks.length;i+=10) {
+        const batch=tasks.slice(i,i+10);
+        const results=await Promise.allSettled(batch.map(async t=>{ const r=await fetch(encodeURI(t.link.url)); if (!r.ok) return null; return {topicTitle:t.topicTitle,linkText:t.link.text,linkType:t.link.type,url:t.link.url,isCross:t.isCross,content:await r.text()}; }));
+        for (const r of results) if (r.status==='fulfilled'&&r.value) contentIndex.push(r.value);
+        updateIndexStatus(Math.min(i+10,tasks.length),tasks.length);
+      }
+      indexReady=true; updateIndexStatus(tasks.length,tasks.length);
+    }
+
+    function updateIndexStatus(done,total) {
+      const el=document.getElementById('index-status'); if (!el) return;
+      if (done>=total) { el.textContent=CONFIG.strings.indexReady; el.style.color='#38a169'; setTimeout(()=>{el.style.opacity='0';},1500); }
+      else el.textContent=CONFIG.strings.indexingProgress.replace('{done}',done).replace('{total}',total);
+    }
+
+    async function init() {
+      try {
+        const [rr,gr]=await Promise.all([fetch(CONFIG.readmePath),fetch(encodeURI(CONFIG.glossaryPath))]);
+        const md=await rr.text(); const p=parseReadme(md); topicSections=p.topics; crossSections=p.cross;
+        if (gr.ok) glossaryEntries=parseGlossary(await gr.text());
+        window.addEventListener('hashchange',route); route();
+        if ('requestIdleCallback' in window) requestIdleCallback(()=>buildContentIndex()); else setTimeout(()=>buildContentIndex(),1000);
+      } catch(e) { document.getElementById('app').innerHTML='<div class="error" style="padding:4rem">'+CONFIG.strings.loadError+'</div>'; }
+    }
+    init();
+  </script>
+</body>
+</html>

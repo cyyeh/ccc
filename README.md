@@ -142,6 +142,29 @@ CI: `.github/workflows/pages.yml` runs the existing `zig build test`
 wasm and deploys the deck + demo to Pages. Pages source must be set
 to "GitHub Actions" in repo settings (one-time manual step).
 
+## Learning companion
+
+[`docs/ccc-learn/`](docs/ccc-learn/) is a static-site learning platform
+that walks the Phase 1–3 codebase one layer at a time: RV32 CPU + decode,
+memory + MMIO + Sv32 paging, CSRs + traps + privilege, the four MMIO
+devices, kernel boot + syscalls, processes (fork/exec/wait/exit), the
+on-disk filesystem, console line discipline + the editor, and the
+shell + userland. Each topic ships a long-form analysis, a beginner
+guide, a self-contained interactive HTML, real code-cases tied to files
+and `e2e-*` tests, a quiz, and a curated reading list. Three
+walkthroughs at the end stitch everything together — a single `ecall`
+end-to-end, the full `cat /etc/motd` trace through every kernel
+subsystem, and the wasm-in-a-browser-tab architecture.
+
+Run locally:
+
+    cd docs/ccc-learn && make serve     # python3 -m http.server 7777
+    open http://localhost:7777/
+
+Pure static site (no build step) — single-page app that parses
+`README.md` at runtime; all content lives as plain Markdown + HTML
+under `docs/ccc-learn/src/`.
+
 ## Status
 
 **Phase 1 — RISC-V CPU emulator — complete.**

@@ -79,7 +79,7 @@ jobs:
 
       - name: Stage Pages artifact
         run: |
-          mkdir -p _site/web
+          mkdir -p _site/web _site/docs
           cp index.html deck-stage.js .nojekyll _site/
           cp -r web/. _site/web/
           # Copy every artifact zig build wasm installs into zig-out/web/
@@ -88,7 +88,9 @@ jobs:
           # allowlist drift that bit us when shell-fs.img + kernel-fs.elf
           # were added — see plan 2026-04-27-web-shell-demo Task 3.
           cp -r zig-out/web/. _site/web/
-          ls -lh _site _site/web
+          # Companion learning platform — pure static site, served at /docs/ccc-learn/.
+          cp -r docs/ccc-learn _site/docs/ccc-learn
+          ls -lh _site _site/web _site/docs/ccc-learn
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

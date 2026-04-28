@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>memory-and-mmio — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f1f5f9; min-height: 100vh; padding: 24px; color: #1e293b; }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn { padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; font-size: 14px; cursor: pointer; font-family: inherit; transition: all .2s; }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px; }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  label { display: block; font-size: 12px; color: #64748b; margin: 12px 0 4px; font-weight: 600; }
+  input[type=text], select { width: 100%; padding: 8px 10px; font-size: 14px; font-family: monospace; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; }
+  input[type=text]:focus, select:focus { outline: 2px solid #0e7490; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 140px; }
+  button.action { padding: 8px 16px; border-radius: 6px; border: none; background: #0e7490; color: #fff; font-family: inherit; font-size: 14px; cursor: pointer; margin-top: 12px; }
+  button.action:hover { background: #155e75; }
+  pre.binary { font-family: monospace; font-size: 13px; padding: 14px; border-radius: 8px; background: #1a202c; color: #e2e8f0; margin-top: 12px; overflow-x: auto; line-height: 1.7; }
+  .step { margin: 12px 0; padding: 12px; border-radius: 8px; background: #f8fafc; border-left: 3px solid #0e7490; font-size: 13px; line-height: 1.6; }
+  .step .num { display: inline-block; width: 22px; height: 22px; border-radius: 50%; background: #0e7490; color: #fff; text-align: center; line-height: 22px; font-weight: 700; margin-right: 8px; }
+  .step.fault { border-left-color: #dc2626; background: #fee2e2; }
+  .step.ok { border-left-color: #059669; background: #d1fae5; }
+  .err { color: #dc2626; font-size: 13px; margin-top: 6px; padding: 6px 10px; background: #fee2e2; border-radius: 6px; }
+  .ok-bar { color: #059669; font-size: 13px; margin-top: 6px; padding: 6px 10px; background: #d1fae5; border-radius: 6px; }
+  .map-row { display: flex; align-items: stretch; padding: 6px 10px; margin: 4px 0; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0; font-family: monospace; font-size: 13px; }
+  .map-row.match { background: #fef3c7; border-color: #f59e0b; }
+  .map-row .range { flex-shrink: 0; width: 220px; color: #64748b; }
+  .map-row .name { flex: 1; }
+  .map-row .desc { color: #64748b; font-size: 12px; }
+  .pte-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 12px; }
+  .pte-bit { padding: 8px; border-radius: 6px; background: #f8fafc; border: 1px solid #e2e8f0; cursor: pointer; user-select: none; transition: all .15s; }
+  .pte-bit:hover { border-color: #0e7490; }
+  .pte-bit.set { background: #cffafe; border-color: #0e7490; color: #0e7490; font-weight: 600; }
+  .pte-bit .name { font-family: monospace; font-size: 13px; font-weight: 700; }
+  .pte-bit .desc { font-size: 11px; color: #64748b; margin-top: 2px; }
+  .pte-bit.set .desc { color: #0e7490; }
+  @media (max-width: 640px) {
+    body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
+    .panel { padding: 16px; } .map-row .range { width: 160px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>memory &amp; mmio</h1>
+  <p class="subtitle">Walk an Sv32 translation. Inspect the MMIO map. Decode a PTE bit by bit.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">Sv32 Walker</button>
+    <button class="tab-btn" onclick="switchTab(1)">MMIO Map</button>
+    <button class="tab-btn" onclick="switchTab(2)">PTE Decoder</button>
+  </div>
+
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>Walk a virtual address through Sv32 translation.</h2>
+      <p class="hint">Tweak the satp + page-table contents below. The walker mirrors <code>memory.zig</code>'s <code>translate</code> function step by step.</p>
+      <div class="row">
+        <div><label>Virtual address (hex)</label><input type="text" id="va" value="0x00010ABC" /></div>
+        <div><label>Privilege</label>
+          <select id="priv"><option value="U">U</option><option value="S">S</option><option value="M">M</option></select>
+        </div>
+        <div><label>Access</label>
+          <select id="acc"><option value="load">load</option><option value="store">store</option><option value="fetch">fetch</option></select>
+        </div>
+      </div>
+      <div class="row">
+        <div><label>satp (hex; bit 31 = MODE; bits 21:0 = PPN of L1 root)</label><input type="text" id="satp" value="0x80080000" /></div>
+      </div>
+      <div class="row">
+        <div><label>L1 PTE at satp.PPN[VPN1]</label><input type="text" id="l1pte" value="0x00020401" /></div>
+        <div><label>L0 PTE at L1.PPN[VPN0]</label><input type="text" id="l0pte" value="0x80105017" /></div>
+      </div>
+      <p class="hint">Defaults: satp.MODE=1, satp.PPN=0x80080. L1[16]=valid pointer to a table at PA 0x80100000. L0[16]=leaf at PA 0x80104000 with R+W+X+U+V (full perms; bit 4 = U).</p>
+      <button class="action" onclick="walk()">Translate</button>
+      <div id="walk-out"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>The physical memory map.</h2>
+      <p class="hint">Type any address. Find which region — RAM, MMIO device, or unmapped — owns it.</p>
+      <label>Physical address (hex)</label>
+      <input type="text" id="map-addr" value="0x10000000" oninput="renderMap()" />
+      <div id="map-list"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>Decode and build a PTE.</h2>
+      <p class="hint">Click bits to toggle them. Watch the 32-bit hex value update; conversely, paste a hex word and see which bits are set.</p>
+      <label>PTE (hex)</label>
+      <input type="text" id="pte-hex" value="0x80105017" oninput="hexChanged()" />
+      <div class="pte-grid" id="pte-grid"></div>
+      <label>PPN (bits 31:10) → page PA</label>
+      <pre class="binary" id="pte-pa">0x80104000</pre>
+      <p class="hint" id="pte-classify"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+
+  // ============================================================
+  // Sv32 Walker
+  // ============================================================
+  function parseHex(s) {
+    s = (s || '').trim().replace(/^0x/i, '').replace(/_/g, '');
+    if (!/^[0-9a-fA-F]+$/.test(s)) return NaN;
+    return parseInt(s, 16) >>> 0;
+  }
+  function hex8(n) { return '0x' + (n >>> 0).toString(16).padStart(8, '0').toUpperCase(); }
+
+  function walk() {
+    const va = parseHex(document.getElementById('va').value);
+    const satp = parseHex(document.getElementById('satp').value);
+    const l1pte = parseHex(document.getElementById('l1pte').value);
+    const l0pte = parseHex(document.getElementById('l0pte').value);
+    const priv = document.getElementById('priv').value;
+    const acc = document.getElementById('acc').value;
+    if ([va, satp, l1pte, l0pte].some(isNaN)) { document.getElementById('walk-out').innerHTML = '<div class="err">All four hex fields must parse.</div>'; return; }
+
+    const out = [];
+    function step(num, body, kind) {
+      out.push(`<div class="step ${kind || ''}"><span class="num">${num}</span>${body}</div>`);
+    }
+
+    step(1, `<b>Virtual address</b>: ${hex8(va)}<br>VPN[1] = (va>>22) & 0x3FF = <code>${(va>>>22)&0x3FF}</code> (0x${((va>>>22)&0x3FF).toString(16)})<br>VPN[0] = (va>>12) & 0x3FF = <code>${(va>>>12)&0x3FF}</code> (0x${((va>>>12)&0x3FF).toString(16)})<br>offset = va & 0xFFF = <code>0x${(va&0xFFF).toString(16)}</code>`);
+
+    if (priv === 'M') {
+      step(2, `Privilege is <b>M</b> → identity map. Translation skipped. Final PA = ${hex8(va)}.`, 'ok');
+      document.getElementById('walk-out').innerHTML = out.join(''); return;
+    }
+    const mode = (satp >>> 31) & 1;
+    if (mode === 0) {
+      step(2, `satp.MODE = 0 (Bare) → identity map. Final PA = ${hex8(va)}.`, 'ok');
+      document.getElementById('walk-out').innerHTML = out.join(''); return;
+    }
+    const root_pa = (satp & 0x3FFFFF) << 12;
+    step(2, `satp.MODE = 1 (Sv32 enabled). Root table at PA <code>${hex8(root_pa >>> 0)}</code> (satp.PPN = 0x${(satp & 0x3FFFFF).toString(16)} → << 12).`);
+
+    // L1 walk
+    const vpn1 = (va >>> 22) & 0x3FF;
+    const l1_pte_pa = (root_pa + vpn1 * 4) >>> 0;
+    step(3, `L1 walk: load PTE at <code>${hex8(l1_pte_pa)}</code> (root_pa + VPN[1]*4). Got <code>${hex8(l1pte)}</code>.`);
+    if ((l1pte & 1) === 0) { step(4, `L1 PTE.V = 0 → page fault.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+    if ((l1pte & 0xE) !== 0) { step(4, `L1 PTE has R/W/X bits set → would be a superpage leaf, but ccc rejects superpages → page fault.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+    const l0_table_pa = ((l1pte >>> 10) & 0x3FFFFF) << 12;
+    step(4, `L1 PTE is valid pointer (R=W=X=0). L0 table at PA <code>${hex8(l0_table_pa >>> 0)}</code>.`);
+
+    // L0 walk
+    const vpn0 = (va >>> 12) & 0x3FF;
+    const l0_pte_pa = (l0_table_pa + vpn0 * 4) >>> 0;
+    step(5, `L0 walk: load PTE at <code>${hex8(l0_pte_pa)}</code>. Got <code>${hex8(l0pte)}</code>.`);
+    if ((l0pte & 1) === 0) { step(6, `L0 PTE.V = 0 → page fault.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+    if ((l0pte & 0xE) === 0) { step(6, `L0 PTE has R=W=X=0 (it's a pointer) → leaf-level pointer = invalid → page fault.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+
+    const pte_u = (l0pte & 0x10) !== 0;
+    const pte_r = (l0pte & 0x02) !== 0;
+    const pte_w = (l0pte & 0x04) !== 0;
+    const pte_x = (l0pte & 0x08) !== 0;
+    const flags = `R=${pte_r?1:0} W=${pte_w?1:0} X=${pte_x?1:0} U=${pte_u?1:0}`;
+    step(6, `L0 PTE flags: ${flags}.`);
+
+    // Privilege check
+    if (priv === 'U' && !pte_u) { step(7, `priv=U but PTE.U=0 → fault.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+    if (priv === 'S' && pte_u && acc === 'fetch') { step(7, `priv=S, fetch from U-page is forbidden even with SUM=1 → fault.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+
+    // Access check
+    if (acc === 'fetch' && !pte_x) { step(7, `Fetch needs X=1, got X=0 → fault.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+    if (acc === 'load' && !pte_r) { step(7, `Load needs R=1 (or X+MXR) → fault unless MXR is set.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+    if (acc === 'store' && !pte_w) { step(7, `Store needs W=1 → fault.`, 'fault'); document.getElementById('walk-out').innerHTML = out.join(''); return; }
+
+    const leaf_pa = (((l0pte >>> 10) & 0x3FFFFF) << 12) >>> 0;
+    const final_pa = (leaf_pa | (va & 0xFFF)) >>> 0;
+    step(7, `All checks pass. leaf_pa = ${hex8(leaf_pa)}; final PA = leaf_pa | offset = <b>${hex8(final_pa)}</b>.`, 'ok');
+    document.getElementById('walk-out').innerHTML = out.join('');
+  }
+  walk();
+
+  // ============================================================
+  // MMIO Map
+  // ============================================================
+  const REGIONS = [
+    { base: 0x00100000, size: 0x000008, name: 'halt MMIO',     desc: 'Write any byte → emulator halts' },
+    { base: 0x02000000, size: 0x010000, name: 'CLINT',          desc: 'Timer + software-IRQ regs' },
+    { base: 0x0C000000, size: 0x400000, name: 'PLIC',           desc: 'Interrupt controller (mostly sparse)' },
+    { base: 0x10000000, size: 0x000100, name: 'UART (NS16550A)',desc: 'Serial port — TX byte / RX FIFO' },
+    { base: 0x10001000, size: 0x000010, name: 'block device',   desc: 'CMD + status + buffer PA' },
+    { base: 0x80000000, size: 0x08000000, name: 'RAM (128 MB)', desc: 'Real storage; --memory <MB> overrides' },
+  ];
+
+  function renderMap() {
+    const a = parseHex(document.getElementById('map-addr').value);
+    let html = '';
+    for (const r of REGIONS) {
+      const match = !isNaN(a) && a >= r.base && a < r.base + r.size;
+      const range = `${hex8(r.base)} – ${hex8(r.base + r.size - 1)}`;
+      html += `<div class="map-row${match ? ' match' : ''}"><div class="range">${range}</div><div class="name"><div>${r.name}</div><div class="desc">${r.desc}</div></div></div>`;
+    }
+    if (!isNaN(a)) {
+      const inAny = REGIONS.some(r => a >= r.base && a < r.base + r.size);
+      html += inAny
+        ? `<div class="ok-bar"><b>${hex8(a)}</b> hits a real region (highlighted above).</div>`
+        : `<div class="err"><b>${hex8(a)}</b> is NOT mapped — load/store would return <code>OutOfBounds</code>.</div>`;
+    }
+    document.getElementById('map-list').innerHTML = html;
+  }
+  renderMap();
+
+  // ============================================================
+  // PTE Decoder
+  // ============================================================
+  const PTE_BITS = [
+    { bit: 0, name: 'V', desc: 'Valid' },
+    { bit: 1, name: 'R', desc: 'Read' },
+    { bit: 2, name: 'W', desc: 'Write' },
+    { bit: 3, name: 'X', desc: 'Execute' },
+    { bit: 4, name: 'U', desc: 'User-accessible' },
+    { bit: 5, name: 'G', desc: 'Global (TLB hint; ccc ignores)' },
+    { bit: 6, name: 'A', desc: 'Accessed (HW-set)' },
+    { bit: 7, name: 'D', desc: 'Dirty (HW-set on store)' },
+  ];
+
+  function renderPte() {
+    const pte = parseHex(document.getElementById('pte-hex').value);
+    if (isNaN(pte)) return;
+    let html = '';
+    for (const b of PTE_BITS) {
+      const set = (pte & (1 << b.bit)) !== 0;
+      html += `<div class="pte-bit${set ? ' set' : ''}" data-bit="${b.bit}" onclick="toggleBit(${b.bit})">
+        <div class="name">${b.name}</div>
+        <div class="desc">${b.desc}</div>
+      </div>`;
+    }
+    document.getElementById('pte-grid').innerHTML = html;
+    const ppn = (pte >>> 10) & 0x3FFFFF;
+    const pa = (ppn << 12) >>> 0;
+    document.getElementById('pte-pa').textContent = hex8(pa) + '   (PPN = 0x' + ppn.toString(16) + ')';
+    let cls = '';
+    if ((pte & 1) === 0) cls = 'Invalid PTE (V=0). Walk would page-fault here.';
+    else if ((pte & 0xE) === 0) cls = 'Pointer PTE — points at the next page table. (R=W=X all zero, V=1.)';
+    else cls = 'Leaf PTE — points at a 4 KB data/code page. R/W/X define permissions.';
+    document.getElementById('pte-classify').textContent = cls;
+  }
+
+  function toggleBit(bit) {
+    let pte = parseHex(document.getElementById('pte-hex').value);
+    if (isNaN(pte)) return;
+    pte = (pte ^ (1 << bit)) >>> 0;
+    document.getElementById('pte-hex').value = hex8(pte);
+    renderPte();
+  }
+
+  function hexChanged() { renderPte(); }
+  renderPte();
+</script>
+</body>
+</html>

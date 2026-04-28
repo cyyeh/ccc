@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>devices — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f1f5f9; min-height: 100vh; padding: 24px; color: #1e293b; }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn { padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; font-size: 14px; cursor: pointer; font-family: inherit; transition: all .2s; }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px; }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  label { display: block; font-size: 12px; color: #64748b; margin: 12px 0 4px; font-weight: 600; }
+  input[type=text], select { width: 100%; padding: 8px 10px; font-size: 14px; font-family: monospace; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; }
+  input[type=text]:focus, select:focus { outline: 2px solid #0e7490; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 130px; }
+  button.action { padding: 8px 16px; border-radius: 6px; border: none; background: #0e7490; color: #fff; font-family: inherit; font-size: 14px; cursor: pointer; margin-top: 12px; }
+  button.action:hover { background: #155e75; }
+  button.action.warn { background: #d97706; }
+  pre.binary { font-family: monospace; font-size: 13px; padding: 14px; border-radius: 8px; background: #1a202c; color: #e2e8f0; margin-top: 12px; overflow-x: auto; line-height: 1.7; min-height: 50px; }
+  .fifo { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px; background: #f1f5f9; border-radius: 6px; min-height: 36px; align-items: center; margin-top: 8px; }
+  .fifo-byte { padding: 4px 8px; background: #0e7490; color: #fff; border-radius: 4px; font-family: monospace; font-size: 13px; font-weight: 600; }
+  .meter { display: flex; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; margin-top: 4px; }
+  .meter-fill { background: #0e7490; transition: width .2s; }
+  .signal-row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  .signal { flex: 1; min-width: 130px; padding: 10px; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0; font-family: monospace; font-size: 13px; }
+  .signal.hot { background: #fef3c7; border-color: #f59e0b; }
+  .signal .name { font-size: 11px; color: #64748b; }
+  .step { margin: 8px 0; padding: 10px; background: #f8fafc; border-radius: 6px; border-left: 3px solid #0e7490; font-size: 13px; line-height: 1.6; }
+  .err { color: #dc2626; font-size: 13px; margin-top: 8px; padding: 8px; background: #fee2e2; border-radius: 6px; }
+  .ok-bar { color: #059669; font-size: 13px; margin-top: 8px; padding: 8px; background: #d1fae5; border-radius: 6px; }
+  @media (max-width: 640px) {
+    body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
+    .panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>uart · clint · plic · block</h1>
+  <p class="subtitle">Three labs to play with the device emulation behind cccs interrupt path.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">UART RX → PLIC</button>
+    <button class="tab-btn" onclick="switchTab(1)">CLINT timer</button>
+    <button class="tab-btn" onclick="switchTab(2)">Block CMD</button>
+  </div>
+
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>Push bytes into the UART FIFO; watch PLIC source 10 assert.</h2>
+      <p class="hint">Mirrors <code>uart.pushRx</code>. Bytes accumulate in the 256-byte FIFO; the empty→non-empty transition asserts PLIC source 10.</p>
+      <label>Type a single character to push</label>
+      <div class="row">
+        <div><input type="text" id="rx-input" maxlength="1" value="a" /></div>
+        <div><button class="action" onclick="pushRx()">Push to RX FIFO</button></div>
+        <div><button class="action warn" onclick="drainOne()">Drain one (kernel ISR)</button></div>
+      </div>
+      <label>FIFO contents</label>
+      <div class="fifo" id="rx-fifo"></div>
+      <div class="meter"><div class="meter-fill" id="rx-meter" style="width:0%"></div></div>
+      <p class="hint" id="rx-fill"></p>
+      <div class="signal-row" id="signals"></div>
+      <div id="rx-log"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>Set <code>mtimecmp</code>. Tick <code>mtime</code> forward. Watch <code>mip.MTIP</code> flip.</h2>
+      <p class="hint">Mirrors <code>clint.isMtipPending</code>. MTIP is computed live as <code>mtime >= mtimecmp</code>.</p>
+      <div class="row">
+        <div><label>mtime</label><input type="text" id="mtime" value="50" /></div>
+        <div><label>mtimecmp</label><input type="text" id="mtimecmp" value="100" /></div>
+        <div><label>Tick by</label><input type="text" id="tick-by" value="10" /></div>
+      </div>
+      <button class="action" onclick="tickClint()">Tick mtime forward</button>
+      <button class="action warn" onclick="resetClint()">Reset</button>
+      <pre class="binary" id="clint-state"></pre>
+      <p class="hint" id="clint-status"></p>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>Submit a block transfer. Watch the deferred IRQ.</h2>
+      <p class="hint">Mirrors <code>block.performTransfer</code>. Writing CMD's high byte (offset 0xB) triggers the transfer synchronously, then defers the IRQ to the next instruction boundary.</p>
+      <div class="row">
+        <div><label>Sector</label><input type="text" id="bk-sector" value="17" /></div>
+        <div><label>Buffer PA (hex)</label><input type="text" id="bk-pa" value="0x80100000" /></div>
+        <div><label>CMD</label>
+          <select id="bk-cmd">
+            <option value="1">1 (read)</option>
+            <option value="2">2 (write)</option>
+            <option value="0">0 (idle)</option>
+            <option value="9">9 (bogus)</option>
+          </select>
+        </div>
+      </div>
+      <button class="action" onclick="bkSubmit()">Write CMD bytes 0..3 (sw)</button>
+      <button class="action warn" onclick="bkStep()">Next instruction (cpu.step)</button>
+      <div id="bk-out"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+  function parseHex(s) { s = (s||'').trim().replace(/^0x/i,''); if(!/^[0-9a-fA-F]+$/.test(s)) return NaN; return parseInt(s,16)>>>0; }
+  function hex8(n) { return '0x'+(n>>>0).toString(16).padStart(8,'0').toUpperCase(); }
+
+  // ============================================================
+  // UART RX → PLIC
+  // ============================================================
+  const FIFO_CAP = 8;  // demo cap; real ccc is 256
+  let fifo = [];
+  let plic_pending = 0;
+  let plic_src10_asserted = false;
+
+  function renderFifo() {
+    const el = document.getElementById('rx-fifo');
+    el.innerHTML = fifo.length === 0 ? '<span style="color:#94a3b8;font-size:12px;font-family:monospace">(empty)</span>' :
+      fifo.map(c => `<div class="fifo-byte">'${c}'</div>`).join('');
+    document.getElementById('rx-meter').style.width = (fifo.length / FIFO_CAP * 100) + '%';
+    document.getElementById('rx-fill').textContent = `${fifo.length} / ${FIFO_CAP} bytes (FIFO_CAP shown small for clarity; real ccc is 256)`;
+    const sigs = [
+      { name: 'plic.pending bit 10', val: plic_src10_asserted ? '1' : '0', hot: plic_src10_asserted },
+      { name: 'mip.SEIP (live overlay)', val: plic_src10_asserted ? '1' : '0', hot: plic_src10_asserted },
+      { name: 'pending FIFO', val: fifo.length, hot: fifo.length > 0 },
+    ];
+    document.getElementById('signals').innerHTML = sigs.map(s => `<div class="signal${s.hot ? ' hot' : ''}"><div class="name">${s.name}</div><div>${s.val}</div></div>`).join('');
+  }
+
+  function logRx(html) {
+    const cur = document.getElementById('rx-log').innerHTML;
+    document.getElementById('rx-log').innerHTML = `<div class="step">${html}</div>` + cur;
+  }
+
+  function pushRx() {
+    const ch = document.getElementById('rx-input').value || 'a';
+    const b = ch.charCodeAt(0);
+    if (fifo.length >= FIFO_CAP) { logRx(`<b>FIFO full!</b> Byte 0x${b.toString(16)} ('${ch}') dropped.`); return; }
+    const wasEmpty = fifo.length === 0;
+    fifo.push(ch);
+    if (wasEmpty) {
+      plic_src10_asserted = true;
+      logRx(`<b>pushRx('${ch}')</b>: FIFO went empty &rarr; non-empty. <code>plic.assertSource(10)</code> fires. mip.SEIP becomes 1; CPU will trap at next instruction boundary.`);
+    } else {
+      logRx(`<b>pushRx('${ch}')</b>: byte added. PLIC source 10 already asserted (level-triggered); no new assertion needed.`);
+    }
+    renderFifo();
+  }
+
+  function drainOne() {
+    if (fifo.length === 0) { logRx(`Kernel ISR ran with empty FIFO. Source 10 has been deasserted; <code>plic.complete(10)</code> would write back.`); return; }
+    const ch = fifo.shift();
+    logRx(`<b>uart.isr drain</b>: read byte '${ch}' from RBR. ${fifo.length === 0 ? 'FIFO now empty &rarr; <code>plic.deassertSource(10)</code>. Kernel writes 10 to PLIC complete reg.' : `FIFO still has ${fifo.length} byte(s); source 10 stays asserted.`}`);
+    if (fifo.length === 0) plic_src10_asserted = false;
+    renderFifo();
+  }
+  renderFifo();
+
+  // ============================================================
+  // CLINT timer
+  // ============================================================
+  function refreshClint() {
+    const mt = parseInt(document.getElementById('mtime').value, 10);
+    const mtc = parseInt(document.getElementById('mtimecmp').value, 10);
+    const mtip = (mt >= mtc) ? 1 : 0;
+    document.getElementById('clint-state').textContent =
+`mtime    = ${mt}
+mtimecmp = ${mtc}
+diff     = ${mt - mtc}
+mip.MTIP = ${mtip}    (live overlay: mtime >= mtimecmp)`;
+    const status = mtip
+      ? '<span style="color:#059669"><b>MTIP set</b> &mdash; if mie.MTIE & mstatus.MIE both set (or current priv &lt; M), trap fires next boundary.</span>'
+      : `<span>MTIP clear &mdash; ${mtc - mt} more ticks until alarm.</span>`;
+    document.getElementById('clint-status').innerHTML = status;
+  }
+  function tickClint() {
+    const mt = parseInt(document.getElementById('mtime').value, 10);
+    const by = parseInt(document.getElementById('tick-by').value, 10) || 1;
+    document.getElementById('mtime').value = mt + by;
+    refreshClint();
+  }
+  function resetClint() {
+    document.getElementById('mtime').value = '50';
+    document.getElementById('mtimecmp').value = '100';
+    refreshClint();
+  }
+  document.getElementById('mtime').addEventListener('input', refreshClint);
+  document.getElementById('mtimecmp').addEventListener('input', refreshClint);
+  refreshClint();
+
+  // ============================================================
+  // Block CMD
+  // ============================================================
+  let bk_pending_cmd = 0;
+  let bk_status = 3; // NoMedia → switch to Ready when valid
+  let bk_pending_irq = false;
+  let bk_disk_attached = true; // assume attached for the demo
+
+  function bkLog(html, type) {
+    const t = type ? ` style="border-left-color:${type === 'ok' ? '#059669' : type === 'fault' ? '#dc2626' : '#0e7490'};${type === 'ok' ? 'background:#d1fae5' : type === 'fault' ? 'background:#fee2e2' : ''}"` : '';
+    document.getElementById('bk-out').innerHTML = `<div class="step"${t}>${html}</div>` + document.getElementById('bk-out').innerHTML;
+  }
+
+  function bkSubmit() {
+    const sec = parseInt(document.getElementById('bk-sector').value, 10);
+    const pa = parseHex(document.getElementById('bk-pa').value);
+    const cmd = parseInt(document.getElementById('bk-cmd').value, 10);
+    if (isNaN(pa) || isNaN(sec)) { bkLog('Sector/PA must parse.', 'fault'); return; }
+    bkLog(`<b>Kernel writes:</b><br>SECTOR=${sec} (offset 0x0..0x3, 4 bytes)<br>BUFFER_PA=${hex8(pa)} (offset 0x4..0x7)<br>CMD=${cmd} (offset 0x8..0xB) &mdash; trigger fires on byte 0xB write`);
+    bk_pending_cmd = cmd;
+    if (!bk_disk_attached) { bk_status = 3; bkLog('No disk attached &mdash; STATUS=3 (NoMedia). No transfer, no IRQ.', 'fault'); return; }
+    if (cmd === 0) { bkLog('CMD=0 is reset/idle. STATUS unchanged. No transfer.', 'ok'); return; }
+    if (cmd !== 1 && cmd !== 2) { bk_status = 2; bkLog(`Bogus CMD=${cmd}. STATUS=2 (Error). pending_irq=true (deferred to next step).`, 'fault'); bk_pending_irq = true; return; }
+    if (sec >= 1024) { bk_status = 2; bkLog(`Sector ${sec} >= NSECTORS=1024. STATUS=2 (Error). pending_irq=true.`, 'fault'); bk_pending_irq = true; return; }
+    if (pa < 0x80000000 || pa + 4096 > 0x80000000 + 128 * 1024 * 1024) { bk_status = 2; bkLog(`Buffer PA ${hex8(pa)} out of RAM. STATUS=2 (Error). pending_irq=true.`, 'fault'); bk_pending_irq = true; return; }
+    bk_status = 0;
+    bk_pending_irq = true;
+    bkLog(`<b>performTransfer():</b> ${cmd === 1 ? 'read' : 'write'} sector ${sec}, ${cmd === 1 ? 'into' : 'from'} ${hex8(pa)}.<br>STATUS=0 (Ready). pending_irq=true (deferred).<br>The IRQ has NOT fired yet &mdash; PLIC source 1 will assert at the *next* cpu.step boundary.`, 'ok');
+  }
+
+  function bkStep() {
+    if (!bk_pending_irq) { bkLog('Next cpu.step: no deferred IRQ. Just runs the next instruction.'); return; }
+    bkLog(`<b>cpu.step boundary:</b> sees <code>block.pending_irq=true</code>. Calls <code>plic.assertSource(1)</code>. Clears pending_irq.<br>Now: mip.SEIP=1 if S-context has src 1 enabled. Trap fires. Kernel's block ISR runs &rarr; reads STATUS &rarr; calls <code>wakeup(&req)</code>.`, 'ok');
+    bk_pending_irq = false;
+  }
+</script>
+</body>
+</html>

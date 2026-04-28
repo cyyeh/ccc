@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>console-and-editor — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f1f5f9; min-height: 100vh; padding: 24px; color: #1e293b; }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn { padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; font-size: 14px; cursor: pointer; font-family: inherit; transition: all .2s; }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px; }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  input[type=text] { width: 100%; padding: 8px 10px; font-size: 14px; font-family: monospace; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; }
+  button.action { padding: 6px 12px; border-radius: 6px; border: none; background: #0e7490; color: #fff; font-family: inherit; font-size: 13px; cursor: pointer; margin: 4px 4px 0 0; }
+  button.action:hover { background: #155e75; }
+  .terminal { font-family: monospace; font-size: 13px; padding: 12px; border-radius: 6px; background: #1a202c; color: #e2e8f0; min-height: 240px; line-height: 1.5; white-space: pre; overflow: auto; cursor: text; }
+  .terminal .cursor { background: #f59e0b; color: #1a202c; }
+  .keyrow { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .key { padding: 6px 10px; background: #fff; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; font-family: monospace; font-size: 12px; }
+  .key:hover { background: #cffafe; border-color: #0e7490; }
+  .key.ctrl { background: #fef3c7; border-color: #f59e0b; }
+  .step { margin: 8px 0; padding: 10px; background: #f8fafc; border-radius: 6px; border-left: 3px solid #0e7490; font-size: 13px; line-height: 1.5; }
+  .ansi-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  .ansi-table td, .ansi-table th { padding: 6px 10px; border: 1px solid #e2e8f0; text-align: left; font-family: monospace; }
+  .ansi-table th { background: #f1f5f9; }
+  .mode-toggle { display: inline-flex; padding: 4px; background: #e2e8f0; border-radius: 6px; margin-bottom: 8px; }
+  .mode-toggle button { padding: 6px 14px; border: none; background: transparent; cursor: pointer; font-family: inherit; font-size: 13px; border-radius: 4px; }
+  .mode-toggle button.active { background: #fff; color: #0e7490; font-weight: 600; }
+  @media (max-width: 640px) {
+    body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
+    .panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>console &amp; editor</h1>
+  <p class="subtitle">Cooked-vs-raw simulator. ANSI escape sandbox. Editor key cheatsheet.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">Cooked vs Raw</button>
+    <button class="tab-btn" onclick="switchTab(1)">ANSI Sandbox</button>
+    <button class="tab-btn" onclick="switchTab(2)">Editor Keymap</button>
+  </div>
+
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>Type into a simulated console; toggle modes; see the difference.</h2>
+      <p class="hint">In cooked mode, ^C/^U/backspace are handled by the line discipline. In raw mode, every byte goes straight to the program.</p>
+      <div class="mode-toggle">
+        <button id="mode-cooked" class="active" onclick="setMode('cooked')">Cooked</button>
+        <button id="mode-raw" onclick="setMode('raw')">Raw</button>
+      </div>
+      <div class="terminal" id="terminal"></div>
+      <div class="keyrow">
+        <button class="key" onclick="press('a')">a</button>
+        <button class="key" onclick="press('b')">b</button>
+        <button class="key" onclick="press('c')">c</button>
+        <button class="key" onclick="press(' ')">space</button>
+        <button class="key" onclick="press('\n')">Enter</button>
+        <button class="key ctrl" onclick="press('\x7F')">Backspace</button>
+        <button class="key ctrl" onclick="press('\x03')">^C</button>
+        <button class="key ctrl" onclick="press('\x15')">^U</button>
+        <button class="key ctrl" onclick="press('\x04')">^D</button>
+        <button class="key" onclick="resetTerm()">reset</button>
+      </div>
+      <div id="kernel-log" style="margin-top: 12px;"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>Type ANSI escape sequences. Watch the cursor move.</h2>
+      <p class="hint">A 12×40 grid acts as a fake terminal. Type a sequence (e.g., <code>\\x1b[5;10H</code>) and any text after; click "Apply".</p>
+      <input type="text" id="ansi-input" value="\x1b[2J\x1b[Hhello\x1b[3;5HWORLD" />
+      <button class="action" onclick="applyAnsi()">Apply</button>
+      <button class="action" onclick="clearAnsiGrid()" style="background:#64748b">Clear grid</button>
+      <pre class="terminal" id="ansi-grid"></pre>
+      <table class="ansi-table">
+        <tr><th>Sequence</th><th>Effect</th></tr>
+        <tr><td>\\x1b[2J</td><td>Clear screen</td></tr>
+        <tr><td>\\x1b[H</td><td>Home cursor (row 1, col 1)</td></tr>
+        <tr><td>\\x1b[r;cH</td><td>Move cursor to (r, c)</td></tr>
+        <tr><td>\\x1b[A / B / C / D</td><td>Cursor up / down / right / left</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>edit.zig keymap.</h2>
+      <p class="hint">Every byte the editor accepts and what it does.</p>
+      <table class="ansi-table">
+        <tr><th>Byte</th><th>Action</th><th>Code</th></tr>
+        <tr><td>printable (0x20–0x7E)</td><td>Insert at cursor</td><td><code>insertByte(b)</code></td></tr>
+        <tr><td>0x7F (DEL/Backspace)</td><td>Delete char before cursor</td><td><code>backspace()</code></td></tr>
+        <tr><td>0x1B '[' 'A' (arrow up)</td><td>Move cursor up one row</td><td><code>moveUp()</code></td></tr>
+        <tr><td>0x1B '[' 'B' (arrow down)</td><td>Move cursor down one row</td><td><code>moveDown()</code></td></tr>
+        <tr><td>0x1B '[' 'C' (arrow right)</td><td>Move cursor right one byte</td><td><code>moveRight()</code></td></tr>
+        <tr><td>0x1B '[' 'D' (arrow left)</td><td>Move cursor left one byte</td><td><code>moveLeft()</code></td></tr>
+        <tr><td>0x13 (^S)</td><td>Save: open with O_TRUNC, write whole buffer</td><td><code>save(path)</code></td></tr>
+        <tr><td>0x18 (^X)</td><td>Exit: leaveRaw, exit(0)</td><td>break out of loop</td></tr>
+        <tr><td>(others)</td><td>Ignored</td><td>—</td></tr>
+      </table>
+      <p class="hint" style="margin-top: 12px;">Buffer max: 16 KB. Beyond that, insertByte silently rejects.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+
+  // ============================================================
+  // Cooked vs Raw simulator
+  // ============================================================
+  let mode = 'cooked';
+  let lineBuf = ''; // committed
+  let editBuf = ''; // being typed
+  let displayed = '';
+
+  function setMode(m) {
+    mode = m;
+    document.getElementById('mode-cooked').classList.toggle('active', m === 'cooked');
+    document.getElementById('mode-raw').classList.toggle('active', m === 'raw');
+    log(`<b>Mode → ${m}.</b> ${m === 'cooked' ? 'feedByte will buffer + handle control chars.' : 'feedByte will pass every byte raw.'}`);
+  }
+  function resetTerm() { lineBuf = ''; editBuf = ''; displayed = ''; document.getElementById('kernel-log').innerHTML = ''; render(); }
+  function render() {
+    document.getElementById('terminal').innerHTML = displayed + '<span class="cursor">█</span>';
+  }
+  function log(html) {
+    const cur = document.getElementById('kernel-log').innerHTML;
+    document.getElementById('kernel-log').innerHTML = `<div class="step">${html}</div>` + cur;
+  }
+  function press(b) {
+    if (mode === 'raw') {
+      lineBuf += b;
+      log(`Raw mode. Byte 0x${b.charCodeAt(0).toString(16).padStart(2,'0')} '${b === '\n' ? '\\n' : b === '\x7F' ? '\\x7F' : b === '\x03' ? '^C' : b}' appended directly. wakeup(&input_buf). No echo. read() returns it as-is.`);
+      return;
+    }
+    // cooked
+    if (b === '\n') {
+      editBuf += b;
+      displayed += b;
+      lineBuf += editBuf;
+      log(`Cooked: '\\n'. Echo \\n. Commit line ('${editBuf.replace(/\n/g,'\\n')}'). wakeup. read() can return.`);
+      editBuf = '';
+    } else if (b === '\x7F') {
+      if (editBuf.length === 0) { log(`Cooked: backspace. Edit buffer empty. No-op.`); }
+      else { editBuf = editBuf.slice(0, -1); displayed = displayed.slice(0, -1); log(`Cooked: backspace. Pop char. Echo \\b\\space\\b.`); }
+    } else if (b === '\x03') {
+      displayed += '^C\n'; log(`Cooked: ^C. Echo "^C\\n". Call proc.kill(fg_pid). Edit buffer left as-is.`);
+    } else if (b === '\x15') {
+      const erased = editBuf.length;
+      displayed = displayed.slice(0, displayed.length - editBuf.length);
+      editBuf = '';
+      log(`Cooked: ^U. Erase ${erased} chars. Edit buffer cleared.`);
+    } else if (b === '\x04') {
+      if (editBuf.length === 0) { log(`Cooked: ^D, buffer empty → EOF (read returns 0).`); }
+      else { displayed += editBuf; lineBuf += editBuf; log(`Cooked: ^D, buffer non-empty → commit as if Enter.`); editBuf = ''; }
+    } else {
+      editBuf += b; displayed += b; log(`Cooked: '${b}' (0x${b.charCodeAt(0).toString(16).padStart(2,'0')}). Echo, append to edit buffer.`);
+    }
+    render();
+  }
+  setMode('cooked');
+  resetTerm();
+
+  // ============================================================
+  // ANSI Sandbox
+  // ============================================================
+  const ROWS = 12, COLS = 40;
+  let grid;
+  let cursorR = 1, cursorC = 1;
+
+  function clearAnsiGrid() {
+    grid = Array(ROWS).fill(null).map(() => Array(COLS).fill(' '));
+    cursorR = 1; cursorC = 1;
+    renderGrid();
+  }
+  function renderGrid() {
+    let html = '';
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (r === cursorR - 1 && c === cursorC - 1) html += `<span class="cursor">${grid[r][c]}</span>`;
+        else html += grid[r][c];
+      }
+      html += '\n';
+    }
+    document.getElementById('ansi-grid').innerHTML = html;
+  }
+
+  function applyAnsi() {
+    let s = document.getElementById('ansi-input').value;
+    // Decode \x1b literal
+    s = s.replace(/\\x1b/g, '\x1b').replace(/\\n/g, '\n');
+    let i = 0;
+    while (i < s.length) {
+      const c = s[i];
+      if (c === '\x1b' && s[i+1] === '[') {
+        // CSI sequence
+        let j = i + 2;
+        while (j < s.length && !/[A-Za-z]/.test(s[j])) j++;
+        if (j < s.length) {
+          const params = s.substring(i+2, j);
+          const cmd = s[j];
+          if (cmd === 'J' && params === '2') { clearAnsiGrid(); }
+          else if (cmd === 'H') {
+            if (params === '') { cursorR = 1; cursorC = 1; }
+            else {
+              const parts = params.split(';');
+              cursorR = parseInt(parts[0]) || 1;
+              cursorC = parseInt(parts[1]) || 1;
+            }
+          }
+          else if (cmd === 'A') cursorR = Math.max(1, cursorR - (parseInt(params) || 1));
+          else if (cmd === 'B') cursorR = Math.min(ROWS, cursorR + (parseInt(params) || 1));
+          else if (cmd === 'C') cursorC = Math.min(COLS, cursorC + (parseInt(params) || 1));
+          else if (cmd === 'D') cursorC = Math.max(1, cursorC - (parseInt(params) || 1));
+          i = j + 1; continue;
+        }
+      }
+      if (c === '\n') { cursorR++; cursorC = 1; if (cursorR > ROWS) cursorR = ROWS; }
+      else if (cursorR >= 1 && cursorR <= ROWS && cursorC >= 1 && cursorC <= COLS) {
+        grid[cursorR - 1][cursorC - 1] = c;
+        cursorC++;
+        if (cursorC > COLS) { cursorC = 1; cursorR++; }
+      }
+      i++;
+    }
+    renderGrid();
+  }
+  clearAnsiGrid();
+  applyAnsi();
+</script>
+</body>
+</html>

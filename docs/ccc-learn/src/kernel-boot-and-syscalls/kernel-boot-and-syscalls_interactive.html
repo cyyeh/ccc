@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>kernel-boot-and-syscalls — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f1f5f9; min-height: 100vh; padding: 24px; color: #1e293b; }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn { padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; font-size: 14px; cursor: pointer; font-family: inherit; transition: all .2s; }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px; }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  .stage { display: flex; align-items: center; gap: 12px; margin: 12px 0; padding: 12px; background: #f8fafc; border-radius: 8px; border-left: 4px solid #0e7490; }
+  .stage.M { border-left-color: #f59e0b; }
+  .stage.S { border-left-color: #0e7490; }
+  .stage.U { border-left-color: #06b6d4; }
+  .stage .badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-family: monospace; font-weight: 700; font-size: 12px; }
+  .stage.M .badge { background: #f59e0b; color: #fff; }
+  .stage.S .badge { background: #0e7490; color: #fff; }
+  .stage.U .badge { background: #06b6d4; color: #fff; }
+  .stage .desc { flex: 1; font-size: 13px; line-height: 1.5; }
+  .stage .desc code { background: #e2e8f0; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  button.action { padding: 8px 16px; border-radius: 6px; border: none; background: #0e7490; color: #fff; font-family: inherit; font-size: 14px; cursor: pointer; margin-top: 12px; }
+  button.action:hover { background: #155e75; }
+  pre.code { font-family: monospace; font-size: 12px; padding: 12px; border-radius: 6px; background: #1a202c; color: #e2e8f0; margin-top: 8px; overflow-x: auto; line-height: 1.6; }
+  .syscall-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
+  .syscall-table td, .syscall-table th { padding: 6px 10px; border: 1px solid #e2e8f0; text-align: left; font-family: monospace; }
+  .syscall-table th { background: #f1f5f9; font-weight: 600; }
+  .syscall-table tr:hover { background: #cffafe; cursor: pointer; }
+  .ctx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .ctx-col { padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+  .ctx-col h3 { font-size: 13px; color: #0e7490; margin-bottom: 8px; font-family: monospace; }
+  .ctx-reg { padding: 4px 8px; background: #fff; border-radius: 4px; margin: 3px 0; font-family: monospace; font-size: 12px; display: flex; justify-content: space-between; }
+  .ctx-reg.changed { background: #fef3c7; border-left: 2px solid #f59e0b; }
+  @media (max-width: 640px) {
+    body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
+    .panel { padding: 16px; } .ctx-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>kernel boot &amp; syscalls</h1>
+  <p class="subtitle">Boot timeline. Syscall dispatch flowchart. swtch.S register save/load.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">Boot Timeline</button>
+    <button class="tab-btn" onclick="switchTab(1)">Syscall Table</button>
+    <button class="tab-btn" onclick="switchTab(2)">swtch.S Walk</button>
+  </div>
+
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>Boot from reset to user code in 8 stages.</h2>
+      <p class="hint">Each colored bar is a privilege level. Click any stage for details.</p>
+      <div id="boot-stages"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>The syscall table — every syscall ccc implements.</h2>
+      <p class="hint">Hover/click for description. Numbers match Linux RV32 ABI conventions.</p>
+      <table class="syscall-table" id="syscall-table"></table>
+      <pre class="code" id="syscall-detail">Click any syscall row to see its handler signature.</pre>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>Step through swtch.S saving the old context and loading the new.</h2>
+      <p class="hint">Two contexts side-by-side. Click "Step" to advance one swtch instruction.</p>
+      <div class="ctx-grid">
+        <div class="ctx-col">
+          <h3>old_ctx (a0)</h3>
+          <div id="old-regs"></div>
+        </div>
+        <div class="ctx-col">
+          <h3>new_ctx (a1)</h3>
+          <div id="new-regs"></div>
+        </div>
+      </div>
+      <pre class="code" id="swtch-cur"></pre>
+      <button class="action" onclick="swtchStep()">Step</button>
+      <button class="action" onclick="swtchReset()" style="background:#64748b">Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+
+  // ============================================================
+  // Boot Timeline
+  // ============================================================
+  const STAGES = [
+    { priv: 'M', t: 'Reset → boot.S', d: 'CPU starts at PC=0x80000000 in M-mode. PC, regs, CSRs are zero except mhartid (always 0). boot.S sets sp to a small stack in BSS, then begins setup.' },
+    { priv: 'M', t: 'CSR setup', d: 'boot.S writes mtvec, medeleg=0xB1FF (delegate sync), mideleg=0x222 (delegate SSI/STI/SEI). Sets mie.MTIE=1.' },
+    { priv: 'M', t: 'CLINT init', d: 'Read mtime, write mtimecmp = mtime + TICK_NS. The first MTI alarm is now armed.' },
+    { priv: 'M', t: 'mret to S', d: 'Set mepc = address of kmain, mstatus.MPP = S, then mret. CPU pops privilege to S, jumps to kmain.' },
+    { priv: 'S', t: 'kmain.zig', d: 'page_alloc init (free list of all RAM after the kernel image). Build kernel page table. csrw satp, ... → enable Sv32. csrw stvec, s_trap_entry → trap routing live.' },
+    { priv: 'S', t: 'PID 1 setup', d: 'proc.allocate() picks ptable[0]. Build user page table, copy user-prog ELF in (or read /bin/init from disk). Set up trap frame: a0..a7 = argv tail, sepc = entry, sstatus.SPP = U.' },
+    { priv: 'S', t: 'sched.schedule()', d: 'Find first Runnable process (PID 1). swtch(&sched_ctx, &p1.ctx). Inside swtch, ra is loaded with the address of trampoline\'s s_trap_return. ret pops to that address.' },
+    { priv: 'U', t: 's_trap_return → user', d: 'Trampoline restores user regs from the trap frame (zeros for a fresh process). Switches satp to user pt. sret → privilege flips to U, PC = sepc = user entry. User code runs!' },
+  ];
+
+  function renderStages() {
+    const el = document.getElementById('boot-stages');
+    el.innerHTML = STAGES.map((s, i) => `<div class="stage ${s.priv}"><span class="badge">${s.priv}-mode</span><div class="desc"><b>${i + 1}. ${s.t}</b><br>${s.d}</div></div>`).join('');
+  }
+  renderStages();
+
+  // ============================================================
+  // Syscall Table
+  // ============================================================
+  const SYSCALLS = [
+    { num: 17,  name: 'getcwd',   sig: 'long getcwd(char *buf, size_t len)', desc: 'Copy CWD path into user buffer. Set in proc.cwd; updated by chdir.' },
+    { num: 34,  name: 'mkdirat',  sig: 'int mkdirat(int dfd, const char *path, mode_t mode)', desc: 'Create a directory. Calls fsops.create with type Dir.' },
+    { num: 35,  name: 'unlinkat', sig: 'int unlinkat(int dfd, const char *path, int flags)', desc: 'Remove a name. Calls fsops.unlink. itrunc + iput on nlink == 0.' },
+    { num: 49,  name: 'chdir',    sig: 'int chdir(const char *path)', desc: 'Set proc.cwd to namei(path). The replaced cwd inode is iput-ed.' },
+    { num: 56,  name: 'openat',   sig: 'int openat(int dfd, const char *path, int flags, mode_t mode)', desc: 'Open or create a file. Returns a new fd. Honors O_CREAT, O_TRUNC, O_APPEND.' },
+    { num: 57,  name: 'close',    sig: 'int close(int fd)', desc: 'Decrement file ref count; iput if last ref.' },
+    { num: 62,  name: 'lseek',    sig: 'off_t lseek(int fd, off_t offset, int whence)', desc: 'Set file offset (SEEK_SET/CUR/END). Returns new offset.' },
+    { num: 63,  name: 'read',     sig: 'ssize_t read(int fd, void *buf, size_t count)', desc: 'Inode-backed: readi from cur pos. Console-backed: cooked-mode line read.' },
+    { num: 64,  name: 'write',    sig: 'ssize_t write(int fd, const void *buf, size_t count)', desc: 'Inode-backed: writei. Console-backed: write each byte to UART THR.' },
+    { num: 80,  name: 'fstat',    sig: 'int fstat(int fd, struct stat *st)', desc: 'Fill st with type, ino, size, nlink. For Console, type = T_Console.' },
+    { num: 93,  name: 'exit',     sig: 'void exit(int status)', desc: 'No return. Reparent children → init. Mark zombie. Wakeup parent.' },
+    { num: 124, name: 'yield',    sig: 'void yield(void)', desc: 'Voluntarily give up CPU. swtch into scheduler; reschedule.' },
+    { num: 172, name: 'getpid',   sig: 'pid_t getpid(void)', desc: 'Return current process\'s PID (1-based ptable index).' },
+    { num: 214, name: 'sbrk',     sig: 'void *sbrk(intptr_t incr)', desc: 'Grow user heap by incr bytes. New PTEs allocated lazily? No — eager.' },
+    { num: 220, name: 'fork',     sig: 'pid_t fork(void)', desc: 'copyUvm parent into child. Set child trapframe.a0 = 0; parent gets child PID.' },
+    { num: 221, name: 'execve',   sig: 'int execve(const char *path, char *const argv[], char *const envp[])', desc: 'Tear down current address space; load ELF; build new argv tail; sret to entry.' },
+    { num: 260, name: 'wait4',    sig: 'pid_t wait4(pid_t pid, int *wstatus, int options, struct rusage *ru)', desc: 'Sleep on self until any zombie child. Reap child slot; copy status to user.' },
+  ];
+
+  function renderSyscalls() {
+    const tbl = document.getElementById('syscall-table');
+    tbl.innerHTML = '<tr><th>a7</th><th>name</th><th>brief</th></tr>' + SYSCALLS.map((s, i) => `<tr onclick="showSyscall(${i})"><td>${s.num}</td><td><b>${s.name}</b></td><td>${s.sig}</td></tr>`).join('');
+  }
+  function showSyscall(i) {
+    const s = SYSCALLS[i];
+    document.getElementById('syscall-detail').textContent = `// syscall #${s.num}: ${s.name}\n${s.sig}\n\n${s.desc}`;
+  }
+  renderSyscalls();
+
+  // ============================================================
+  // swtch.S Walk
+  // ============================================================
+  const REG_NAMES = ['ra','sp','s0','s1','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11'];
+  const SWTCH_STEPS = [
+    { line: '# === SAVE phase ===', desc: 'About to save old_ctx (a0).', save: false },
+    ...REG_NAMES.map(r => ({ line: `sw ${r}, ${REG_NAMES.indexOf(r) * 4}(a0)`, desc: `Save ${r} into old_ctx slot ${REG_NAMES.indexOf(r) * 4}.`, save: r })),
+    { line: '# === LOAD phase ===', desc: 'About to load new_ctx (a1).', save: false },
+    ...REG_NAMES.map(r => ({ line: `lw ${r}, ${REG_NAMES.indexOf(r) * 4}(a1)`, desc: `Load ${r} from new_ctx slot ${REG_NAMES.indexOf(r) * 4}.`, load: r })),
+    { line: 'ret', desc: 'Return to the new ra. The new context is now executing.', save: false }
+  ];
+
+  let oldCtx = { ra: '0xCURRENT_RA', sp: '0xCURRENT_SP', s0:'0xs0_old', s1:'0xs1_old', s2:'0xs2_old', s3:'0xs3_old', s4:'0xs4_old', s5:'0xs5_old', s6:'0xs6_old', s7:'0xs7_old', s8:'0xs8_old', s9:'0xs9_old', s10:'0xs10_old', s11:'0xs11_old' };
+  let newCtx = { ra: '0xNEW_RA', sp: '0xNEW_SP', s0:'0xs0_new', s1:'0xs1_new', s2:'0xs2_new', s3:'0xs3_new', s4:'0xs4_new', s5:'0xs5_new', s6:'0xs6_new', s7:'0xs7_new', s8:'0xs8_new', s9:'0xs9_new', s10:'0xs10_new', s11:'0xs11_new' };
+  let cpuRegs = { ...oldCtx };
+  let stepIdx = 0;
+  let lastChange = null;
+
+  function renderCtx() {
+    let oh = '', nh = '';
+    for (const r of REG_NAMES) {
+      const oCls = lastChange === ('save_' + r) ? ' changed' : '';
+      const nCls = lastChange === ('load_' + r) ? ' changed' : '';
+      oh += `<div class="ctx-reg${oCls}"><span>${r}</span><span>${oldCtx[r]}</span></div>`;
+      nh += `<div class="ctx-reg${nCls}"><span>${r}</span><span>${newCtx[r]}</span></div>`;
+    }
+    document.getElementById('old-regs').innerHTML = oh;
+    document.getElementById('new-regs').innerHTML = nh;
+    document.getElementById('swtch-cur').textContent = stepIdx >= SWTCH_STEPS.length ? '(done)' : `Step ${stepIdx + 1} / ${SWTCH_STEPS.length}\n${SWTCH_STEPS[stepIdx].line}\n# ${SWTCH_STEPS[stepIdx].desc}`;
+  }
+
+  function swtchStep() {
+    if (stepIdx >= SWTCH_STEPS.length) return;
+    const step = SWTCH_STEPS[stepIdx];
+    if (step.save) {
+      oldCtx[step.save] = cpuRegs[step.save] || '0xCPU_' + step.save;
+      lastChange = 'save_' + step.save;
+    } else if (step.load) {
+      cpuRegs[step.load] = newCtx[step.load];
+      lastChange = 'load_' + step.load;
+    } else {
+      lastChange = null;
+    }
+    stepIdx++;
+    renderCtx();
+  }
+  function swtchReset() { stepIdx = 0; lastChange = null; cpuRegs = { ...oldCtx }; renderCtx(); }
+  renderCtx();
+</script>
+</body>
+</html>

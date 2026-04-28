@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>processes-fork-exec-wait — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f1f5f9; min-height: 100vh; padding: 24px; color: #1e293b; }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn { padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; font-size: 14px; cursor: pointer; font-family: inherit; transition: all .2s; }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px; }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  button.action { padding: 6px 12px; border-radius: 6px; border: none; background: #0e7490; color: #fff; font-family: inherit; font-size: 13px; cursor: pointer; margin: 4px 4px 0 0; }
+  button.action:hover { background: #155e75; }
+  button.action.warn { background: #d97706; }
+  button.action.danger { background: #dc2626; }
+  button.action.muted { background: #64748b; }
+  .ptable { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .pslot { padding: 10px; border-radius: 8px; border: 2px solid #e2e8f0; background: #f8fafc; font-family: monospace; font-size: 12px; transition: all .2s; }
+  .pslot.Unused { opacity: 0.4; }
+  .pslot.Running { background: #dbeafe; border-color: #2563eb; }
+  .pslot.Runnable { background: #ecfeff; border-color: #06b6d4; }
+  .pslot.Sleeping { background: #fef3c7; border-color: #f59e0b; }
+  .pslot.Zombie { background: #fee2e2; border-color: #dc2626; }
+  .pslot.Embryo { background: #f3e8ff; border-color: #9333ea; }
+  .pslot .pid { font-weight: 700; font-size: 13px; }
+  .pslot .name { font-size: 11px; color: #64748b; margin: 2px 0; }
+  .pslot .state { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: #fff; display: inline-block; }
+  .log { font-family: monospace; font-size: 12px; padding: 12px; border-radius: 6px; background: #1a202c; color: #e2e8f0; margin-top: 12px; max-height: 300px; overflow-y: auto; line-height: 1.6; }
+  .log .ev-fork { color: #4ade80; }
+  .log .ev-exec { color: #06b6d4; }
+  .log .ev-wait { color: #f59e0b; }
+  .log .ev-exit { color: #dc2626; }
+  .log .ev-killed { color: #f97316; }
+  .step { margin: 8px 0; padding: 10px; background: #f8fafc; border-radius: 6px; border-left: 3px solid #0e7490; font-size: 13px; line-height: 1.5; }
+  .arglayout { font-family: monospace; font-size: 12px; padding: 12px; background: #1a202c; color: #e2e8f0; border-radius: 6px; line-height: 1.7; margin-top: 12px; }
+  .arglayout .high { color: #4ade80; }
+  .arglayout .sp { color: #f59e0b; font-weight: 700; }
+  .arglayout .arg { color: #06b6d4; }
+  @media (max-width: 640px) {
+    body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
+    .panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>fork · exec · wait · exit</h1>
+  <p class="subtitle">Process lifecycle simulator. argv tail dissector. Kill-flag walk.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">ptable Simulator</button>
+    <button class="tab-btn" onclick="switchTab(1)">argv Tail Layout</button>
+    <button class="tab-btn" onclick="switchTab(2)">Kill-flag Walk</button>
+  </div>
+
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>The ptable. Drive the syscalls; watch states change.</h2>
+      <p class="hint">Click a process slot, then a button. Mirrors <code>proc.zig</code>: alloc → fork → exec → exit → wait reaps.</p>
+      <div class="ptable" id="ptable"></div>
+      <div style="margin-top: 12px;">
+        <button class="action" onclick="doFork()">Fork (selected)</button>
+        <button class="action warn" onclick="doExec()">Exec (selected)</button>
+        <button class="action muted" onclick="doYield()">Yield (Running → Runnable)</button>
+        <button class="action muted" onclick="doSleep()">Sleep (Running → Sleeping)</button>
+        <button class="action muted" onclick="doWakeup()">Wakeup all sleeping</button>
+        <button class="action danger" onclick="doExit()">Exit (selected → Zombie)</button>
+        <button class="action" onclick="doWait()">Wait (selected reaps zombie children)</button>
+        <button class="action muted" onclick="doRun()">Make selected Running</button>
+        <button class="action muted" onclick="resetSim()">Reset</button>
+      </div>
+      <div class="log" id="sim-log"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>Build a System-V argv tail.</h2>
+      <p class="hint">Type a command line. See exactly how execve lays it out on the user stack — argc, argv ptrs, NULL, envp ptrs, NULL, then the strings.</p>
+      <input type="text" id="cmd" value="ls /bin -la" oninput="renderArgv()" style="width:100%;padding:8px 10px;font-family:monospace;font-size:14px;border:1px solid #cbd5e1;border-radius:6px" />
+      <div class="arglayout" id="arglayout"></div>
+      <p class="hint" id="argv-summary"></p>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>Walk through ^C → process exit.</h2>
+      <p class="hint">Mirrors the chain: console.feedByte(0x03) → proc.kill → killed=true → wakes sleeper → syscall returns → dispatch sees killed → proc.exit.</p>
+      <div id="kill-stages"></div>
+      <button class="action" onclick="killStep()">Next stage</button>
+      <button class="action muted" onclick="killReset()">Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+
+  // ============================================================
+  // ptable simulator
+  // ============================================================
+  const NPROC = 8;
+  let ptable = [];
+  let selectedPid = null;
+  function resetSim() {
+    ptable = Array(NPROC).fill(null).map((_, i) => ({ pid: 0, parent: null, name: '', state: 'Unused' }));
+    // PID 1 = init
+    ptable[0] = { pid: 1, parent: null, name: 'init', state: 'Runnable' };
+    selectedPid = 1;
+    document.getElementById('sim-log').innerHTML = '';
+    renderPtable();
+    log('init (PID 1) created.');
+  }
+
+  function renderPtable() {
+    const el = document.getElementById('ptable');
+    el.innerHTML = ptable.map((p, i) => {
+      const slot = i;
+      const sel = selectedPid === p.pid ? 'box-shadow:0 0 0 3px #0e7490' : '';
+      const cls = p.state;
+      return `<div class="pslot ${cls}" style="${sel};cursor:pointer" onclick="selectPid(${p.pid})">
+        <div class="pid">PID ${p.pid || '-'} (slot ${slot})</div>
+        <div class="name">${p.name || '<unused>'}</div>
+        <div class="state">${p.state}</div>
+        ${p.parent ? `<div class="name">parent: PID ${p.parent}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  function selectPid(pid) {
+    if (pid === 0) return;
+    selectedPid = pid;
+    renderPtable();
+  }
+
+  function log(msg, cls) {
+    const el = document.getElementById('sim-log');
+    el.innerHTML = `<div${cls ? ` class="${cls}"` : ''}>&gt; ${msg}</div>` + el.innerHTML;
+  }
+
+  function getSelected() { return ptable.find(p => p.pid === selectedPid); }
+  function getSlot(pid) { return ptable.findIndex(p => p.pid === pid); }
+  function findUnused() { return ptable.findIndex(p => p.state === 'Unused'); }
+  function nextPid() { let max = 0; for (const p of ptable) if (p.pid > max) max = p.pid; return max + 1; }
+
+  function doFork() {
+    const par = getSelected();
+    if (!par || par.state === 'Unused' || par.state === 'Zombie') { log('Select an active process first.', 'ev-killed'); return; }
+    const slot = findUnused();
+    if (slot === -1) { log('ptable full!', 'ev-exit'); return; }
+    const newPid = nextPid();
+    ptable[slot] = { pid: newPid, parent: par.pid, name: par.name + '*', state: 'Runnable' };
+    log(`fork: PID ${par.pid} → PID ${newPid}. Child copies parent address space, fds, cwd.`, 'ev-fork');
+    renderPtable();
+  }
+
+  function doExec() {
+    const p = getSelected();
+    if (!p || p.state === 'Unused') { return; }
+    const newName = prompt('Program name (e.g., /bin/cat):', '/bin/cat');
+    if (!newName) return;
+    p.name = newName.split('/').pop();
+    log(`exec: PID ${p.pid} replaced by ${newName}. Address space rebuilt; fds preserved.`, 'ev-exec');
+    renderPtable();
+  }
+
+  function doYield() {
+    const p = getSelected();
+    if (!p || p.state !== 'Running') return;
+    p.state = 'Runnable';
+    log(`yield: PID ${p.pid} → Runnable.`);
+    renderPtable();
+  }
+  function doRun() {
+    const p = getSelected();
+    if (!p || p.state !== 'Runnable') return;
+    for (const o of ptable) if (o.state === 'Running') o.state = 'Runnable';
+    p.state = 'Running';
+    log(`scheduler picks PID ${p.pid} → Running.`);
+    renderPtable();
+  }
+  function doSleep() {
+    const p = getSelected();
+    if (!p || p.state !== 'Running') return;
+    p.state = 'Sleeping';
+    log(`PID ${p.pid} → Sleeping (e.g., on disk I/O or wait4).`);
+    renderPtable();
+  }
+  function doWakeup() {
+    let n = 0;
+    for (const p of ptable) if (p.state === 'Sleeping') { p.state = 'Runnable'; n++; }
+    log(`wakeup: ${n} sleeper(s) → Runnable.`);
+    renderPtable();
+  }
+  function doExit() {
+    const p = getSelected();
+    if (!p || p.state === 'Unused' || p.state === 'Zombie') return;
+    // Reparent children
+    for (const c of ptable) if (c.parent === p.pid) c.parent = 1;
+    p.state = 'Zombie';
+    log(`exit: PID ${p.pid} → Zombie. Children reparented to PID 1.`, 'ev-exit');
+    renderPtable();
+  }
+  function doWait() {
+    const p = getSelected();
+    if (!p) return;
+    const childIdx = ptable.findIndex(c => c.parent === p.pid && c.state === 'Zombie');
+    if (childIdx === -1) {
+      const anyChild = ptable.some(c => c.parent === p.pid);
+      if (!anyChild) { log(`wait: PID ${p.pid} has no children → returns -1 (ECHILD).`, 'ev-wait'); }
+      else { log(`wait: PID ${p.pid} has children but none are zombies → would sleep (in this sim, no-op).`, 'ev-wait'); }
+      return;
+    }
+    const child = ptable[childIdx];
+    log(`wait: PID ${p.pid} reaps child PID ${child.pid}. Slot freed.`, 'ev-wait');
+    ptable[childIdx] = { pid: 0, parent: null, name: '', state: 'Unused' };
+    renderPtable();
+  }
+
+  resetSim();
+
+  // ============================================================
+  // argv tail layout
+  // ============================================================
+  function renderArgv() {
+    const cmd = document.getElementById('cmd').value || '';
+    const tokens = cmd.split(/\s+/).filter(t => t);
+    if (tokens.length === 0) { document.getElementById('arglayout').textContent = '(empty)'; return; }
+    let out = '';
+    let addr = 0x7FFFF000;  // top of user stack
+    out += `<span class="high">// high addr</span>\n`;
+    // Strings are at the very top.
+    const strAddrs = [];
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i];
+      addr -= (t.length + 1);
+      strAddrs[i] = addr;
+      out += `<span style="color:#06b6d4">0x${addr.toString(16).padStart(8, '0')}</span>: <span class="arg">"${t}\\0"</span>  ; argv[${i}] string\n`;
+    }
+    addr -= addr % 4; // align
+    // envp[NULL]
+    addr -= 4; out += `<span style="color:#06b6d4">0x${addr.toString(16).padStart(8, '0')}</span>: <span style="color:#94a3b8">NULL</span>          ; envp[end]\n`;
+    // argv[NULL]
+    addr -= 4; out += `<span style="color:#06b6d4">0x${addr.toString(16).padStart(8, '0')}</span>: <span style="color:#94a3b8">NULL</span>          ; argv[${tokens.length}] = NULL\n`;
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      addr -= 4; out += `<span style="color:#06b6d4">0x${addr.toString(16).padStart(8, '0')}</span>: <span class="arg">0x${strAddrs[i].toString(16).padStart(8,'0')}</span>     ; argv[${i}] ptr\n`;
+    }
+    addr -= 4; out += `<span style="color:#06b6d4">0x${addr.toString(16).padStart(8, '0')}</span>: <span class="sp">${tokens.length}</span>             ; argc       <-- sp\n`;
+    out += `<span class="high">// low addr (heap grows up from here)</span>`;
+    document.getElementById('arglayout').innerHTML = out;
+    document.getElementById('argv-summary').innerHTML = `<b>argc = ${tokens.length}</b>. _start reads <code>argc = *sp</code>, then <code>argv = sp + 4</code>, calls <code>main(argc, argv)</code>.`;
+  }
+  renderArgv();
+
+  // ============================================================
+  // Kill-flag walk
+  // ============================================================
+  const KILL_STEPS = [
+    'Setup: PID 2 (cat) is Running. PID 1 (sh) waits in wait4.',
+    '<b>User presses ^C</b> at the keyboard. Byte 0x03 lands in UART RX FIFO.',
+    'PLIC source 10 → SEI trap → kernel UART ISR drains FIFO → calls <code>console.feedByte(0x03)</code>.',
+    '<code>console.feedByte</code> recognizes ^C in cooked mode → calls <code>proc.kill(2)</code>.',
+    '<code>proc.kill</code>: <code>ptable[1].killed = true</code>. PID 2 was Running, so no wakeup needed (if Sleeping, would also flip to Runnable).',
+    'PID 2 was inside <code>read(0, ...)</code>; that <code>read</code> returns -1 because <code>console.read</code> sees the killed flag.',
+    'PID 2\'s syscall handler returns to <code>syscall.dispatch</code>. Dispatch checks <code>p.killed</code>: true.',
+    '<code>syscall.dispatch</code> calls <code>proc.exit(p, 1)</code> instead of returning to user code.',
+    '<code>proc.exit</code>: reparent children, mark Zombie, wake parent (PID 1).',
+    'Scheduler picks PID 1 → wait4 returns PID 2\'s pid; status copied to user.',
+    'Shell prints <code>$</code> prompt again. Done.'
+  ];
+  let killIdx = 0;
+  function killStep() {
+    if (killIdx >= KILL_STEPS.length) return;
+    const cur = document.getElementById('kill-stages').innerHTML;
+    document.getElementById('kill-stages').innerHTML = cur + `<div class="step"><b>Step ${killIdx + 1}.</b> ${KILL_STEPS[killIdx]}</div>`;
+    killIdx++;
+  }
+  function killReset() { killIdx = 0; document.getElementById('kill-stages').innerHTML = ''; }
+  killReset();
+</script>
+</body>
+</html>

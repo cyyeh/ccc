@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>shell-and-userland — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f1f5f9; min-height: 100vh; padding: 24px; color: #1e293b; }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn { padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; font-size: 14px; cursor: pointer; font-family: inherit; transition: all .2s; }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px; }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  input[type=text] { width: 100%; padding: 8px 10px; font-size: 14px; font-family: monospace; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; }
+  button.action { padding: 6px 12px; border-radius: 6px; border: none; background: #0e7490; color: #fff; font-family: inherit; font-size: 13px; cursor: pointer; margin: 4px 4px 0 0; }
+  button.action:hover { background: #155e75; }
+  .step { margin: 8px 0; padding: 10px; background: #f8fafc; border-radius: 6px; border-left: 3px solid #0e7490; font-size: 13px; line-height: 1.5; }
+  .step.fork { border-left-color: #4ade80; }
+  .step.redirect { border-left-color: #f59e0b; }
+  .step.exec { border-left-color: #06b6d4; }
+  .token { display: inline-block; padding: 3px 8px; margin: 0 3px; background: #cffafe; border-radius: 4px; font-family: monospace; font-size: 12px; }
+  .token.redirect { background: #fef3c7; }
+  .token.builtin { background: #d1fae5; }
+  .fdtable { font-family: monospace; font-size: 12px; padding: 10px; background: #f8fafc; border-radius: 6px; margin: 8px 0; }
+  .fdtable .row { display: flex; gap: 12px; padding: 3px 0; border-bottom: 1px solid #e2e8f0; }
+  .fdtable .row:last-child { border: none; }
+  .fdtable .label { color: #64748b; width: 50px; font-weight: 700; }
+  .fdtable .v { flex: 1; }
+  .fdtable .v.changed { background: #fef3c7; padding: 0 4px; border-radius: 3px; }
+  pre.code { font-family: monospace; font-size: 12px; padding: 10px; border-radius: 6px; background: #1a202c; color: #e2e8f0; margin-top: 8px; overflow-x: auto; line-height: 1.6; }
+  pre.stack { font-family: monospace; font-size: 12px; padding: 10px; border-radius: 6px; background: #1a202c; color: #e2e8f0; line-height: 1.7; margin-top: 8px; overflow-x: auto; }
+  pre.stack .high { color: #4ade80; }
+  pre.stack .sp { color: #f59e0b; font-weight: 700; }
+  @media (max-width: 640px) {
+    body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
+    .panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>shell &amp; userland</h1>
+  <p class="subtitle">Pipeline visualizer. Redirect explainer. _start stack-tail dissector.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">Shell Pipeline</button>
+    <button class="tab-btn" onclick="switchTab(1)">Redirect Explainer</button>
+    <button class="tab-btn" onclick="switchTab(2)">_start &amp; argv tail</button>
+  </div>
+
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>Type a shell command. Watch the steps.</h2>
+      <p class="hint">Tokenize, recognize redirects + builtins, fork+exec or run inline. Mirrors <code>sh.zig</code>'s control flow.</p>
+      <input type="text" id="cmd" value="echo hi > /tmp/x" oninput="renderPipeline()" />
+      <div id="pipeline-out"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>How <code>&gt;</code> rewires fd 1.</h2>
+      <p class="hint">Step through the dup2 dance. Watch the fd table change.</p>
+      <button class="action" onclick="redirStep()">Next step</button>
+      <button class="action" onclick="redirReset()" style="background:#64748b">Reset</button>
+      <div id="redir-stages"></div>
+      <p style="margin-top:12px;font-size:13px"><b>Current fd table:</b></p>
+      <div class="fdtable" id="fdtable"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>What <code>_start</code> sees on the stack.</h2>
+      <p class="hint">Type a command. See the System-V argv tail layout that <code>execve</code> builds and <code>start.S</code> reads.</p>
+      <input type="text" id="argv-cmd" value="cat /etc/motd" oninput="renderArgv2()" />
+      <pre class="stack" id="argv-stack"></pre>
+      <pre class="code" id="argv-code"></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+
+  // ============================================================
+  // Shell Pipeline
+  // ============================================================
+  const BUILTINS = ['cd', 'pwd', 'exit'];
+
+  function renderPipeline() {
+    const cmd = document.getElementById('cmd').value;
+    if (!cmd.trim()) { document.getElementById('pipeline-out').innerHTML = ''; return; }
+    const out = [];
+    function step(html, kind) { out.push(`<div class="step${kind ? ' ' + kind : ''}">${html}</div>`); }
+
+    step(`<b>1. Read line:</b> <code>"${cmd}"</code>`);
+
+    const tokens = cmd.split(/\s+/).filter(t => t);
+    let tokenHtml = '';
+    for (const t of tokens) {
+      const kind = (t === '<' || t === '>' || t === '>>') ? 'redirect' : (BUILTINS.includes(t) ? 'builtin' : '');
+      tokenHtml += `<span class="token ${kind}">${t}</span>`;
+    }
+    step(`<b>2. Tokenize:</b> ${tokenHtml}`);
+
+    if (BUILTINS.includes(tokens[0])) {
+      step(`<b>3. ${tokens[0]} is a <em>builtin</em>!</b> Handle inline (no fork). Modifies the shell's own state. Return to prompt.`, 'fork');
+      document.getElementById('pipeline-out').innerHTML = out.join('');
+      return;
+    }
+
+    // Detect redirects
+    const redirects = [];
+    const finalTokens = [];
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i] === '>' && i + 1 < tokens.length) { redirects.push({ fd: 1, path: tokens[i+1], flags: 'O_WRONLY|O_CREAT|O_TRUNC' }); i++; }
+      else if (tokens[i] === '<' && i + 1 < tokens.length) { redirects.push({ fd: 0, path: tokens[i+1], flags: 'O_RDONLY' }); i++; }
+      else if (tokens[i] === '>>' && i + 1 < tokens.length) { redirects.push({ fd: 1, path: tokens[i+1], flags: 'O_WRONLY|O_CREAT|O_APPEND' }); i++; }
+      else finalTokens.push(tokens[i]);
+    }
+
+    if (redirects.length > 0) {
+      step(`<b>3. Redirects detected:</b><br>${redirects.map(r => `fd ${r.fd} → ${r.path} (${r.flags})`).join('<br>')}`, 'redirect');
+    }
+
+    step(`<b>4. <code>fork()</code></b>. Now there are 2 processes; both at the next line.`, 'fork');
+
+    if (redirects.length > 0) {
+      step(`<b>5. Child applies redirects:</b><br>` + redirects.map(r => `<code>fd_redirect(${r.fd}, "${r.path}", ${r.flags})</code><br>&nbsp;&nbsp;= openat(...) → fd N; close(${r.fd}); dup2(N, ${r.fd}); close(N);`).join('<br>'), 'redirect');
+    }
+
+    const args = finalTokens.map(t => `"${t}"`).join(', ');
+    step(`<b>${redirects.length > 0 ? 6 : 5}. Child: <code>execve("/bin/${finalTokens[0]}", [${args}, NULL], envp)</code></b>. Address space replaced; fds preserved.`, 'exec');
+    step(`<b>${redirects.length > 0 ? 7 : 6}. Parent: <code>wait4(child, &status, 0, NULL)</code></b>. Block until child exits.`);
+    step(`<b>${redirects.length > 0 ? 8 : 7}. Print prompt; loop.</b>`);
+
+    document.getElementById('pipeline-out').innerHTML = out.join('');
+  }
+  renderPipeline();
+
+  // ============================================================
+  // Redirect explainer
+  // ============================================================
+  let fdtable = { 0: 'Console (stdin)', 1: 'Console (stdout)', 2: 'Console (stderr)', 3: '<closed>', 4: '<closed>' };
+  let lastChanged = null;
+  let redirStep_idx = 0;
+  const REDIR_STEPS = [
+    { desc: 'Initial state. fds 0/1/2 point at the Console; 3+ are closed.', table: { 0: 'Console (stdin)', 1: 'Console (stdout)', 2: 'Console (stderr)', 3: '<closed>', 4: '<closed>' }, changed: null },
+    { desc: '<b>openat("/tmp/x", O_WRONLY | O_CREAT | O_TRUNC)</b> → returns fd 3. Now fd 3 points at the new File for /tmp/x.', table: { 0: 'Console (stdin)', 1: 'Console (stdout)', 2: 'Console (stderr)', 3: 'File(/tmp/x, off=0)', 4: '<closed>' }, changed: 3 },
+    { desc: '<b>close(1)</b> — release the Console reference at fd 1.', table: { 0: 'Console (stdin)', 1: '<closed>', 2: 'Console (stderr)', 3: 'File(/tmp/x, off=0)', 4: '<closed>' }, changed: 1 },
+    { desc: '<b>dup2(3, 1)</b> — make fd 1 point at the same File as fd 3. Both refer to /tmp/x now (refcount = 2).', table: { 0: 'Console (stdin)', 1: 'File(/tmp/x, off=0) [shared with fd 3]', 2: 'Console (stderr)', 3: 'File(/tmp/x, off=0)', 4: '<closed>' }, changed: 1 },
+    { desc: '<b>close(3)</b> — release the temporary fd. Refcount drops to 1; fd 1 is now the only ref.', table: { 0: 'Console (stdin)', 1: 'File(/tmp/x, off=0)', 2: 'Console (stderr)', 3: '<closed>', 4: '<closed>' }, changed: 3 },
+    { desc: '<b>execve("/bin/echo", ...)</b> — child\'s image replaced with echo. fd table preserved.', table: { 0: 'Console (stdin)', 1: 'File(/tmp/x, off=0)', 2: 'Console (stderr)', 3: '<closed>', 4: '<closed>' }, changed: null },
+    { desc: '<b>echo runs.</b> write(1, "hi", 2) writes 2 bytes to fd 1 = /tmp/x. write(1, "\\n", 1) writes 1 byte. /tmp/x now contains "hi\\n".', table: { 0: 'Console (stdin)', 1: 'File(/tmp/x, off=3)', 2: 'Console (stderr)', 3: '<closed>', 4: '<closed>' }, changed: 1 },
+    { desc: '<b>echo exits.</b> Kernel closes all fds for this process. /tmp/x is fully closed (refcount = 0; bufcache flushed).', table: { 0: '—', 1: '—', 2: '—', 3: '—', 4: '—' }, changed: null },
+  ];
+
+  function renderFdTable() {
+    let html = '';
+    for (const fd of [0, 1, 2, 3, 4]) {
+      const cls = lastChanged === fd ? ' changed' : '';
+      html += `<div class="row"><div class="label">fd ${fd}</div><div class="v${cls}">${fdtable[fd]}</div></div>`;
+    }
+    document.getElementById('fdtable').innerHTML = html;
+  }
+  function redirStep() {
+    if (redirStep_idx >= REDIR_STEPS.length) return;
+    const s = REDIR_STEPS[redirStep_idx];
+    fdtable = s.table;
+    lastChanged = s.changed;
+    const cur = document.getElementById('redir-stages').innerHTML;
+    document.getElementById('redir-stages').innerHTML = cur + `<div class="step"><b>Step ${redirStep_idx + 1}.</b> ${s.desc}</div>`;
+    renderFdTable();
+    redirStep_idx++;
+  }
+  function redirReset() {
+    redirStep_idx = 0;
+    fdtable = { 0: 'Console (stdin)', 1: 'Console (stdout)', 2: 'Console (stderr)', 3: '<closed>', 4: '<closed>' };
+    lastChanged = null;
+    document.getElementById('redir-stages').innerHTML = '';
+    renderFdTable();
+  }
+  redirReset();
+
+  // ============================================================
+  // _start argv tail
+  // ============================================================
+  function renderArgv2() {
+    const cmd = document.getElementById('argv-cmd').value || 'cat';
+    const tokens = cmd.split(/\s+/).filter(t => t);
+    if (tokens.length === 0) { document.getElementById('argv-stack').textContent = '(empty)'; return; }
+    let out = '';
+    let addr = 0x7FFFF000;
+    out += `<span class="high">// high addr (top of user stack)</span>\n`;
+    const strAddrs = [];
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i];
+      addr -= (t.length + 1);
+      strAddrs[i] = addr;
+      out += `0x${addr.toString(16).padStart(8, '0')}: <span style="color:#06b6d4">"${t}\\0"</span>     ; argv[${i}] string\n`;
+    }
+    addr -= addr % 4;
+    addr -= 4; out += `0x${addr.toString(16).padStart(8, '0')}: <span style="color:#94a3b8">NULL</span>          ; envp[0] = NULL\n`;
+    addr -= 4; out += `0x${addr.toString(16).padStart(8, '0')}: <span style="color:#94a3b8">NULL</span>          ; argv[${tokens.length}] = NULL\n`;
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      addr -= 4; out += `0x${addr.toString(16).padStart(8, '0')}: <span style="color:#06b6d4">0x${strAddrs[i].toString(16).padStart(8,'0')}</span>     ; argv[${i}] ptr\n`;
+    }
+    addr -= 4; out += `0x${addr.toString(16).padStart(8, '0')}: <span class="sp">${tokens.length}</span>             ; argc       <-- sp\n`;
+    out += `<span class="high">// low addr (heap grows up)</span>`;
+    document.getElementById('argv-stack').innerHTML = out;
+    document.getElementById('argv-code').textContent =
+`# start.S
+.global _start
+_start:
+    lw a0, 0(sp)        # argc = ${tokens.length}
+    addi a1, sp, 4      # argv = sp + 4 = pointer to argv[0]
+    call main           # main(${tokens.length}, argv)
+    li a7, 93           # exit syscall
+    ecall`;
+  }
+  renderArgv2();
+</script>
+</body>
+</html>

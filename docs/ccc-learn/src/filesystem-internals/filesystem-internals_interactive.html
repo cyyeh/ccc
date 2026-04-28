@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>filesystem-internals — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f1f5f9; min-height: 100vh; padding: 24px; color: #1e293b; }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn { padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; font-size: 14px; cursor: pointer; font-family: inherit; transition: all .2s; }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px; }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  input[type=text] { width: 100%; padding: 8px 10px; font-size: 14px; font-family: monospace; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; }
+  button.action { padding: 6px 12px; border-radius: 6px; border: none; background: #0e7490; color: #fff; font-family: inherit; font-size: 13px; cursor: pointer; margin: 4px 4px 0 0; }
+  button.action:hover { background: #155e75; }
+  .image-grid { display: grid; grid-template-columns: repeat(32, 1fr); gap: 1px; margin-top: 12px; font-size: 9px; }
+  .blk { background: #f8fafc; border: 1px solid #e2e8f0; padding: 2px; text-align: center; cursor: pointer; }
+  .blk.boot { background: #1e293b; color: #fff; }
+  .blk.super { background: #f59e0b; color: #fff; }
+  .blk.bitmap { background: #06b6d4; color: #fff; }
+  .blk.inode { background: #8b5cf6; color: #fff; }
+  .blk.data { background: #ecfeff; }
+  .blk.allocated { background: #0e7490; color: #fff; }
+  .blk.highlighted { box-shadow: 0 0 0 2px #f59e0b; }
+  .legend { display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap; font-size: 11px; }
+  .legend span { padding: 2px 8px; border-radius: 3px; }
+  .step { margin: 8px 0; padding: 10px; background: #f8fafc; border-radius: 6px; border-left: 3px solid #0e7490; font-size: 13px; line-height: 1.5; }
+  .step.fault { border-left-color: #dc2626; background: #fee2e2; }
+  pre.code { font-family: monospace; font-size: 12px; padding: 10px; border-radius: 6px; background: #1a202c; color: #e2e8f0; margin-top: 8px; overflow-x: auto; line-height: 1.6; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+  table td, table th { padding: 5px 8px; border: 1px solid #e2e8f0; text-align: left; font-family: monospace; }
+  table th { background: #f1f5f9; }
+  @media (max-width: 640px) {
+    body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
+    .panel { padding: 16px; } .image-grid { grid-template-columns: repeat(16, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>filesystem internals</h1>
+  <p class="subtitle">Disk image map. namei walker. bmap calculator.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">Disk Layout</button>
+    <button class="tab-btn" onclick="switchTab(1)">namei Walk</button>
+    <button class="tab-btn" onclick="switchTab(2)">bmap Calculator</button>
+  </div>
+
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>The 4 MB image, block by block.</h2>
+      <p class="hint">Each cell = 1 block (4 KB). Hover for what it holds. The image is laid out by mkfs at build time.</p>
+      <div class="legend">
+        <span class="blk boot">boot</span>
+        <span class="blk super">super</span>
+        <span class="blk bitmap">bitmap</span>
+        <span class="blk inode">inodes</span>
+        <span class="blk data">unused data</span>
+        <span class="blk allocated">allocated data</span>
+      </div>
+      <div class="image-grid" id="image-grid"></div>
+      <p class="hint" id="block-info">Hover any block for details.</p>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>Walk a path through the inode tree.</h2>
+      <p class="hint">Type a path. Watch namei resolve it step by step.</p>
+      <input type="text" id="path-input" value="/bin/cat" oninput="renderPath()" />
+      <div id="path-out"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>Inode block-index → disk-block calculator.</h2>
+      <p class="hint">Compute which inode field (direct or indirect) holds the address for a given file-relative block.</p>
+      <input type="text" id="bmap-blk" value="13" oninput="renderBmap()" />
+      <div id="bmap-out"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+
+  // ============================================================
+  // Disk Layout (1024 blocks)
+  // ============================================================
+  // Show first 256 blocks for screen real estate; rest as "data..." summary.
+  const NBLOCKS = 1024;
+  const BLOCK_DESCR = (i) => {
+    if (i === 0) return { cls: 'boot', desc: 'Block 0: boot sector. Unused; mkfs leaves zeros here.' };
+    if (i === 1) return { cls: 'super', desc: 'Block 1: superblock. Holds NBLOCKS, NINODES, magic, layout pointers.' };
+    if (i === 2) return { cls: 'bitmap', desc: 'Block 2: bitmap. One bit per data block. 1 = allocated.' };
+    if (i >= 3 && i < 7) return { cls: 'inode', desc: `Block ${i}: inode table. Holds 16 inodes (256 bytes each).` };
+    // Data blocks: simulate some allocations
+    const allocated = [7, 8, 9, 10, 11, 12, 13, 14, 15];  // some example allocations
+    if (allocated.includes(i)) return { cls: 'data allocated', desc: `Block ${i}: allocated data block (e.g., file content or directory entries).` };
+    return { cls: 'data', desc: `Block ${i}: free data block. mkfs leaves zeros.` };
+  };
+
+  function renderImageGrid() {
+    const el = document.getElementById('image-grid');
+    let html = '';
+    for (let i = 0; i < 256; i++) {
+      const d = BLOCK_DESCR(i);
+      html += `<div class="blk ${d.cls}" onclick="showBlock(${i})" title="${d.desc}">${i}</div>`;
+    }
+    el.innerHTML = html;
+  }
+  function showBlock(i) {
+    const d = BLOCK_DESCR(i);
+    document.getElementById('block-info').innerHTML = `<b>Block ${i}</b> — ${d.desc}`;
+  }
+  renderImageGrid();
+
+  // ============================================================
+  // namei walk
+  // ============================================================
+  const FS = {
+    1: { type: 'Dir', name: '/', entries: [['.',1],['..',1],['bin',2],['etc',3],['tmp',4]] },
+    2: { type: 'Dir', name: 'bin', entries: [['.',2],['..',1],['cat',5],['ls',6],['echo',7],['sh',8]] },
+    3: { type: 'Dir', name: 'etc', entries: [['.',3],['..',1],['motd',9]] },
+    4: { type: 'Dir', name: 'tmp', entries: [['.',4],['..',1]] },
+    5: { type: 'File', name: 'cat', size: 4128 },
+    6: { type: 'File', name: 'ls',  size: 4128 },
+    7: { type: 'File', name: 'echo', size: 4128 },
+    8: { type: 'File', name: 'sh',  size: 4128 },
+    9: { type: 'File', name: 'motd', size: 19 },
+  };
+
+  function renderPath() {
+    const path = document.getElementById('path-input').value;
+    const components = path.split('/').filter(c => c);
+    const out = [];
+    function step(num, body, kind) { out.push(`<div class="step ${kind || ''}"><b>${num}.</b> ${body}</div>`); }
+    let cur = path.startsWith('/') ? 1 : 1; // root for absolute (cwd would be different; assume root for demo)
+    step(0, `Start. ${path.startsWith('/') ? 'Path is absolute → start at root inode (inum 1).' : 'Path is relative → start at cwd (assumed root in demo).'}`);
+    for (let i = 0; i < components.length; i++) {
+      const name = components[i];
+      const inode = FS[cur];
+      if (!inode) { step(i + 1, `Inode ${cur} not found in FS!`, 'fault'); document.getElementById('path-out').innerHTML = out.join(''); return; }
+      if (inode.type !== 'Dir') { step(i + 1, `Not a directory (inum ${cur} is a ${inode.type}). Lookup of '${name}' fails.`, 'fault'); document.getElementById('path-out').innerHTML = out.join(''); return; }
+      const ent = inode.entries.find(e => e[0] === name);
+      if (!ent) { step(i + 1, `'${name}' not found in directory inum ${cur}. namei returns null.`, 'fault'); document.getElementById('path-out').innerHTML = out.join(''); return; }
+      step(i + 1, `Component '${name}': ilock(inum ${cur}). dirlookup → inum ${ent[1]}. iunlockput(inum ${cur}). iget(inum ${ent[1]}).`);
+      cur = ent[1];
+    }
+    const final = FS[cur];
+    step(components.length + 1, `Final inode: inum ${cur} (${final.type}, ${final.size !== undefined ? `size=${final.size} bytes` : `dir with ${final.entries.length} entries`}).`, 'ok');
+    document.getElementById('path-out').innerHTML = out.join('').replace(/class="step "/g, 'class="step"');
+  }
+  renderPath();
+
+  // ============================================================
+  // bmap calculator
+  // ============================================================
+  const NDIRECT = 12;
+  const NINDIRECT = 1024;
+  function renderBmap() {
+    const blk = parseInt(document.getElementById('bmap-blk').value, 10);
+    if (isNaN(blk) || blk < 0) { document.getElementById('bmap-out').innerHTML = '<div class="step fault">Block index must be ≥ 0.</div>'; return; }
+    if (blk >= NDIRECT + NINDIRECT) { document.getElementById('bmap-out').innerHTML = `<div class="step fault">Block index ${blk} exceeds MAX_FILE_BLOCKS (${NDIRECT + NINDIRECT}).</div>`; return; }
+    let html = '';
+    if (blk < NDIRECT) {
+      html = `<div class="step"><b>Direct path.</b><br>blk_no = ${blk} < NDIRECT (${NDIRECT}).<br>Result: <code>ip.addrs[${blk}]</code> holds the disk block number.<br>1 disk read (the inode itself, already in the inode cache).</div>`;
+    } else {
+      const idx = blk - NDIRECT;
+      html = `<div class="step"><b>Indirect path.</b><br>blk_no = ${blk} >= NDIRECT (${NDIRECT}).<br><b>Step 1:</b> Read indirect block at <code>ip.addrs[NDIRECT]</code> = <code>ip.addrs[12]</code>. (1 disk read.)<br><b>Step 2:</b> The indirect block is an array of 1024 u32. The disk block we want is <code>indirect[${idx}]</code> (= blk_no - NDIRECT).<br>Total: 2 disk reads (inode + indirect block) before reading the actual data.</div>`;
+    }
+    html += `<div class="step"><b>File-offset math:</b><br>Block ${blk} covers bytes [${blk * 4096}, ${(blk + 1) * 4096}) of the file.<br>Lazy alloc: if <code>for_write=true</code> and the slot is 0, balloc allocates a new disk block and writes the address into the inode (or indirect block).</div>`;
+    document.getElementById('bmap-out').innerHTML = html;
+  }
+  renderBmap();
+</script>
+</body>
+</html>

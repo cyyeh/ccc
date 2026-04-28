@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>csrs-traps-and-privilege — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f1f5f9; min-height: 100vh; padding: 24px; color: #1e293b; }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn { padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1; background: #fff; color: #64748b; font-size: 14px; cursor: pointer; font-family: inherit; transition: all .2s; }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px; }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  label { display: block; font-size: 12px; color: #64748b; margin: 12px 0 4px; font-weight: 600; }
+  input[type=text], select { width: 100%; padding: 8px 10px; font-size: 14px; font-family: monospace; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; }
+  input[type=text]:focus, select:focus { outline: 2px solid #0e7490; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 130px; }
+  button.action { padding: 8px 16px; border-radius: 6px; border: none; background: #0e7490; color: #fff; font-family: inherit; font-size: 14px; cursor: pointer; margin-top: 12px; }
+  button.action:hover { background: #155e75; }
+  .step { margin: 10px 0; padding: 10px 12px; border-radius: 8px; background: #f8fafc; border-left: 3px solid #0e7490; font-size: 13px; line-height: 1.6; }
+  .step .num { display: inline-block; width: 20px; height: 20px; border-radius: 50%; background: #0e7490; color: #fff; text-align: center; line-height: 20px; font-weight: 700; margin-right: 8px; font-size: 11px; }
+  .priv-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; font-family: monospace; }
+  .priv-M { background: #f59e0b; color: #fff; }
+  .priv-S { background: #0e7490; color: #fff; }
+  .priv-U { background: #06b6d4; color: #fff; }
+  .csr-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin-top: 12px; }
+  .csr-field { padding: 6px 10px; border-radius: 4px; background: #f8fafc; border: 1px solid #e2e8f0; font-family: monospace; font-size: 12px; }
+  .csr-field .name { color: #64748b; font-size: 10px; }
+  .csr-field.set { background: #cffafe; border-color: #0e7490; }
+  .timeline { margin-top: 12px; }
+  .timeline-step { display: flex; gap: 12px; margin: 8px 0; padding: 10px; background: #f8fafc; border-radius: 8px; border-left: 3px solid #0e7490; font-size: 13px; }
+  .timeline-step .icon { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; background: #0e7490; color: #fff; text-align: center; line-height: 28px; font-weight: 700; }
+  .timeline-step .body { flex: 1; line-height: 1.5; }
+  pre.binary { font-family: monospace; font-size: 12px; padding: 10px; border-radius: 6px; background: #1a202c; color: #e2e8f0; margin-top: 8px; overflow-x: auto; line-height: 1.6; }
+  @media (max-width: 640px) {
+    body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
+    .panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>csrs &amp; traps</h1>
+  <p class="subtitle">Trace a trap. Decode mstatus. Watch mret pop privilege.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">Trap Router</button>
+    <button class="tab-btn" onclick="switchTab(1)">mstatus Decoder</button>
+    <button class="tab-btn" onclick="switchTab(2)">mret/sret State Machine</button>
+  </div>
+
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>Pick a trap. Watch where it lands and what CSRs change.</h2>
+      <p class="hint">Mirrors <code>trap.enter</code> / <code>trap.enter_interrupt</code>. Try delegating an ecall_from_u, then un-delegating: see the target privilege flip.</p>
+      <div class="row">
+        <div><label>Current privilege</label>
+          <select id="cur-priv"><option value="U">U</option><option value="S">S</option><option value="M">M</option></select>
+        </div>
+        <div><label>Trap kind</label>
+          <select id="trap-kind">
+            <option value="ecall_u">sync: ecall_from_u (8)</option>
+            <option value="ecall_s">sync: ecall_from_s (9)</option>
+            <option value="page_fault_load">sync: load_page_fault (13)</option>
+            <option value="illegal">sync: illegal_instruction (2)</option>
+            <option value="mti">async: MTI (timer, 7)</option>
+            <option value="sei">async: SEI (PLIC, 9)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div><label>medeleg (hex; bits = sync causes)</label><input type="text" id="medeleg" value="0xB1FF" /></div>
+        <div><label>mideleg (hex; bits = async causes)</label><input type="text" id="mideleg" value="0x222" /></div>
+      </div>
+      <button class="action" onclick="routeTrap()">Trap!</button>
+      <div id="trap-out"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>Decode an mstatus value bit by bit.</h2>
+      <p class="hint">Click bits to toggle. The decoder shows each named field's meaning.</p>
+      <label>mstatus (hex)</label>
+      <input type="text" id="ms-hex" value="0x00001880" oninput="renderMs()" />
+      <div class="csr-fields" id="ms-grid"></div>
+      <p class="hint" id="ms-summary"></p>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>Step through a trap entry → handler → mret cycle.</h2>
+      <p class="hint">Set up the pre-trap state, watch the CSR diff at each phase. Mirrors <code>trap.enter</code> + <code>trap.exit_mret</code>.</p>
+      <div class="row">
+        <div><label>Pre-trap privilege</label>
+          <select id="rt-priv"><option value="U">U</option><option value="S">S</option><option value="M">M</option></select>
+        </div>
+        <div><label>Pre-trap MIE</label>
+          <select id="rt-mie"><option value="1">1 (enabled)</option><option value="0">0 (disabled)</option></select>
+        </div>
+        <div><label>Pre-trap PC</label><input type="text" id="rt-pc" value="0x80001000" /></div>
+        <div><label>mtvec</label><input type="text" id="rt-mtvec" value="0x80000400" /></div>
+      </div>
+      <button class="action" onclick="runRoundtrip()">Run trap → handler → mret</button>
+      <div id="rt-out"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+  function parseHex(s) { s = (s||'').trim().replace(/^0x/i,''); if(!/^[0-9a-fA-F]+$/.test(s)) return NaN; return parseInt(s,16)>>>0; }
+  function hex8(n) { return '0x'+(n>>>0).toString(16).padStart(8,'0').toUpperCase(); }
+  function privSpan(p) { return `<span class="priv-badge priv-${p}">${p}</span>`; }
+
+  // ============================================================
+  // Trap Router
+  // ============================================================
+  const TRAPS = {
+    ecall_u:        { code: 8,  async: false, name: 'ecall_from_u',     tval: '0' },
+    ecall_s:        { code: 9,  async: false, name: 'ecall_from_s',     tval: '0' },
+    page_fault_load:{ code: 13, async: false, name: 'load_page_fault',  tval: 'faulting VA' },
+    illegal:        { code: 2,  async: false, name: 'illegal_instruction', tval: 'instr word' },
+    mti:            { code: 7,  async: true,  name: 'machine timer (MTI)', tval: '0' },
+    sei:            { code: 9,  async: true,  name: 's external (SEI)',     tval: '0' },
+  };
+
+  function routeTrap() {
+    const priv = document.getElementById('cur-priv').value;
+    const kind = document.getElementById('trap-kind').value;
+    const medeleg = parseHex(document.getElementById('medeleg').value);
+    const mideleg = parseHex(document.getElementById('mideleg').value);
+    const t = TRAPS[kind];
+    if (isNaN(medeleg) || isNaN(mideleg)) { document.getElementById('trap-out').innerHTML = '<div class="step" style="border-left-color:#dc2626;background:#fee2e2">medeleg/mideleg must parse as hex.</div>'; return; }
+
+    const mask = t.async ? mideleg : medeleg;
+    const delegated = ((mask >>> t.code) & 1) === 1;
+    const target = (priv !== 'M' && delegated) ? 'S' : 'M';
+    const out = [];
+    function step(num, html) { out.push(`<div class="step"><span class="num">${num}</span>${html}</div>`); }
+
+    step(1, `<b>Trap fires.</b> Cause: <code>${t.name}</code> (code ${t.code}, ${t.async ? 'async' : 'sync'}). Current privilege ${privSpan(priv)}.`);
+    step(2, `<b>Delegation check.</b> ${t.async ? 'mideleg' : 'medeleg'} = ${hex8(mask)}; bit ${t.code} = <code>${delegated ? 1 : 0}</code>. Rule: delegate iff <code>cpu.privilege != M AND bit set</code>.`);
+    step(3, `<b>Target = ${privSpan(target)}.</b> ${target === 'M' ? 'Trap goes to M (either not delegated or current is M).' : 'Trap delegated to S.'}`);
+    if (target === 'M') {
+      step(4, `<b>Save M-CSRs:</b><br><code>mepc &larr; current PC</code><br><code>mcause &larr; ${t.async ? '0x' + (0x80000000 | t.code).toString(16) : t.code} ${t.async ? '(bit 31 set for async)' : ''}</code><br><code>mtval &larr; ${t.tval}</code><br><code>mstatus.MPP &larr; ${priv} (saved old privilege)</code><br><code>mstatus.MPIE &larr; old MIE</code><br><code>mstatus.MIE &larr; 0 (disable interrupts)</code>`);
+      step(5, `<b>Privilege switch:</b> ${privSpan(priv)} &rarr; ${privSpan('M')}<br><b>PC:</b> &larr; mtvec.BASE`);
+    } else {
+      step(4, `<b>Save S-CSRs:</b><br><code>sepc &larr; current PC</code><br><code>scause &larr; ${t.async ? '0x' + (0x80000000 | t.code).toString(16) : t.code}</code><br><code>stval &larr; ${t.tval}</code><br><code>mstatus.SPP &larr; ${priv === 'S' ? 1 : 0} (saved old privilege)</code><br><code>mstatus.SPIE &larr; old SIE</code><br><code>mstatus.SIE &larr; 0</code>`);
+      step(5, `<b>Privilege switch:</b> ${privSpan(priv)} &rarr; ${privSpan('S')}<br><b>PC:</b> &larr; stvec.BASE`);
+    }
+    step(6, `<b>Housekeeping:</b> <code>cpu.reservation = null</code> (LR/SC invariant); <code>trap_taken = true</code> (--halt-on-trap hook).`);
+    document.getElementById('trap-out').innerHTML = out.join('');
+  }
+  routeTrap();
+
+  // ============================================================
+  // mstatus Decoder
+  // ============================================================
+  const MS_BITS = [
+    { bit: 1,  name: 'SIE',  desc: 'S Interrupt Enable' },
+    { bit: 3,  name: 'MIE',  desc: 'M Interrupt Enable' },
+    { bit: 5,  name: 'SPIE', desc: 'Previous SIE' },
+    { bit: 7,  name: 'MPIE', desc: 'Previous MIE' },
+    { bit: 8,  name: 'SPP',  desc: 'S prev privilege (1=S,0=U)' },
+    { bit: 11, name: 'MPP[0]', desc: 'M prev privilege bit 0' },
+    { bit: 12, name: 'MPP[1]', desc: 'M prev privilege bit 1' },
+    { bit: 17, name: 'MPRV', desc: 'Modify Privilege' },
+    { bit: 18, name: 'SUM',  desc: 'S User Memory access' },
+    { bit: 19, name: 'MXR',  desc: 'Make eXecutable Readable' },
+    { bit: 20, name: 'TVM',  desc: 'Trap Virtual Memory' },
+    { bit: 22, name: 'TSR',  desc: 'Trap SRET' },
+  ];
+
+  function renderMs() {
+    const v = parseHex(document.getElementById('ms-hex').value);
+    if (isNaN(v)) return;
+    let html = '';
+    for (const b of MS_BITS) {
+      const set = (v & (1 << b.bit)) !== 0;
+      html += `<div class="csr-field${set ? ' set' : ''}" onclick="toggleMs(${b.bit})" style="cursor:pointer"><div class="name">bit ${b.bit}</div><div><b>${b.name}</b>=${set ? 1 : 0}</div><div class="name">${b.desc}</div></div>`;
+    }
+    document.getElementById('ms-grid').innerHTML = html;
+    const mpp = ((v >>> 11) & 3);
+    const mppName = ['U','S','reserved','M'][mpp];
+    const sum = [];
+    if (v & (1 << 3)) sum.push('M-interrupts on');
+    if (v & (1 << 1)) sum.push('S-interrupts on');
+    sum.push(`MPP=${mppName}`);
+    if (v & (1 << 17)) sum.push('MPRV active (M loads/stores use MPP privilege)');
+    if (v & (1 << 18)) sum.push('SUM active (S can read U pages)');
+    if (v & (1 << 19)) sum.push('MXR active (X implies R for loads)');
+    document.getElementById('ms-summary').innerHTML = sum.join(' &middot; ');
+  }
+  function toggleMs(bit) {
+    let v = parseHex(document.getElementById('ms-hex').value);
+    if (isNaN(v)) return;
+    v = (v ^ (1 << bit)) >>> 0;
+    document.getElementById('ms-hex').value = hex8(v);
+    renderMs();
+  }
+  renderMs();
+
+  // ============================================================
+  // mret/sret round-trip
+  // ============================================================
+  function runRoundtrip() {
+    const priv = document.getElementById('rt-priv').value;
+    const mie = parseInt(document.getElementById('rt-mie').value);
+    const pc = parseHex(document.getElementById('rt-pc').value);
+    const mtvec = parseHex(document.getElementById('rt-mtvec').value);
+    if ([pc, mtvec].some(isNaN)) { document.getElementById('rt-out').innerHTML = '<div class="step" style="border-left-color:#dc2626;background:#fee2e2">PC and mtvec must parse.</div>'; return; }
+
+    const out = [];
+    let curPriv = priv, curMie = mie, curPc = pc;
+    let mpp = 0, mpie = 0, mepc = 0;
+
+    function tl(icon, body) {
+      out.push(`<div class="timeline-step"><div class="icon">${icon}</div><div class="body">${body}</div></div>`);
+    }
+
+    tl('1', `<b>Pre-trap state:</b><br>privilege=${privSpan(curPriv)} &middot; MIE=${curMie} &middot; PC=${hex8(curPc)}`);
+
+    // Trap entry
+    mepc = curPc;
+    mpp = ({U:0,S:1,M:3})[curPriv];
+    mpie = curMie;
+    curMie = 0;
+    const oldPriv = curPriv;
+    curPriv = 'M';
+    curPc = mtvec;
+    tl('2', `<b>Trap fires (e.g., timer interrupt).</b> Save state:<br>mepc &larr; ${hex8(mepc)} &middot; mstatus.MPP &larr; ${oldPriv} &middot; mstatus.MPIE &larr; ${mpie}<br>Disable: mstatus.MIE &larr; 0<br>Switch: privilege &rarr; ${privSpan('M')} &middot; PC &larr; mtvec = ${hex8(curPc)}`);
+
+    // Handler
+    tl('3', `<b>Handler runs.</b> Reads mcause, dispatches. Suppose it advances mepc by 4 (post-ecall) — but for an interrupt it leaves mepc alone.<br>(For this demo we leave mepc = ${hex8(mepc)}.)`);
+
+    // mret
+    const restorePriv = ['U','S','reserved','M'][mpp];
+    const newPc = mepc;
+    const newMie = mpie;
+    curPriv = restorePriv;
+    curPc = newPc;
+    curMie = newMie;
+    mpp = 0; mpie = 1;
+    tl('4', `<b>mret:</b><br>PC &larr; mepc = ${hex8(newPc)}<br>privilege &larr; mstatus.MPP = ${restorePriv}<br>mstatus.MIE &larr; mstatus.MPIE = ${newMie}<br>mstatus.MPIE &larr; 1 &middot; mstatus.MPP &larr; U`);
+    tl('5', `<b>Post-trap state:</b><br>privilege=${privSpan(curPriv)} &middot; MIE=${curMie} &middot; PC=${hex8(curPc)}`);
+
+    document.getElementById('rt-out').innerHTML = `<div class="timeline">${out.join('')}</div>`;
+  }
+  runRoundtrip();
+</script>
+</body>
+</html>

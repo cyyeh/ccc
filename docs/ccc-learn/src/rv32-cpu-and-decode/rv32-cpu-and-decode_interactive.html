@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RV32 CPU & Decode — Interactive</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f1f5f9; min-height: 100vh; padding: 24px;
+    color: #1e293b;
+  }
+  .container { max-width: 920px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 26px; margin-bottom: 4px; font-family: monospace; color: #0e7490; }
+  .subtitle { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 18px; }
+  .tab-btn {
+    padding: 8px 20px; border-radius: 20px; border: 1px solid #cbd5e1;
+    background: #fff; color: #64748b; font-size: 14px; cursor: pointer;
+    font-family: inherit; transition: all .2s;
+  }
+  .tab-btn:hover { border-color: #94a3b8; }
+  .tab-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .panel {
+    background: #fff; border-radius: 14px; border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06); padding: 24px; margin-bottom: 16px;
+  }
+  .panel h2 { font-size: 16px; color: #0e7490; margin-bottom: 14px; }
+  .panel p.hint { font-size: 13px; color: #64748b; margin: 6px 0 12px; line-height: 1.5; }
+  label { display: block; font-size: 12px; color: #64748b; margin: 12px 0 4px; font-weight: 600; }
+  input[type=text], select {
+    width: 100%; padding: 8px 10px; font-size: 14px; font-family: monospace;
+    border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc;
+  }
+  input[type=text]:focus, select:focus { outline: 2px solid #0e7490; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 120px; }
+  button.action {
+    padding: 8px 16px; border-radius: 6px; border: none; background: #0e7490;
+    color: #fff; font-family: inherit; font-size: 14px; cursor: pointer; margin-top: 12px;
+  }
+  button.action:hover { background: #155e75; }
+  button.action.secondary { background: #64748b; }
+  button.action.secondary:hover { background: #475569; }
+  pre.binary {
+    font-family: monospace; font-size: 13px; padding: 14px; border-radius: 8px;
+    background: #1a202c; color: #e2e8f0; margin-top: 12px; overflow-x: auto;
+    line-height: 1.7;
+  }
+  pre.binary .op { color: #f59e0b; }
+  pre.binary .rd { color: #06b6d4; }
+  pre.binary .rs1 { color: #a78bfa; }
+  pre.binary .rs2 { color: #f472b6; }
+  pre.binary .imm { color: #4ade80; }
+  pre.binary .funct3 { color: #fbbf24; }
+  pre.binary .funct7 { color: #fb923c; }
+  .field-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+  .field-table td, .field-table th { padding: 6px 10px; border: 1px solid #e2e8f0; text-align: left; }
+  .field-table th { background: #f1f5f9; font-weight: 600; }
+  .field-table td.label { color: #64748b; font-size: 12px; }
+  .field-table td.val { font-family: monospace; }
+  .reg-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-family: monospace;
+    font-size: 12px; margin-top: 12px;
+  }
+  .reg-cell { padding: 6px 8px; background: #f1f5f9; border-radius: 4px; border: 1px solid #e2e8f0; }
+  .reg-cell.changed { background: #fef3c7; border-color: #f59e0b; transition: background .3s; }
+  .reg-cell .name { color: #64748b; font-size: 11px; }
+  .reg-cell .val { color: #1e293b; font-weight: 600; }
+  .err { color: #dc2626; font-size: 13px; margin-top: 6px; padding: 6px 10px; background: #fee2e2; border-radius: 6px; }
+  .ok { color: #059669; font-size: 13px; margin-top: 6px; padding: 6px 10px; background: #d1fae5; border-radius: 6px; }
+  .program-area {
+    font-family: monospace; font-size: 13px; line-height: 1.8;
+    padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;
+    white-space: pre-wrap;
+  }
+  .program-area .cur {
+    background: #0e7490; color: #fff; padding: 1px 4px; border-radius: 3px;
+  }
+  .program-area .done { opacity: .55; }
+  details { margin-top: 14px; }
+  details summary { cursor: pointer; font-size: 13px; color: #64748b; font-weight: 600; }
+  details ul { margin-top: 8px; padding-left: 20px; font-size: 13px; line-height: 1.6; }
+  @media (max-width: 640px) {
+    body { padding: 12px; }
+    .tab-btn { padding: 6px 14px; font-size: 13px; }
+    h1 { font-size: 22px; }
+    .reg-grid { grid-template-columns: repeat(2, 1fr); }
+    .panel { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>rv32-cpu &amp; decode</h1>
+  <p class="subtitle">Encode it. Decode it. Step it. Three tools that mirror what cpu.zig + decoder.zig + execute.zig actually do.</p>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab(0)">Decoder</button>
+    <button class="tab-btn" onclick="switchTab(1)">Encoder</button>
+    <button class="tab-btn" onclick="switchTab(2)">Step-through CPU</button>
+  </div>
+
+  <!-- ========== TAB 0: Decoder ========== -->
+  <div class="tab-content active" id="tab-0">
+    <div class="panel">
+      <h2>Paste a 32-bit RV32 instruction; see what ccc decodes it as.</h2>
+      <p class="hint">Type a hex word like <code>0x02A00513</code> (that's <code>addi a0, zero, 42</code>) or <code>0x00118113</code> (<code>addi sp, gp, 1</code>). The decoder mirrors <code>src/emulator/decoder.zig</code>.</p>
+      <label>Instruction word (hex, e.g. 0x02a00513)</label>
+      <input type="text" id="dec-input" value="0x02a00513" placeholder="0x..." />
+      <button class="action" onclick="doDecode()">Decode</button>
+      <div id="dec-out"></div>
+    </div>
+  </div>
+
+  <!-- ========== TAB 1: Encoder ========== -->
+  <div class="tab-content" id="tab-1">
+    <div class="panel">
+      <h2>Pick an instruction; fill in registers and the immediate; get the encoding.</h2>
+      <p class="hint">Constructs the 32-bit word from fields the way <code>build/programs/hello/encoder.zig</code> does for hand-crafted demos.</p>
+      <label>Mnemonic</label>
+      <select id="enc-op">
+        <option value="addi">addi rd, rs1, imm</option>
+        <option value="add">add rd, rs1, rs2</option>
+        <option value="sub">sub rd, rs1, rs2</option>
+        <option value="lui">lui rd, imm (upper 20 bits)</option>
+        <option value="auipc">auipc rd, imm (PC-rel)</option>
+        <option value="jal">jal rd, offset</option>
+        <option value="beq">beq rs1, rs2, offset</option>
+        <option value="lw">lw rd, imm(rs1)</option>
+        <option value="sw">sw rs2, imm(rs1)</option>
+        <option value="ecall">ecall</option>
+      </select>
+      <div class="row">
+        <div><label>rd (0-31)</label><input type="text" id="enc-rd" value="10" /></div>
+        <div><label>rs1 (0-31)</label><input type="text" id="enc-rs1" value="0" /></div>
+        <div><label>rs2 (0-31)</label><input type="text" id="enc-rs2" value="0" /></div>
+        <div><label>immediate (decimal)</label><input type="text" id="enc-imm" value="42" /></div>
+      </div>
+      <button class="action" onclick="doEncode()">Encode</button>
+      <div id="enc-out"></div>
+    </div>
+  </div>
+
+  <!-- ========== TAB 2: Step-through CPU ========== -->
+  <div class="tab-content" id="tab-2">
+    <div class="panel">
+      <h2>Watch the fetch-decode-execute loop run.</h2>
+      <p class="hint">Pick a tiny program. Press Step to execute one instruction; the changed register lights up. This mirrors <code>cpu.step()</code> minus the trap/MMIO machinery — the recipe loop is the real point.</p>
+      <label>Program</label>
+      <select id="prog-select" onchange="loadProgram()">
+        <option value="add42">add42 — compute 42 = 40 + 2</option>
+        <option value="luiaddi">luiaddi — build constant 0x12345678 in two ops</option>
+        <option value="loop">loop — count down s0 from 5 to 0 with bne</option>
+      </select>
+      <div id="prog-disp" class="program-area" style="margin-top: 8px;"></div>
+      <button class="action" onclick="cpuStep()">Step</button>
+      <button class="action secondary" onclick="cpuRun()">Run all</button>
+      <button class="action secondary" onclick="loadProgram()">Reset</button>
+      <label style="margin-top: 12px;">Registers</label>
+      <div id="reg-grid" class="reg-grid"></div>
+      <details>
+        <summary>Why does each instruction line look like that?</summary>
+        <ul>
+          <li><b>PC: 0x80000000</b> — the program counter, where the fetch happens. Starts at RAM_BASE.</li>
+          <li><b>Instruction word</b> — the raw 32 bits in hex.</li>
+          <li><b>Mnemonic</b> — what <code>decoder.decode</code> turned that word into.</li>
+          <li><b>Effect</b> — what <code>execute.dispatch</code> does in the matching arm.</li>
+          <li>The cyan-highlighted line is what will execute next.</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ============================================================
+  // Tab switching
+  // ============================================================
+  function switchTab(idx) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === idx));
+    document.querySelectorAll('.tab-content').forEach((c, i) => c.classList.toggle('active', i === idx));
+  }
+
+  // ============================================================
+  // Shared: register names
+  // ============================================================
+  const ABI_NAMES = ['zero','ra','sp','gp','tp','t0','t1','t2','s0','s1','a0','a1','a2','a3','a4','a5','a6','a7','s2','s3','s4','s5','s6','s7','s8','s9','s10','s11','t3','t4','t5','t6'];
+
+  // ============================================================
+  // Decoder (mirror of decoder.zig)
+  // ============================================================
+  function bits(word, hi, lo) { return (word >>> lo) & ((1 << (hi - lo + 1)) - 1); }
+  function signExt(v, srcBits) {
+    const m = 1 << (srcBits - 1);
+    return (v & (m - 1)) - (v & m);
+  }
+  function immI(w) { return signExt((w >>> 20) & 0xFFF, 12); }
+  function immS(w) { return signExt(((w >>> 25) << 5) | ((w >>> 7) & 0x1F), 12); }
+  function immB(w) {
+    const b12 = (w >>> 31) & 1, b11 = (w >>> 7) & 1;
+    const b10_5 = (w >>> 25) & 0x3F, b4_1 = (w >>> 8) & 0xF;
+    return signExt((b12 << 12) | (b11 << 11) | (b10_5 << 5) | (b4_1 << 1), 13);
+  }
+  function immU(w) { return (w & 0xFFFFF000) | 0; } // sign-bit handled by JS bitops
+  function immJ(w) {
+    const b20 = (w >>> 31) & 1, b19_12 = (w >>> 12) & 0xFF;
+    const b11 = (w >>> 20) & 1, b10_1 = (w >>> 21) & 0x3FF;
+    return signExt((b20 << 20) | (b19_12 << 12) | (b11 << 11) | (b10_1 << 1), 21);
+  }
+
+  function decode(word) {
+    const op = bits(word, 6, 0);
+    const rd = bits(word, 11, 7);
+    const rs1 = bits(word, 19, 15);
+    const rs2 = bits(word, 24, 20);
+    const f3 = bits(word, 14, 12);
+    const f7 = bits(word, 31, 25);
+    let mnemonic, fmt = 'R', imm = 0, asm;
+
+    function rds() { return ABI_NAMES[rd] + '(x' + rd + ')'; }
+    function rs1s() { return ABI_NAMES[rs1] + '(x' + rs1 + ')'; }
+    function rs2s() { return ABI_NAMES[rs2] + '(x' + rs2 + ')'; }
+
+    switch (op) {
+      case 0x37: mnemonic = 'lui';   fmt = 'U'; imm = immU(word); asm = `lui ${rds()}, 0x${(imm >>> 12).toString(16)}`; break;
+      case 0x17: mnemonic = 'auipc'; fmt = 'U'; imm = immU(word); asm = `auipc ${rds()}, 0x${(imm >>> 12).toString(16)}`; break;
+      case 0x6F: mnemonic = 'jal';   fmt = 'J'; imm = immJ(word); asm = `jal ${rds()}, ${imm >= 0 ? '+' : ''}${imm}`; break;
+      case 0x67: mnemonic = 'jalr';  fmt = 'I'; imm = immI(word); asm = `jalr ${rds()}, ${imm}(${rs1s()})`; break;
+      case 0x63: {
+        const m = ['beq','bne','?','?','blt','bge','bltu','bgeu'][f3];
+        mnemonic = m; fmt = 'B'; imm = immB(word);
+        asm = `${m} ${rs1s()}, ${rs2s()}, ${imm >= 0 ? '+' : ''}${imm}`;
+        break;
+      }
+      case 0x03: {
+        const m = ['lb','lh','lw','?','lbu','lhu','?','?'][f3];
+        mnemonic = m; fmt = 'I'; imm = immI(word);
+        asm = `${m} ${rds()}, ${imm}(${rs1s()})`;
+        break;
+      }
+      case 0x23: {
+        const m = ['sb','sh','sw','?','?','?','?','?'][f3];
+        mnemonic = m; fmt = 'S'; imm = immS(word);
+        asm = `${m} ${rs2s()}, ${imm}(${rs1s()})`;
+        break;
+      }
+      case 0x13: {
+        const m = ['addi','slli','slti','sltiu','xori','srli/srai','ori','andi'][f3];
+        mnemonic = (f3 === 5 && f7 === 0x20) ? 'srai' : (f3 === 5 ? 'srli' : m);
+        fmt = 'I'; imm = immI(word);
+        asm = `${mnemonic} ${rds()}, ${rs1s()}, ${imm}`;
+        break;
+      }
+      case 0x33: {
+        if (f7 === 0x01) {
+          const m = ['mul','mulh','mulhsu','mulhu','div','divu','rem','remu'][f3];
+          mnemonic = m;
+        } else if (f3 === 0 && f7 === 0x20) mnemonic = 'sub';
+        else if (f3 === 5 && f7 === 0x20) mnemonic = 'sra';
+        else mnemonic = ['add','sll','slt','sltu','xor','srl','or','and'][f3];
+        fmt = 'R';
+        asm = `${mnemonic} ${rds()}, ${rs1s()}, ${rs2s()}`;
+        break;
+      }
+      case 0x73: {
+        if (f3 === 0) {
+          if (word === 0x00000073) { mnemonic = 'ecall'; asm = 'ecall'; }
+          else if (word === 0x00100073) { mnemonic = 'ebreak'; asm = 'ebreak'; }
+          else if (word === 0x30200073) { mnemonic = 'mret'; asm = 'mret'; }
+          else if (word === 0x10200073) { mnemonic = 'sret'; asm = 'sret'; }
+          else if (word === 0x10500073) { mnemonic = 'wfi';  asm = 'wfi';  }
+          else { mnemonic = 'system?'; asm = 'system (unrecognized)'; }
+          fmt = 'I';
+        } else {
+          const csr = bits(word, 31, 20);
+          const m = ['?','csrrw','csrrs','csrrc','?','csrrwi','csrrsi','csrrci'][f3];
+          mnemonic = m; fmt = 'I'; imm = csr;
+          asm = `${m} ${rds()}, csr=0x${csr.toString(16)}, src=x${rs1}`;
+        }
+        break;
+      }
+      case 0x0F: mnemonic = (f3 === 0 ? 'fence' : 'fence.i'); fmt = 'I'; asm = mnemonic; break;
+      case 0x2F: {
+        const f5 = bits(word, 31, 27);
+        const map = {0:'amoadd.w',1:'amoswap.w',2:'lr.w',3:'sc.w',4:'amoxor.w',8:'amoor.w',12:'amoand.w',16:'amomin.w',20:'amomax.w',24:'amominu.w',28:'amomaxu.w'};
+        mnemonic = map[f5] || 'amo?'; fmt = 'R'; asm = `${mnemonic} ${rds()}, ${rs2s()}, (${rs1s()})`;
+        break;
+      }
+      default: mnemonic = 'illegal'; asm = 'illegal'; break;
+    }
+    return { word, op, rd, rs1, rs2, f3, f7, fmt, mnemonic, imm, asm };
+  }
+
+  function doDecode() {
+    const raw = document.getElementById('dec-input').value.trim().replace(/^0x/i, '');
+    const w = parseInt(raw, 16);
+    if (isNaN(w) || w < 0 || w > 0xFFFFFFFF) {
+      document.getElementById('dec-out').innerHTML = '<div class="err">Not a valid 32-bit hex word.</div>';
+      return;
+    }
+    const d = decode(w >>> 0);
+    let bin = '';
+    for (let i = 31; i >= 0; i--) {
+      const b = (w >>> i) & 1;
+      let cls = '';
+      if (i >= 0 && i <= 6) cls = 'op';
+      else if (i >= 7 && i <= 11) cls = 'rd';
+      else if (i >= 12 && i <= 14) cls = 'funct3';
+      else if (i >= 15 && i <= 19) cls = 'rs1';
+      else if (i >= 20 && i <= 24) cls = 'rs2';
+      else if (i >= 25 && i <= 31) cls = 'funct7';
+      bin += '<span class="' + cls + '">' + b + '</span>';
+      if (i === 25 || i === 20 || i === 15 || i === 12 || i === 7) bin += ' ';
+    }
+    let html = '<pre class="binary">';
+    html += '<b>0x' + w.toString(16).padStart(8, '0').toUpperCase() + '</b>\n';
+    html += bin + '\n';
+    html += `<span class="funct7">funct7</span> <span class="rs2">rs2</span>   <span class="rs1">rs1</span>   <span class="funct3">f3</span>  <span class="rd">rd</span>    <span class="op">opcode</span>\n`;
+    html += '</pre>';
+    html += `<div class="ok"><b>${d.asm}</b></div>`;
+    html += `<table class="field-table">`;
+    html += `<tr><th>Field</th><th>Bits</th><th>Value</th></tr>`;
+    html += `<tr><td class="label">opcode</td><td>[6:0]</td><td class="val">0b${d.op.toString(2).padStart(7, '0')} (0x${d.op.toString(16)})</td></tr>`;
+    html += `<tr><td class="label">format</td><td>—</td><td class="val">${d.fmt}-type</td></tr>`;
+    html += `<tr><td class="label">mnemonic</td><td>—</td><td class="val">${d.mnemonic}</td></tr>`;
+    html += `<tr><td class="label">rd</td><td>[11:7]</td><td class="val">x${d.rd} (${ABI_NAMES[d.rd]})</td></tr>`;
+    if (d.fmt !== 'U' && d.fmt !== 'J') html += `<tr><td class="label">rs1</td><td>[19:15]</td><td class="val">x${d.rs1} (${ABI_NAMES[d.rs1]})</td></tr>`;
+    if (d.fmt === 'R' || d.fmt === 'S' || d.fmt === 'B') html += `<tr><td class="label">rs2</td><td>[24:20]</td><td class="val">x${d.rs2} (${ABI_NAMES[d.rs2]})</td></tr>`;
+    if (d.fmt !== 'R') {
+      const sign = d.imm < 0 ? '-' : '';
+      const abs = Math.abs(d.imm);
+      html += `<tr><td class="label">immediate</td><td>varies</td><td class="val">${d.imm} (${sign}0x${abs.toString(16)})</td></tr>`;
+    }
+    html += `</table>`;
+    document.getElementById('dec-out').innerHTML = html;
+  }
+  doDecode();
+
+  // ============================================================
+  // Encoder
+  // ============================================================
+  function doEncode() {
+    const op = document.getElementById('enc-op').value;
+    const rd = parseInt(document.getElementById('enc-rd').value, 10);
+    const rs1 = parseInt(document.getElementById('enc-rs1').value, 10);
+    const rs2 = parseInt(document.getElementById('enc-rs2').value, 10);
+    const imm = parseInt(document.getElementById('enc-imm').value, 10);
+    if ([rd, rs1, rs2].some(x => isNaN(x) || x < 0 || x > 31)) {
+      document.getElementById('enc-out').innerHTML = '<div class="err">Register fields must be 0..31.</div>'; return;
+    }
+    if (isNaN(imm)) {
+      document.getElementById('enc-out').innerHTML = '<div class="err">Immediate must be a number.</div>'; return;
+    }
+    let word = 0;
+    function pack(opcode, rdv, f3, rs1v, rs2v, f7) { return (opcode & 0x7F) | ((rdv & 0x1F) << 7) | ((f3 & 7) << 12) | ((rs1v & 0x1F) << 15) | ((rs2v & 0x1F) << 20) | ((f7 & 0x7F) << 25); }
+    let note = '';
+    switch (op) {
+      case 'addi': word = pack(0x13, rd, 0, rs1, 0, 0) | ((imm & 0xFFF) << 20); break;
+      case 'add':  word = pack(0x33, rd, 0, rs1, rs2, 0); break;
+      case 'sub':  word = pack(0x33, rd, 0, rs1, rs2, 0x20); break;
+      case 'lui':  word = (0x37) | ((rd & 0x1F) << 7) | (imm & 0xFFFFF000); note = 'imm is treated as the upper-20-bits raw value (mask: 0xFFFFF000).'; break;
+      case 'auipc':word = (0x17) | ((rd & 0x1F) << 7) | (imm & 0xFFFFF000); note = 'imm is treated as upper-20-bits raw value.'; break;
+      case 'jal': {
+        if (imm & 1) { document.getElementById('enc-out').innerHTML = '<div class="err">JAL offsets must be even.</div>'; return; }
+        const u = imm & 0x1FFFFE;
+        const b20 = (u >>> 20) & 1, b19_12 = (u >>> 12) & 0xFF, b11 = (u >>> 11) & 1, b10_1 = (u >>> 1) & 0x3FF;
+        word = (0x6F) | ((rd & 0x1F) << 7) | (b19_12 << 12) | (b11 << 20) | (b10_1 << 21) | (b20 << 31);
+        note = 'JAL packs imm bits 20|10:1|11|19:12 — scrambled positions per spec.';
+        break;
+      }
+      case 'beq': {
+        if (imm & 1) { document.getElementById('enc-out').innerHTML = '<div class="err">Branch offsets must be even.</div>'; return; }
+        const u = imm & 0x1FFE;
+        const b12 = (u >>> 12) & 1, b11 = (u >>> 11) & 1, b10_5 = (u >>> 5) & 0x3F, b4_1 = (u >>> 1) & 0xF;
+        word = pack(0x63, 0, 0, rs1, rs2, 0) | (b11 << 7) | (b4_1 << 8) | (b10_5 << 25) | (b12 << 31);
+        note = 'beq packs imm bits 12|10:5|4:1|11 — also scrambled.'; break;
+      }
+      case 'lw':   word = pack(0x03, rd, 2, rs1, 0, 0) | ((imm & 0xFFF) << 20); break;
+      case 'sw': {
+        const i_hi = (imm >> 5) & 0x7F, i_lo = imm & 0x1F;
+        word = pack(0x23, 0, 2, rs1, rs2, 0) | (i_lo << 7) | (i_hi << 25);
+        note = 'sw splits imm into [11:5] high (funct7 slot) and [4:0] low (rd slot).'; break;
+      }
+      case 'ecall': word = 0x00000073; break;
+    }
+    word = word >>> 0;
+    const hex = '0x' + word.toString(16).padStart(8, '0').toUpperCase();
+    let html = `<pre class="binary"><b>${hex}</b>\n${word.toString(2).padStart(32, '0').match(/.{1,8}/g).join(' ')}\n</pre>`;
+    html += `<div class="ok">Round-trip: <b>${decode(word).asm}</b></div>`;
+    if (note) html += `<p class="hint">${note}</p>`;
+    document.getElementById('enc-out').innerHTML = html;
+  }
+  doEncode();
+
+  // ============================================================
+  // Step-through CPU (mini)
+  // ============================================================
+  const PROGRAMS = {
+    add42: {
+      desc: 'Compute 42 = 40 + 2 in three instructions, then halt.',
+      instrs: [
+        { word: 0x02800513, asm: 'addi a0, zero, 40', effect: 'a0 = 40' },
+        { word: 0x00250513, asm: 'addi a0, a0, 2',     effect: 'a0 += 2 → 42' },
+        { word: 0x0000006F, asm: 'jal zero, 0 (halt)', effect: 'PC = PC (infinite loop = halted)' }
+      ]
+    },
+    luiaddi: {
+      desc: 'Build the 32-bit constant 0x12345678 into t0 with lui+addi (the standard RISC-V "load 32-bit constant" idiom).',
+      instrs: [
+        { word: 0x123452B7, asm: 'lui t0, 0x12345',    effect: 't0 = 0x12345000' },
+        { word: 0x67828293, asm: 'addi t0, t0, 0x678', effect: 't0 += 0x678 → 0x12345678' },
+        { word: 0x0000006F, asm: 'jal zero, 0 (halt)', effect: 'halt' }
+      ]
+    },
+    loop: {
+      desc: 'Count s0 down from 5 to 0 with bne. Watch s0 change each pass and PC jump back.',
+      instrs: [
+        { word: 0x00500413, asm: 'addi s0, zero, 5',          effect: 's0 = 5' },
+        { word: 0xFFF40413, asm: 'addi s0, s0, -1',           effect: 's0 -= 1' },
+        { word: 0xFE041EE3, asm: 'bne s0, zero, -4',          effect: 'if s0 != 0, jump back to instr 1' },
+        { word: 0x0000006F, asm: 'jal zero, 0 (halt)',        effect: 'halt' }
+      ]
+    }
+  };
+
+  let regs = new Array(32).fill(0);
+  let pc = 0x80000000;
+  let pcIdx = 0;
+  let curProg = null;
+  let lastChanged = -1;
+
+  function loadProgram() {
+    const sel = document.getElementById('prog-select').value;
+    curProg = PROGRAMS[sel];
+    regs = new Array(32).fill(0);
+    pc = 0x80000000;
+    pcIdx = 0;
+    lastChanged = -1;
+    renderProgram(); renderRegs();
+  }
+
+  function renderProgram() {
+    let html = curProg.desc + '\n\n';
+    for (let i = 0; i < curProg.instrs.length; i++) {
+      const ins = curProg.instrs[i];
+      const addr = (0x80000000 + i * 4).toString(16).padStart(8, '0');
+      const word = ins.word.toString(16).padStart(8, '0').toUpperCase();
+      let line = `0x${addr}: 0x${word}  ${ins.asm.padEnd(28, ' ')}  ; ${ins.effect}`;
+      if (i === pcIdx) html += `<span class="cur">${line}</span>\n`;
+      else if (i < pcIdx) html += `<span class="done">${line}</span>\n`;
+      else html += line + '\n';
+    }
+    document.getElementById('prog-disp').innerHTML = html;
+  }
+
+  function renderRegs() {
+    let html = '';
+    for (let i = 0; i < 32; i++) {
+      const cls = i === lastChanged ? 'reg-cell changed' : 'reg-cell';
+      const val = '0x' + (regs[i] >>> 0).toString(16).padStart(8, '0');
+      html += `<div class="${cls}"><div class="name">x${i} ${ABI_NAMES[i]}</div><div class="val">${val}</div></div>`;
+    }
+    document.getElementById('reg-grid').innerHTML = html;
+  }
+
+  function executeInstr(ins) {
+    const d = decode(ins.word);
+    const before = regs.slice();
+    let advance = true;
+    function r(i) { return regs[i] | 0; }
+    function w(i, v) { if (i !== 0) regs[i] = v >>> 0; }
+    switch (d.mnemonic) {
+      case 'addi': w(d.rd, r(d.rs1) + d.imm); break;
+      case 'add':  w(d.rd, r(d.rs1) + r(d.rs2)); break;
+      case 'sub':  w(d.rd, r(d.rs1) - r(d.rs2)); break;
+      case 'lui':  w(d.rd, d.imm); break;
+      case 'auipc':w(d.rd, pc + d.imm); break;
+      case 'jal':  w(d.rd, pc + 4); pc = (pc + d.imm) >>> 0; pcIdx = ((pc - 0x80000000) >>> 0) / 4; advance = false;
+                   if (d.imm === 0) { /* infinite-loop halt */ pcIdx = -1; }
+                   break;
+      case 'beq':  if (r(d.rs1) === r(d.rs2)) { pc = (pc + d.imm) >>> 0; pcIdx = ((pc - 0x80000000) >>> 0) / 4; advance = false; } break;
+      case 'bne':  if (r(d.rs1) !== r(d.rs2)) { pc = (pc + d.imm) >>> 0; pcIdx = ((pc - 0x80000000) >>> 0) / 4; advance = false; } break;
+    }
+    if (advance) { pc = (pc + 4) >>> 0; pcIdx++; }
+    lastChanged = -1;
+    for (let i = 0; i < 32; i++) if (regs[i] !== before[i]) { lastChanged = i; break; }
+  }
+
+  function cpuStep() {
+    if (pcIdx < 0 || pcIdx >= curProg.instrs.length) return;
+    executeInstr(curProg.instrs[pcIdx]);
+    renderProgram(); renderRegs();
+  }
+  function cpuRun() {
+    let safety = 100;
+    while (pcIdx >= 0 && pcIdx < curProg.instrs.length && safety--) cpuStep();
+  }
+
+  loadProgram();
+</script>
+</body>
+</html>
