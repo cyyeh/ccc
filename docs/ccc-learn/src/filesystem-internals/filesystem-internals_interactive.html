@@ -41,7 +41,11 @@
   table th { background: #f1f5f9; }
   @media (max-width: 640px) {
     body { padding: 12px; } .tab-btn { padding: 6px 14px; font-size: 13px; } h1 { font-size: 22px; }
-    .panel { padding: 16px; } .image-grid { grid-template-columns: repeat(16, 1fr); }
+    .panel { padding: 16px; } .image-grid { grid-template-columns: repeat(16, 1fr); font-size: 8px; }
+    .image-grid .blk { padding: 1px; min-width: 0; word-break: break-all; }
+  }
+  @media (max-width: 380px) {
+    .image-grid { grid-template-columns: repeat(8, 1fr); font-size: 10px; }
   }
 </style>
 </head>

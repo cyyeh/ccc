@@ -117,12 +117,14 @@
       border-left: 4px solid var(--accent); padding: .5rem 1rem; margin: 1rem 0;
       color: var(--text-light); background: #fffaf0; border-radius: 0 8px 8px 0;
     }
-    .content-box code { background: #edf2f7; padding: .1rem .35rem; border-radius: 4px; font-size: .88em; font-family: "SF Mono", "Menlo", "Consolas", monospace; }
+    .content-box code { background: #edf2f7; padding: .1rem .35rem; border-radius: 4px; font-size: .88em; font-family: "SF Mono", "Menlo", "Consolas", monospace; word-break: break-word; overflow-wrap: anywhere; }
     .content-box pre {
       background: #1a202c; color: #e2e8f0; padding: 1rem; border-radius: 8px;
-      overflow-x: auto; margin: 1rem 0;
+      overflow-x: auto; margin: 1rem 0; max-width: 100%;
     }
-    .content-box pre code { background: none; padding: 0; color: inherit; font-size: .9em; }
+    .content-box pre code { background: none; padding: 0; color: inherit; font-size: .9em; word-break: normal; overflow-wrap: normal; }
+    .content-box p, .content-box li { overflow-wrap: anywhere; word-break: break-word; }
+    .content-box a { word-break: break-word; }
     .content-box table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .95rem; }
     .content-box th, .content-box td { border: 1px solid var(--border); padding: .5rem .75rem; text-align: left; }
     .content-box th { background: #edf2f7; font-weight: 600; }
