@@ -1,12 +1,12 @@
-# Phase 6 — Framebuffer + Compositor + Windowed Apps (Design)
+# Phase 7 — Framebuffer + Compositor + Windowed Apps (Design)
 
 **Project:** From-Scratch Computer (directory `ccc/`).
-**Phase:** 6 of 6 — see `2026-04-23-from-scratch-computer-roadmap.md` (this
+**Phase:** 7 of 7 — see `2026-04-23-from-scratch-computer-roadmap.md` (this
 spec extends that roadmap; the original document lists five phases and an
 explicit "No graphics" non-goal — see the §Why section below).
 **Status:** Draft 2026-04-26 — open for review. Depends on Phase 3.F
 completion (filesystem, shell, line-discipline console). Independent of
-Phase 4 / 5 — can land before, after, or in parallel.
+Phase 4 / 5 / 6 — can land before, after, or in parallel.
 
 ## Goal
 
@@ -17,7 +17,7 @@ mouse + keyboard input devices, a kernel-side framebuffer driver and
 windowed demo apps. Same Zig core, same RV32IMA emulator, same kernel —
 the GUI is additive, not a replacement.
 
-After Phase 6, the existing UART / shell / snake demos still work
+After Phase 7, the existing UART / shell / snake demos still work
 byte-for-byte; the new graphical mode is selected by booting `init` to
 launch `wm` instead of `sh`.
 
@@ -41,10 +41,10 @@ distraction with no payoff for that target. Three things changed:
    same RV32 core is a fourth such moment, and one that's instantly
    legible to non-technical viewers in a way that a terminal isn't.
 
-**Cost honesty:** Phase 6 is the largest phase by absolute size. It
+**Cost honesty:** Phase 7 is the largest phase by absolute size. It
 introduces the first piece of the project that has a "user-experience"
 surface beyond a terminal. Plan boundaries below try to keep the cost
-disciplined; the smallest viable slice (6.A) is ~2 weeks of work and
+disciplined; the smallest viable slice (7.A) is ~2 weeks of work and
 proves the emulator/kernel/host-display path before any compositor work.
 
 ## Definition of done
@@ -63,7 +63,7 @@ proves the emulator/kernel/host-display path before any compositor work.
 - A scripted e2e session passes (frame-hash comparison against committed
   goldens):
   ```
-  --display none --golden-frames tests/golden/phase6/
+  --display none --golden-frames tests/golden/phase7/
   → boot to wm
   → wait 5 mtime-seconds
   → assert frame[300] hash == golden/desktop_with_clock_05s.crc
@@ -80,9 +80,9 @@ proves the emulator/kernel/host-display path before any compositor work.
   `e2e-fs`, `e2e-shell`, `e2e-editor`, `e2e-persist`), and the snake demo
   (`e2e-snake`) still pass unchanged.
 - `riscv-tests` (rv32ui/um/ua/mi/si all `-p-*`) still pass.
-- New e2e tests pass: `e2e-fb-blit` (6.A), `e2e-mmap` (6.B),
-  `e2e-input-event` (6.B), `e2e-wm-static` (6.D), `e2e-wm-input` (6.E),
-  `e2e-gui-demo` (6.F, the scripted session above).
+- New e2e tests pass: `e2e-fb-blit` (7.A), `e2e-mmap` (7.B),
+  `e2e-input-event` (7.B), `e2e-wm-static` (7.D), `e2e-wm-input` (7.E),
+  `e2e-gui-demo` (7.F, the scripted session above).
 - `--trace` works across the new IRQ paths; vsync and input PLIC
   claim/complete show up as synthetic marker lines.
 - The web demo gains a "wm" entry in the program selector. Picking it
@@ -100,7 +100,7 @@ proves the emulator/kernel/host-display path before any compositor work.
     is acceptable.
   - **Framebuffer control registers** at `0x5013_0000` (4 KB) — width,
     height, pitch, format, mode (active / off), all read-only in
-    Phase 6 (resolution is fixed).
+    Phase 7 (resolution is fixed).
   - **Input MMIO device** at `0x1000_2000` (256 B) — a 16-event ring
     buffer plus a few control registers. Combined keyboard + mouse
     events with a type discriminator.
@@ -144,7 +144,7 @@ proves the emulator/kernel/host-display path before any compositor work.
     client side of the compositor wire protocol (`gfx_connect`,
     `gfx_create_window`, `gfx_submit_damage`, `gfx_recv_event`).
   - **Bitmap font** — a public-domain 8×16 monospace set (likely
-    "Spleen" or similar; final pick in 6.C). Baked into `libgfx` at
+    "Spleen" or similar; final pick in 7.C). Baked into `libgfx` at
     build time as a 4 KB `.rodata` blob.
   - **Demo apps:** `hello-gui`, `clock`, `calc`, plus a windowed
     `term` (single-window, embeds the existing line-discipline
@@ -153,8 +153,8 @@ proves the emulator/kernel/host-display path before any compositor work.
 ### Out of scope (deferred)
 
 - **Hardware-accelerated graphics.** The CPU has no FPU and no GPU.
-  Software rasterization only. A future Phase 6.G could add a
-  `simple-2d-accel` MMIO device for fill/blit DMA, but Phase 6 doesn't
+  Software rasterization only. A future Phase 7.G could add a
+  `simple-2d-accel` MMIO device for fill/blit DMA, but Phase 7 doesn't
   need it.
 - **Anti-aliased text or fonts beyond 8×16.** Bitmap-only.
 - **Image decoding** (PNG / JPEG / BMP / GIF) — apps that want images
@@ -237,9 +237,9 @@ and blocks on `/dev/vsync` between frames. Apps never touch
 `mmap`-allocated by `wm` and shared into the app via fd-passing over a
 pipe).
 
-### Emulator modules — Phase 6 deltas
+### Emulator modules — Phase 7 deltas
 
-| Module | Phase 6 additions |
+| Module | Phase 7 additions |
 |---|---|
 | `cpu.zig` | No changes — vsync IRQ uses the existing PLIC + S-external path from Phase 3. |
 | `memory.zig` | New RAM-like region at `0x5000_0000` (FB), new MMIO range at `0x5013_0000` (FB ctrl) and `0x1000_2000` (input). Total memory footprint += ~1.5 MB host. |
@@ -270,7 +270,7 @@ runs as fast as the kernel can schedule it; in `--display sdl` mode,
 the SDL backend rate-limits the emulator main loop to host vsync, so
 guest time tracks wall clock and the desktop animates smoothly.
 
-### Kernel modules — Phase 6 deltas
+### Kernel modules — Phase 7 deltas
 
 ```
 src/kernel/
@@ -319,7 +319,7 @@ src/kernel/user/    (or programs/, see "Project structure" below)
 
 ## Memory layout
 
-### Physical address space (Phase 6 deltas in **bold**)
+### Physical address space (Phase 7 deltas in **bold**)
 
 | Address | Size | Purpose | Phase |
 |---|---|---|---|
@@ -329,9 +329,9 @@ src/kernel/user/    (or programs/, see "Project structure" below)
 | `0x0c00_0000` | 4 MB | PLIC | 3.A |
 | `0x1000_0000` | 256 B | NS16550A UART | 1, extended in 3.A |
 | `0x1000_1000` | 16 B | Block device | 3.A |
-| **`0x1000_2000`** | **256 B** | **Input MMIO (event ring + ctrl)** | **6.A** |
-| **`0x5000_0000`** | **1.2 MB** | **Framebuffer (XRGB8888, 640×480)** | **6.A** |
-| **`0x5013_0000`** | **4 KB** | **FB control registers (RO)** | **6.A** |
+| **`0x1000_2000`** | **256 B** | **Input MMIO (event ring + ctrl)** | **7.A** |
+| **`0x5000_0000`** | **1.2 MB** | **Framebuffer (XRGB8888, 640×480)** | **7.A** |
+| **`0x5013_0000`** | **4 KB** | **FB control registers (RO)** | **7.A** |
 | `0x8000_0000` | 128 MB | RAM | 1 |
 
 Addresses chosen to:
@@ -357,7 +357,7 @@ Addresses chosen to:
 0x5013_0014  cursor_hint  u32  W: emulator hint to refresh now (0=skip vsync wait). Optional, no-op in headless.
 ```
 
-Format `1 = XRGB8888` is the only format Phase 6 supports. Format `2 =
+Format `1 = XRGB8888` is the only format Phase 7 supports. Format `2 =
 RGB565` is reserved for a possible future plan; the field is there so
 the protocol can be extended without a guest re-flash.
 
@@ -382,7 +382,7 @@ Event encoding:
 
 Scancodes follow the USB HID usage-page-7 keyboard table (subset:
 0x04..0x39 = letters/numbers, 0x4F..0x52 = arrows, 0x29 = ESC, 0x2C =
-space, 0x2A = backspace, 0x28 = enter — pinned in 6.A). Mouse
+space, 0x2A = backspace, 0x28 = enter — pinned in 7.A). Mouse
 coordinates are absolute to the FB resolution; the emulator clamps to
 [0, w-1] × [0, h-1] before pushing.
 
@@ -391,9 +391,9 @@ emulator clears that slot. When `head == tail`, the ring is empty (no
 event ready). The kernel's input ISR drains all available events into
 its per-fd event queue on each IRQ.
 
-### Per-process virtual address space — Phase 6 additions
+### Per-process virtual address space — Phase 7 additions
 
-The Phase 3 layout remains. Phase 6 adds dynamic VMAs that may be
+The Phase 3 layout remains. Phase 7 adds dynamic VMAs that may be
 installed by `mmap`:
 
 | VA range | Purpose | Perm | Notes |
@@ -439,12 +439,12 @@ Boot shim additions:
 ```
 case 1:  block.isr();         // Phase 3.D
 case 10: uart.drain_to_console(); // Phase 3.A
-case 12: input.isr();         // NEW: Phase 6
-case 14: vsync.isr();         // NEW: Phase 6
+case 12: input.isr();         // NEW: Phase 7
+case 14: vsync.isr();         // NEW: Phase 7
 ```
 
 `input.isr()` reads up to 16 events from the MMIO ring, pushes them
-onto a per-fd event queue (one queue total in Phase 6 — `/dev/input`
+onto a per-fd event queue (one queue total in Phase 7 — `/dev/input`
 is single-reader and the compositor is the only reader), and wakes
 any sleeper on `&input.queue`.
 
@@ -474,12 +474,12 @@ sys_mmap(fd: i32, len: usize, prot: u32, flags: u32, offset: usize) -> usize
 sys_munmap(addr: usize, len: usize) -> i32
 ```
 
-Phase 6 supports a deliberately small subset:
+Phase 7 supports a deliberately small subset:
 
 - `flags & MAP_ANONYMOUS` (0x20) with `fd == -1`: allocate `len / 4096`
   fresh physical pages, install with `prot`, return start VA.
 - `flags & MAP_SHARED` (0x01) with `fd >= 0`: ask the file's driver
-  (only `/dev/fb0` and anonymous-fd-from-wm in Phase 6) for the page
+  (only `/dev/fb0` and anonymous-fd-from-wm in Phase 7) for the page
   list, install pages.
 - `MAP_PRIVATE`, `MAP_FIXED`, file-offset != 0 for non-FB files,
   `mremap`: return `-ENOSYS`.
@@ -512,7 +512,7 @@ ring is freed back to the page allocator.
 The compositor and apps need a bidirectional, ordered, message-framed
 channel plus a way to share fds (so apps can mmap their backing store).
 We don't have Unix-domain sockets and don't want to spec them in
-Phase 6.
+Phase 7.
 
 **The minimum-viable substrate, used everywhere `wm` talks to a
 client:**
@@ -525,7 +525,7 @@ client:**
      fds: [*]i32, n: u32) -> i32` that puts `n` fds into a per-pid
      "inbox" slot. The compositor calls `sys_take_pinned_fds(buf, n)`
      to consume them.
-   - This is ugly; it's also enough. A future Phase 7 could replace it
+   - This is ugly; it's also enough. A future phase could replace it
      with proper socketpair semantics.
 3. App + compositor now have two pipes between them: `cmd` (app
    writes, wm reads) and `evt` (wm writes, app reads).
@@ -540,7 +540,7 @@ client:**
 live at numbers `5010` and `5011` for the same reason `set_fg_pid` and
 `console_set_mode` did in Phase 3.
 
-We will revisit this in Phase 7+ (or a 6.G addendum) if the ergonomics
+We will revisit this in a later phase (or a 7.G addendum) if the ergonomics
 get too painful. For now: ~80 lines of kernel code and we move on.
 
 ### Service registry (`/var/run/wm.sock`)
@@ -643,7 +643,7 @@ defensive sanity check.
   the new focus.
 - **Keyboard:** delivered to the focused window, full stop. ESC, F-keys,
   modifiers — all forwarded raw. The compositor reserves nothing in
-  Phase 6 (no `Alt+Tab` shortcut, no `Ctrl+Q` to kill — apps do their
+  Phase 7 (no `Alt+Tab` shortcut, no `Ctrl+Q` to kill — apps do their
   own).
 - **No-focus state:** keyboard events drop on the floor when no window
   is focused. Mouse clicks on background do nothing.
@@ -672,7 +672,7 @@ pub fn draw_rect(s: Surface, rect: Rect, color: Pixel) void;       // 1px outlin
 pub fn draw_filled_rect(s: Surface, rect: Rect, color: Pixel) void;
 ```
 
-All colors are XRGB8888. No alpha blending in Phase 6 — alpha math
+All colors are XRGB8888. No alpha blending in Phase 7 — alpha math
 costs ~3× the per-pixel work and the demo apps don't need it. Every
 operation is bounds-clipped to the destination surface.
 
@@ -681,7 +681,7 @@ its 16-row × 8-col bitmap (16 bytes, MSB = leftmost pixel), and writes
 fg/bg per bit. ~50 cycles per glyph at our model rate; a 80-column
 line refresh is ~4 ms — fits comfortably in a vsync budget.
 
-The font is a public-domain 8×16 bitmap. Final pick in 6.C; a strong
+The font is a public-domain 8×16 bitmap. Final pick in 7.C; a strong
 candidate is "Spleen 8x16" (BSD-licensed, Latin-1 coverage) or the IBM
 PC BIOS code page 437 set (effectively public domain). 4 KB total.
 
@@ -730,7 +730,7 @@ text apps still work in graphical mode, just inside a window.
 
 ## Testing strategy
 
-### 1. Emulator unit tests (in 6.A)
+### 1. Emulator unit tests (in 7.A)
 
 - Framebuffer device: write at offset `(y*pitch + x*4)`, read back via
   `framebufferPtr()`; control regs return correct values; `mode = 0`
@@ -742,7 +742,7 @@ text apps still work in graphical mode, just inside a window.
 - `--display none` regression: existing snake e2e and FB e2e both pass
   with the same emulator binary.
 
-### 2. Kernel unit tests (in 6.B and 6.C)
+### 2. Kernel unit tests (in 7.B and 7.C)
 
 - `mmap(MAP_ANONYMOUS, 8192)` — VA returned, two pages installed,
   reads/writes hit the right physical pages.
@@ -754,17 +754,17 @@ text apps still work in graphical mode, just inside a window.
 - `input.isr`: drains all pending events and only marks
   ring-empty after consuming them.
 
-### 3. Frame-hash e2e (in 6.D and onward)
+### 3. Frame-hash e2e (in 7.D and onward)
 
 `zig build e2e-gui-demo` runs the kernel headless (`--display none`)
-with `--inject-input tests/golden/phase6/inputs.txt` and
-`--golden-frames tests/golden/phase6/`. The harness checkpoints the
+with `--inject-input tests/golden/phase7/inputs.txt` and
+`--golden-frames tests/golden/phase7/`. The harness checkpoints the
 framebuffer at specific guest-time offsets and compares CRC32 of the
 1.2 MB pixel buffer against committed `.crc` files.
 
 Goldens are regenerated only when the test fails AND the user runs
-`zig build update-goldens-phase6` (which writes the freshly captured
-hashes back to `tests/golden/phase6/`). Regenerating the actual
+`zig build update-goldens-phase7` (which writes the freshly captured
+hashes back to `tests/golden/phase7/`). Regenerating the actual
 goldens is a deliberate human action — never automatic.
 
 We commit the CRC32, not the PNGs (PNGs are reproducible from the
@@ -792,50 +792,50 @@ ccc/
 ├── src/
 │   ├── emulator/
 │   │   ├── devices/
-│   │   │   ├── framebuffer.zig     NEW (6.A)
-│   │   │   ├── input.zig           NEW (6.A)
-│   │   │   └── vsync.zig           NEW (6.A)
+│   │   │   ├── framebuffer.zig     NEW (7.A)
+│   │   │   ├── input.zig           NEW (7.A)
+│   │   │   └── vsync.zig           NEW (7.A)
 │   │   ├── display/
-│   │   │   ├── sdl.zig             NEW (6.A, native only)
-│   │   │   ├── canvas.zig          NEW (6.A, wasm only)
-│   │   │   └── none.zig            NEW (6.A)
+│   │   │   ├── sdl.zig             NEW (7.A, native only)
+│   │   │   ├── canvas.zig          NEW (7.A, wasm only)
+│   │   │   └── none.zig            NEW (7.A)
 │   │   ├── memory.zig              + FB region + input MMIO range + ctrl-reg dispatch
 │   │   └── main.zig                + --display, --golden-frames, --inject-input
 │   └── kernel/
-│       ├── fb.zig                  NEW (6.B)
-│       ├── input.zig               NEW (6.B)
-│       ├── vsync.zig               NEW (6.B)
-│       ├── pipe.zig                NEW (6.B)
-│       ├── mmap.zig                NEW (6.B)
+│       ├── fb.zig                  NEW (7.B)
+│       ├── input.zig               NEW (7.B)
+│       ├── vsync.zig               NEW (7.B)
+│       ├── pipe.zig                NEW (7.B)
+│       ├── mmap.zig                NEW (7.B)
 │       ├── trap.zig                + S-external switch for src 12 / 14
 │       ├── kmain.zig               + devfs registration for fb0/input/vsync
-│       └── user/                   stays — Phase 6 userland lives in programs/
+│       └── user/                   stays — Phase 7 userland lives in programs/
 ├── programs/
-│   ├── libgfx/                     NEW (6.C); shared library, linked into all gui programs
+│   ├── libgfx/                     NEW (7.C); shared library, linked into all gui programs
 │   │   ├── pixel.zig
 │   │   ├── font.zig
 │   │   ├── font.bin
 │   │   └── wm_client.zig
-│   ├── wm/                         NEW (6.D)
+│   ├── wm/                         NEW (7.D)
 │   │   ├── main.zig
 │   │   ├── window.zig
 │   │   ├── proto.zig
 │   │   ├── cursor.zig
 │   │   └── linker.ld
-│   ├── hello-gui/                  NEW (6.F)
-│   ├── clock/                      NEW (6.F)
-│   ├── calc/                       NEW (6.F)
-│   └── term/                       NEW (6.F)
+│   ├── hello-gui/                  NEW (7.F)
+│   ├── clock/                      NEW (7.F)
+│   ├── calc/                       NEW (7.F)
+│   └── term/                       NEW (7.F)
 ├── tests/
 │   ├── e2e/
-│   │   ├── fb_blit.zig             NEW (6.A)
-│   │   ├── mmap.zig                NEW (6.B)
-│   │   ├── input_event.zig         NEW (6.B)
-│   │   ├── wm_static.zig           NEW (6.D)
-│   │   ├── wm_input.zig            NEW (6.E)
-│   │   └── gui_demo.zig            NEW (6.F)
+│   │   ├── fb_blit.zig             NEW (7.A)
+│   │   ├── mmap.zig                NEW (7.B)
+│   │   ├── input_event.zig         NEW (7.B)
+│   │   ├── wm_static.zig           NEW (7.D)
+│   │   ├── wm_input.zig            NEW (7.E)
+│   │   └── gui_demo.zig            NEW (7.F)
 │   └── golden/
-│       └── phase6/
+│       └── phase7/
 │           ├── desktop_with_clock_05s.crc
 │           ├── desktop_with_calc.crc
 │           ├── calc_shows_15.crc
@@ -874,7 +874,7 @@ ccc [--trace] [--halt-on-trap] [--memory MB] [--disk PATH]
 
 Six plans, each a separate `docs/superpowers/plans/` document:
 
-- **6.A — Emulator: framebuffer + input + vsync + display backends.**
+- **7.A — Emulator: framebuffer + input + vsync + display backends.**
   `devices/framebuffer.zig`, `devices/input.zig`, `devices/vsync.zig`,
   `display/{sdl,canvas,none}.zig`. New CLI flags. Unit + integration
   tests. **No kernel changes.** Milestone: a tiny S-mode test program
@@ -883,36 +883,36 @@ Six plans, each a separate `docs/superpowers/plans/` document:
   pushes a few synthetic input events, sleeps in `wfi` for vsync,
   takes the IRQs, claims, completes. Frame-hash matches a committed
   golden.
-- **6.B — Kernel: mmap + pipes + fb/input/vsync drivers + pin_fds.**
+- **7.B — Kernel: mmap + pipes + fb/input/vsync drivers + pin_fds.**
   `mmap.zig`, `pipe.zig`, `fb.zig`, `input.zig`, `vsync.zig`. New
   syscalls. `init` is extended to register `/dev/fb0`, `/dev/input`,
   `/dev/vsync`. Milestone: `e2e-mmap` (kernel program mmaps fb0,
   writes a gradient, exits; verifier hashes the FB),
   `e2e-input-event` (kernel program reads /dev/input, asserts 4
   injected events arrive in order).
-- **6.C — Userland: libgfx + bitmap font + wm_client stub.**
+- **7.C — Userland: libgfx + bitmap font + wm_client stub.**
   `programs/libgfx/`. Pure userland — no kernel changes. Milestone:
   a tiny `gfx_test.elf` that mmaps `/dev/fb0` directly (no compositor
   yet), draws "hello, gfx!" via `draw_string`, exits. Frame-hash test.
-- **6.D — Compositor: static desktop, no input routing yet.**
+- **7.D — Compositor: static desktop, no input routing yet.**
   `programs/wm/`. Owns FB. Single hard-coded window list (`hello-gui`
   pinned at startup). Vsync-paced frame loop. No app-side IPC yet —
   `wm` `fork`s `hello-gui` directly and shares a backing-store fd.
   Milestone: `e2e-wm-static` boots, `init` execs `wm`, frame at 1 s
   matches golden.
-- **6.E — Compositor: input routing + multi-window + connect protocol.**
+- **7.E — Compositor: input routing + multi-window + connect protocol.**
   `pin_fds`/`take_pinned_fds` syscalls; `wm` accepts new connections
   via `/var/run/wm.sock`. `gfx_connect`/`gfx_create_window` work end
   to end. Cursor follows mouse; click changes focus; keys go to focus.
   Milestone: `e2e-wm-input`.
-- **6.F — Demo apps + web canvas + final demo.**
+- **7.F — Demo apps + web canvas + final demo.**
   `hello-gui`, `clock`, `calc`, `term`. Web demo gains a `<canvas>`
   path and wm-demo entry. Documentation pass. Milestone:
   `e2e-gui-demo` (the full Definition-of-done scripted session).
 
-Plan boundaries are designed so 6.A is shippable as a stand-alone
+Plan boundaries are designed so 7.A is shippable as a stand-alone
 "emulator can render a framebuffer" feature even if the rest of
-Phase 6 stalls — same pattern as 3.A shipping before the kernel
+Phase 7 stalls — same pattern as 3.A shipping before the kernel
 multi-process work.
 
 ## Risks and open questions
@@ -920,16 +920,16 @@ multi-process work.
 - **"No graphics" reversal.** The original roadmap is explicit:
   no graphics. This phase contradicts that. Two ways to resolve in
   doc form: (a) replace the goal sheet line, or (b) leave it and treat
-  Phase 6 as a clearly-marked addendum. Recommendation: (b), so the
-  original framing stays intact and Phase 6 reads as "a deliberate
+  Phase 7 as a clearly-marked addendum. Recommendation: (b), so the
+  original framing stays intact and Phase 7 reads as "a deliberate
   later choice, not a goalpost slip." Open: confirm with user before
   the spec is approved.
 - **Compositor IPC ergonomics.** `pin_fds` is a hack. It works for
-  Phase 6 but it'll feel wrong as soon as a second app starts wanting
-  to talk to a non-`wm` service. A future Phase 7 could spec a real
+  Phase 7 but it'll feel wrong as soon as a second app starts wanting
+  to talk to a non-`wm` service. A future phase could spec a real
   Unix-domain-socket equivalent (datagram + `SCM_RIGHTS`) and
   retrofit; the cost is ~200 lines of kernel code. Open: revisit at
-  Phase 7 brainstorm.
+  the brainstorm for that follow-on phase.
 - **`clock` redraw cadence.** The compositor doesn't natively
   broadcast vsync to apps (apps would have to subscribe). Two
   workable approaches: (i) every app blocks on its `evt` pipe and
@@ -938,7 +938,7 @@ multi-process work.
   `/dev/clint`. (ii) is more flexible but exposes a low-level clock
   to userland that we've kept hidden so far. Provisional pick:
   (i) but post `TICK` only at 1 Hz (clock's needs); high-frequency
-  redraw apps can `gfx_subscribe(60Hz)` to opt in. Resolve in 6.E
+  redraw apps can `gfx_subscribe(60Hz)` to opt in. Resolve in 7.E
   brainstorm.
 - **Frame-hash flakiness.** RV32IMA execution is deterministic given
   the same input + clock. But the input ring's ISR-vs-poll race
@@ -946,7 +946,7 @@ multi-process work.
   by gating goldens on guest-mtime checkpoints, not host time, and
   injecting input at exact mtime values. If it still flakes, fall
   back to "structural" hashes (e.g. only hash text glyph regions, not
-  the whole frame). Investigate as 6.D first issue.
+  the whole frame). Investigate as 7.D first issue.
 - **SDL2 dependency.** Phase 1–5 are dependency-free. Adding SDL2 to
   the CLI build changes the install story on macOS (`brew install
   sdl2`). Mitigation: SDL2 is a build-time conditional (link only if
@@ -973,9 +973,9 @@ multi-process work.
   apps roughly doubles the build graph. CI time goes from ~2 min
   to ~3.5 min per push. Tolerable.
 - **Zig version churn.** Same risk as every phase. Re-pin
-  `build.zig.zon` at Phase 6 start.
+  `build.zig.zon` at Phase 7 start.
 
-## Roughly what success looks like at the end of Phase 6
+## Roughly what success looks like at the end of Phase 7
 
 ```
 $ zig build test                           # unit tests pass (Phase 1 + 2 + 3 + 6)

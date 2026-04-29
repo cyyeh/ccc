@@ -318,7 +318,7 @@
     <div class="brand">ccc</div>
     <div class="brand-rule"></div>
     <div class="title-line-1">a RISC-V computer, from scratch</div>
-    <div class="title-line-2">in Zig · emulator → kernel → OS → network → browser → desktop → python</div>
+    <div class="title-line-2">in Zig · emulator → kernel → OS → network → browser → python → desktop</div>
     <a class="demo-link" href="web/">▶ try it in your browser</a>
     <a class="demo-link" href="docs/ccc-learn/" style="margin-left: 16px;">📖 learn the codebase</a>
   </section>
@@ -327,7 +327,7 @@
   <section data-label="Contents · seven phases">
     <div class="slide-label">contents · the project</div>
     <h2 class="slide-title">Seven phases, <span class="accent">one computer</span></h2>
-    <p class="plain">The original target: boot our own kernel, talk to a server we control, and render plain HTML in a terminal-mode browser — everything written from scratch. No Linux. No TLS. The roadmap then keeps going past that finish line: <strong>Phase 6</strong> reverses the original "no graphics" stance with a framebuffer + compositor + windowed apps, and <strong>Phase 7</strong> ports real <strong>CPython 3.12</strong> on top of Phase 3's kernel. Both are now in scope, not optional.</p>
+    <p class="plain">The original target: boot our own kernel, talk to a server we control, and render plain HTML in a terminal-mode browser — everything written from scratch. No Linux. No TLS. The roadmap then keeps going past that finish line: <strong>Phase 6</strong> ports real <strong>CPython 3.12</strong> on top of Phase 3's kernel, and <strong>Phase 7</strong> reverses the original "no graphics" stance with a framebuffer + compositor + windowed apps. Both are now in scope, not optional.</p>
     <div class="toc">
       <div class="toc-row">
         <div class="toc-num">1</div>
@@ -367,15 +367,15 @@
       <div class="toc-row">
         <div class="toc-num">6</div>
         <div class="toc-body">
-          <div class="toc-head">Framebuffer + compositor + windowed apps <span class="toc-status upcoming">upcoming</span></div>
-          <div class="toc-sub">Linear framebuffer · mouse + keyboard input · kernel <code class="inline">mmap</code> + pipes · userland <code class="inline">wm</code> compositor · windowed <code class="inline">clock</code>, <code class="inline">calc</code>, and <code class="inline">term</code> demos. Reverses the original "no graphics" stance.</div>
+          <div class="toc-head">CPython 3.12 port <span class="toc-status upcoming">upcoming</span></div>
+          <div class="toc-sub">Real CPython 3.12 as <code class="inline">/bin/python</code> — picolibc + dlmalloc + frozen stdlib on top of Phase 3's kernel. REPL, scripts, exceptions, <code class="inline">^C</code> → <code class="inline">KeyboardInterrupt</code>. <code class="inline">python /usr/lib/demo/pi.py 50</code> prints 50 digits of π through <code class="inline">_pydecimal</code>.</div>
         </div>
       </div>
       <div class="toc-row">
         <div class="toc-num">7</div>
         <div class="toc-body">
-          <div class="toc-head">CPython 3.12 port <span class="toc-status upcoming">upcoming</span></div>
-          <div class="toc-sub">Real CPython 3.12 as <code class="inline">/bin/python</code> — picolibc + dlmalloc + frozen stdlib on top of Phase 3's kernel. REPL, scripts, exceptions, <code class="inline">^C</code> → <code class="inline">KeyboardInterrupt</code>. <code class="inline">python /usr/lib/demo/pi.py 50</code> prints 50 digits of π through <code class="inline">_pydecimal</code>.</div>
+          <div class="toc-head">Framebuffer + compositor + windowed apps <span class="toc-status upcoming">upcoming</span></div>
+          <div class="toc-sub">Linear framebuffer · mouse + keyboard input · kernel <code class="inline">mmap</code> + pipes · userland <code class="inline">wm</code> compositor · windowed <code class="inline">clock</code>, <code class="inline">calc</code>, and <code class="inline">term</code> demos. Reverses the original "no graphics" stance.</div>
         </div>
       </div>
     </div>
@@ -1582,7 +1582,7 @@ scheduler idle path  <span class="dim">(3.E)</span>
     <div class="slide-label">chapter 3.f · editor + persistence (final demo)</div>
     <h2 class="slide-title"><span class="accent">Chapter 3.F</span> — editor + persistence (final demo)</h2>
     <p class="plain">Plan 3.E wired raw-mode in the kernel but never exercised it. Plan 3.F finally does, with a cursor-moving <code class="inline">edit</code> binary: <code class="inline">console_set_mode(1)</code> on entry, <code class="inline">console_set_mode(0)</code> on exit, a 16 KB content buffer with a single byte-offset cursor, and a redraw-on-every-keystroke ANSI loop dispatching ESC [ A/B/C/D arrows + printables + backspace + <code class="inline">^S</code> save + <code class="inline">^X</code> exit. <code class="inline">e2e-editor</code> drives the canonical session via a 43-byte binary fixture. <code class="inline">e2e-persist</code> proves the kernel's <code class="inline">bwrite</code> path actually persists by running ccc twice on the same disk image and asserting pass 2 sees pass 1's writes. <code class="inline">e2e-cancel</code> closes the last DoD bullet — pipes <code class="inline">cat\n\x03exit\n</code> and asserts <code class="inline">cat\n^C\n$ exit</code> appears in stdout, exercising the full kill-flag chain (<code class="inline">console.feedByte(0x03)</code> → <code class="inline">proc.kill(fg_pid)</code> → <code class="inline">killed</code> flag → <code class="inline">console.read</code> returns -1 → syscall dispatch calls <code class="inline">proc.exit</code>).</p>
-    <div class="caption">Phase 3 §Definition of Done holds end-to-end. <code class="inline">kernel.elf</code> + <code class="inline">shell-fs.img</code> boot to a shell, run our own programs, edit files interactively, observe changes survive emulator restarts, <code class="inline">^C</code> cancels foreground programs. Next: Phase 4 (network stack) → Phase 5 (HTTP/1.0 + text browser) → Phase 6 (framebuffer + compositor) → Phase 7 (CPython 3.12 port).</div>
+    <div class="caption">Phase 3 §Definition of Done holds end-to-end. <code class="inline">kernel.elf</code> + <code class="inline">shell-fs.img</code> boot to a shell, run our own programs, edit files interactively, observe changes survive emulator restarts, <code class="inline">^C</code> cancels foreground programs. Next: Phase 4 (network stack) → Phase 5 (HTTP/1.0 + text browser) → Phase 6 (CPython 3.12 port) → Phase 7 (framebuffer + compositor).</div>
   </section>
 
   <!-- Epilogue · where we are -->
