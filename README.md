@@ -29,15 +29,15 @@ real Python interpreter on top of the same kernel:
 
 ## Phases
 
-| # | Phase | Demo |
-|---|-------|------|
-| 1 | RISC-V CPU emulator | `ccc hello.elf` prints `hello world` |
-| 2 | Bare-metal kernel | user program calls `write()`, kernel prints it |
-| 3 | Multi-process OS + FS + shell | boot to a shell, run our own programs |
-| 4 | Network stack | `ping 1.1.1.1` from inside our OS |
-| 5 | HTTP/1.0 client + text browser | browse plain-HTTP pages by link number |
-| 6 | CPython 3.12 port | `python /usr/lib/demo/pi.py 50` prints 50 digits of π |
-| 7 | Framebuffer + compositor + windowed apps | boot to a windowed desktop with live clock + calculator |
+| # | Phase | Status | Demo |
+|---|-------|--------|------|
+| 1 | RISC-V CPU emulator | complete | `ccc hello.elf` prints `hello world` |
+| 2 | Bare-metal kernel | complete | user program calls `write()`, kernel prints it |
+| 3 | Multi-process OS + FS + shell | complete | boot to a shell, run our own programs |
+| 4 | Network stack | specced | `ping 1.1.1.1` from inside our OS |
+| 5 | HTTP/1.0 client + text browser | specced | browse plain-HTTP pages by link number |
+| 6 | CPython 3.12 port | specced | `python /usr/lib/demo/pi.py 50` prints 50 digits of π |
+| 7 | Framebuffer + compositor + windowed apps | specced | boot to a windowed desktop with live clock + calculator |
 
 ## Design choices
 
