@@ -1,8 +1,8 @@
 # ccc — Claude Code Computer
 
 Building a working RISC-V computer from scratch in Zig — emulator, kernel,
-OS, networking, and a tiny text-mode web browser. No Linux. No TLS. No
-graphics.
+OS, networking, a tiny text-mode web browser, a windowed desktop, and a
+real CPython 3.12 port. No Linux. No TLS.
 
 **Live demo:** [https://cyyeh.github.io/ccc/web/](https://cyyeh.github.io/ccc/web/)
 — `ccc` cross-compiled to `wasm32-freestanding`, running RV32 binaries in
@@ -15,13 +15,17 @@ emulator in a Web Worker that drives execution in chunks.
 ## Goal
 
 Go from an empty repo to `browse http://test-server/` rendering a page in
-our own terminal browser, with every layer written ourselves:
+our own terminal browser, with every layer written ourselves — then keep
+going past the original five-phase target into a windowed desktop and a
+real Python interpreter on top of the same kernel:
 
 1. A RISC-V CPU emulator
 2. A bare-metal kernel with traps, page tables, and privilege transitions
 3. A multi-process OS with a filesystem and shell
 4. A from-scratch network stack (Ethernet → ARP → IP → ICMP → UDP → TCP → DNS)
 5. An HTTP/1.0 client and a terminal HTML renderer
+6. A linear framebuffer + mouse/keyboard + kernel `mmap` + userland compositor + windowed apps
+7. A real CPython 3.12 port (`/bin/python` REPL + frozen stdlib + scripts)
 
 ## Phases
 
@@ -32,6 +36,8 @@ our own terminal browser, with every layer written ourselves:
 | 3 | Multi-process OS + FS + shell | boot to a shell, run our own programs |
 | 4 | Network stack | `ping 1.1.1.1` from inside our OS |
 | 5 | HTTP/1.0 client + text browser | browse plain-HTTP pages by link number |
+| 6 | Framebuffer + compositor + windowed apps | boot to a windowed desktop with live clock + calculator |
+| 7 | CPython 3.12 port | `python /usr/lib/demo/pi.py 50` prints 50 digits of π |
 
 ## Design choices
 
